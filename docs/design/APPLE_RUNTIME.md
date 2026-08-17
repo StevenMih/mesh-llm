@@ -24,8 +24,9 @@ ship in release products or gossip `apple/system` to peers.
 
 ## Why this is valuable to Apple silicon users
 
-The system-model provider gives MeshLLM a zero-download, zero-model-management
-local inference option on eligible Macs. Apple owns model delivery, device
+The system-model provider gives MeshLLM a zero MeshLLM-managed-download,
+zero-model-management local inference option on eligible Macs. Apple must still
+provision the system model on the device. Apple owns model delivery, device
 compatibility, quantization, compilation, accelerator selection, and operating
 system updates. MeshLLM can therefore offer a useful local model without
 shipping another multi-gigabyte checkpoint or linking the neutral Rust host to
