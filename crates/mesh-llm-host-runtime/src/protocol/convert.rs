@@ -1098,6 +1098,7 @@ fn legacy_proto_config_to_mesh(
         runtime: Default::default(),
         models,
         plugins,
+        logging: Default::default(),
         extra: Default::default(),
     }
 }
