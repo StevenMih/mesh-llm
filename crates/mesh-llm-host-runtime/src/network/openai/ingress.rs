@@ -7,7 +7,7 @@ use crate::network::openai::automatic;
 use crate::network::openai::transport as proxy;
 use crate::network::router;
 use crate::plugin::openai_exchange::{
-    OpenAiExchangeChannel, OpenAiExchangeDispatchPath, OpenAiExchangeEnvelope,
+    OpenAiExchangeChannel, OpenAiExchangeDispatchPath, OpenAiExchangeEnvelope, ServingProvenance,
 };
 use mesh_llm_events::audit::{audit_events, emit_audit};
 use mesh_llm_events::{OutputEvent, emit_event};
@@ -23,6 +23,77 @@ fn plugin_route_status(outcome: &proxy::RouteDispatchOutcome) -> Option<u16> {
         proxy::RouteDispatchOutcome::FailedWithStatus { status_code, .. } => Some(status_code),
         proxy::RouteDispatchOutcome::Failed(_) | proxy::RouteDispatchOutcome::Dropped(_) => None,
     }
+}
+
+/// Gather the maximum inference provenance the host *actually knows* for the
+/// exchange just served — what ran, at what fidelity, on whose hardware — from
+/// state the local node already holds: the served-model descriptor (quant,
+/// architecture, context length, identity hash, revision) and this host's
+/// startup hardware survey (gpu, vram, soc, hostname). Every field is a real
+/// value or omitted; nothing is invented. Returned as a plain data struct so
+/// the wire event stays independent of the node internals.
+async fn serving_provenance_for_model(node: &mesh::Node, model_name: &str) -> ServingProvenance {
+    // The served-model descriptor for exactly this model, if the node has one.
+    // We match on the served identity's `model_name`; a miss (peer-served or
+    // not-yet-described) leaves every model field `None` rather than guessing.
+    let descriptor = node
+        .served_model_descriptors()
+        .await
+        .into_iter()
+        .find(|d| d.identity.model_name == model_name);
+
+    let (identity, metadata) = match descriptor {
+        Some(d) => (Some(d.identity), d.metadata),
+        None => (None, None),
+    };
+
+    ServingProvenance {
+        served_by_node_id: node.id().to_string(),
+        hostname: node.hostname.clone(),
+        quantization: metadata.as_ref().and_then(|m| m.quant.clone()),
+        architecture: metadata.as_ref().and_then(|m| m.architecture.clone()),
+        context_length: metadata.as_ref().and_then(|m| m.native_context_length),
+        parameter_size: metadata.as_ref().and_then(|m| m.parameter_size.clone()),
+        layer_count: metadata.as_ref().and_then(|m| m.layer_count),
+        model_identity_hash: identity.as_ref().and_then(|i| i.identity_hash.clone()),
+        model_canonical_ref: identity.as_ref().and_then(|i| i.canonical_ref.clone()),
+        model_revision: identity.as_ref().and_then(|i| i.revision.clone()),
+        gpu: node.gpu_name.clone(),
+        // `Node.vram_bytes` is 0 when no accelerator capacity was reported;
+        // surface it only when it is a real, non-zero figure.
+        vram_bytes: (node.vram_bytes != 0).then_some(node.vram_bytes),
+        is_soc: node.is_soc,
+    }
+}
+
+/// Publish the raw-proxy path's terminal event for a served exchange, enriched
+/// with the serving provenance the host resolved from the node (what ran / at
+/// what fidelity / on whose hardware). Only real values ride along; anything
+/// the node doesn't know for this model stays omitted (never fabricated). No
+/// `X-Capsule-Id` marker exists on this path (it never runs through
+/// `openai-frontend`'s `OpenAiHookPolicy`, the only place a marker is minted),
+/// so nonce/nonce_source are `None`.
+async fn publish_raw_proxy_terminal(
+    node: &mesh::Node,
+    plugin_manager: &crate::plugin::PluginManager,
+    exchange_id: &str,
+    model_name: &str,
+    final_outcome: &proxy::RouteDispatchOutcome,
+) {
+    let provenance = serving_provenance_for_model(node, model_name).await;
+    plugin_manager
+        .publish(
+            &OpenAiExchangeEnvelope::terminal(
+                exchange_id.to_string(),
+                OpenAiExchangeDispatchPath::RawProxy,
+                model_name,
+                plugin_route_status(final_outcome),
+                None,
+                None,
+            )
+            .with_serving_provenance(provenance),
+        )
+        .await;
 }
 
 enum AutoRouteResolution {
@@ -642,20 +713,14 @@ async fn try_route_plugin_model(
             } else {
                 outcome
             };
-            plugin_manager
-                .publish(&OpenAiExchangeEnvelope::terminal(
-                    exchange_id,
-                    OpenAiExchangeDispatchPath::RawProxy,
-                    model_name,
-                    plugin_route_status(&final_outcome),
-                    // No X-Capsule-Id marker on this path: it never runs
-                    // through `openai-frontend`'s `OpenAiHookPolicy`, the
-                    // only place a marker is minted (see the design note).
-                    None,
-                    // No marker means no nonce, so no nonce_source either.
-                    None,
-                ))
-                .await;
+            publish_raw_proxy_terminal(
+                ctx.node,
+                plugin_manager,
+                &exchange_id,
+                model_name,
+                &final_outcome,
+            )
+            .await;
             final_outcome
         }
         Ok(None) => {
