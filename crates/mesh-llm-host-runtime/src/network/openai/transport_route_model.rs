@@ -266,20 +266,23 @@ fn handle_route_model_attempt_result(
     affinity: &AffinityRouter,
 ) -> RouteModelDisposition {
     match attempt_result {
-        RouteAttemptResult::Delivered { status_code, usage } => {
-            handle_delivered_route_model_attempt(
-                DeliveredRouteModelContext {
-                    node,
-                    model,
-                    target,
-                    selection,
-                    state,
-                    affinity,
-                },
-                status_code,
-                usage,
-            )
-        }
+        RouteAttemptResult::Delivered {
+            status_code,
+            usage,
+            output_digests,
+        } => handle_delivered_route_model_attempt(
+            DeliveredRouteModelContext {
+                node,
+                model,
+                target,
+                selection,
+                state,
+                affinity,
+            },
+            status_code,
+            usage,
+            output_digests,
+        ),
         RouteAttemptResult::RetryableContextOverflow => {
             handle_retryable_route_model_context(model, target, selection, affinity)
         }
@@ -325,6 +328,7 @@ fn handle_delivered_route_model_attempt(
     context: DeliveredRouteModelContext<'_>,
     status_code: u16,
     usage: Option<TokenUsage>,
+    output_digests: crate::plugin::openai_exchange::ExchangeOutputDigests,
 ) -> RouteModelDisposition {
     if should_learn_affinity(status_code)
         && let Some(prefix_hash) = context.selection.learn_prefix_hash
@@ -347,7 +351,11 @@ fn handle_delivered_route_model_attempt(
     );
     RouteModelDisposition::Return(
         usage.map_or(RouteDispatchOutcome::Responded(status_code), |usage| {
-            RouteDispatchOutcome::RespondedWithUsage { status_code, usage }
+            RouteDispatchOutcome::RespondedWithUsage {
+                status_code,
+                usage,
+                output_digests,
+            }
         }),
     )
 }

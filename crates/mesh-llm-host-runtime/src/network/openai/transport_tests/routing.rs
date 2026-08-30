@@ -138,6 +138,7 @@ fn test_remote_retry_policy_only_retries_uncommitted_failures() {
         RouteAttemptResult::Delivered {
             status_code: 200,
             usage: None,
+            output_digests: Default::default(),
         }
     ));
 }

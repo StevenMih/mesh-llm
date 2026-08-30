@@ -166,6 +166,11 @@ pub(in crate::network::openai::response) async fn relay_normalized_chat_completi
     Ok(RouteAttemptResult::Delivered {
         status_code: 200,
         usage: observed_usage,
+        // Streaming path: the body is teed to the client chunk-by-chunk and
+        // never buffered whole, so no response/tool_calls/reasoning digest is
+        // captured here. Digesting a streamed body would need a streaming hasher
+        // (documented follow-up); honest absence until then.
+        output_digests: Default::default(),
     })
 }
 
@@ -279,6 +284,9 @@ pub(in crate::network::openai::response) async fn relay_translated_responses_str
     Ok(RouteAttemptResult::Delivered {
         status_code: 200,
         usage: state.observed_usage,
+        // Streaming path: body never buffered whole here (documented follow-up
+        // for a streaming hasher); honest absence.
+        output_digests: Default::default(),
     })
 }
 
@@ -668,6 +676,7 @@ mod tests {
                     completion_tokens: Some(13),
                     total_tokens: Some(18),
                 }),
+                output_digests: Default::default(),
             }
         );
 
@@ -741,6 +750,7 @@ mod tests {
                     completion_tokens: Some(7),
                     total_tokens: Some(9),
                 }),
+                output_digests: Default::default(),
             }
         );
         assert!(String::from_utf8_lossy(&output).contains("hello"));
