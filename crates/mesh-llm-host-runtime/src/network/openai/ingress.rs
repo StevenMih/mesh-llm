@@ -7,8 +7,8 @@ use crate::network::openai::automatic;
 use crate::network::openai::transport as proxy;
 use crate::network::router;
 use crate::plugin::openai_exchange::{
-    ExchangeUsage, OpenAiExchangeChannel, OpenAiExchangeDispatchPath, OpenAiExchangeEnvelope,
-    ServingProvenance,
+    request_body_digest, ExchangeUsage, OpenAiExchangeChannel, OpenAiExchangeDispatchPath,
+    OpenAiExchangeEnvelope, ServingProvenance,
 };
 use mesh_llm_events::audit::{audit_events, emit_audit};
 use mesh_llm_events::{OutputEvent, emit_event};
@@ -80,6 +80,7 @@ async fn publish_raw_proxy_terminal(
     exchange_id: &str,
     model_name: &str,
     final_outcome: &proxy::RouteDispatchOutcome,
+    request_digest: Option<&str>,
 ) {
     let provenance = serving_provenance_for_model(node, model_name).await;
     let mut envelope = OpenAiExchangeEnvelope::terminal(
@@ -98,6 +99,13 @@ async fn publish_raw_proxy_terminal(
     // no such usage on the outcome, so this stays absent for it — never zeroed.
     if let Some(usage) = exchange_usage_from_outcome(final_outcome) {
         envelope = envelope.with_usage(usage);
+    }
+    // The canonical digest of the REAL request body the host dispatched, so a
+    // downstream capsule can bind its `agent_input_digest` to the real bytes.
+    // Computed by the caller (which holds the parsed request); absent only when
+    // the host held no JSON body to digest — never fabricated.
+    if let Some(digest) = request_digest {
+        envelope = envelope.with_request_digest(digest.to_string());
     }
     plugin_manager.publish(&envelope).await;
 }
@@ -748,12 +756,19 @@ async fn try_route_plugin_model(
             } else {
                 outcome
             };
+            // Bind the real request body digest when the parsed body is already
+            // available (this path holds `request` by shared ref, so it does not
+            // force parsing); `None` otherwise, never fabricated. The
+            // plugin-served completion itself is a stub (zero usage), but the
+            // request digest is still the real request that was asked.
+            let request_digest = request.body_json.as_ref().map(request_body_digest);
             publish_raw_proxy_terminal(
                 ctx.node,
                 plugin_manager,
                 &exchange_id,
                 model_name,
                 &final_outcome,
+                request_digest.as_deref(),
             )
             .await;
             final_outcome
@@ -845,6 +860,17 @@ async fn route_request(
             .then_some(ctx.plugin_manager)
             .flatten()
             .map(|plugin_manager| (plugin_manager, uuid::Uuid::new_v4().to_string()));
+        // Digest the REAL request body up front, while the parsed body is still
+        // in hand and before `route_model_request` streams it to the backend —
+        // this is the one binding a downstream capsule needs to tie its
+        // `agent_input_digest` to what was actually asked. `ensure_body_json`
+        // is idempotent; `None` when the request carried no JSON body (e.g. a
+        // non-chat proxy passthrough), in which case no digest is forwarded
+        // rather than a fabricated one.
+        let request_digest = announce.as_ref().and_then(|_| {
+            request.ensure_body_json();
+            request.body_json.as_ref().map(request_body_digest)
+        });
         if let Some((plugin_manager, exchange_id)) = announce.as_ref() {
             plugin_manager
                 .publish(&OpenAiExchangeEnvelope::effective(
@@ -868,8 +894,15 @@ async fn route_request(
         )
         .await;
         if let Some((plugin_manager, exchange_id)) = announce.as_ref() {
-            publish_raw_proxy_terminal(ctx.node, plugin_manager, exchange_id, model_name, &outcome)
-                .await;
+            publish_raw_proxy_terminal(
+                ctx.node,
+                plugin_manager,
+                exchange_id,
+                model_name,
+                &outcome,
+                request_digest.as_deref(),
+            )
+            .await;
         }
         outcome
     } else {

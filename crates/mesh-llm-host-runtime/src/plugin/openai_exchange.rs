@@ -189,6 +189,20 @@ pub struct OpenAiExchangeEnvelope {
     /// (a plugin-served stub, a denial, or a non-usage-bearing backend).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usage: Option<ExchangeUsage>,
+    /// The canonical JSON-DIGEST (RFC 8785 JCS over the profile-normalized,
+    /// float-stringified request body — see [`request_body_digest`]) of the
+    /// REAL request body this host actually dispatched. This is the one fact a
+    /// downstream capsule needs to bind its `agent_input_digest` to the real
+    /// bytes: the terminal event otherwise carries provenance and usage but
+    /// nothing tying the sealed capsule to *what was asked*. Byte-for-byte the
+    /// same value the `capsule-emit-mesh` plugin computes with its own
+    /// `canonical_body_digest`, so the two are comparable across
+    /// implementations. Present on a host-served terminal envelope whose request
+    /// carried a JSON body; `None` when the host held no parsed body to digest
+    /// (never a fabricated digest). No raw prompt text is carried — only its
+    /// digest.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_digest: Option<String>,
 }
 
 impl OpenAiExchangeEnvelope {
@@ -208,6 +222,7 @@ impl OpenAiExchangeEnvelope {
             nonce_source: None,
             serving_provenance: None,
             usage: None,
+            request_digest: None,
         }
     }
 
@@ -230,6 +245,7 @@ impl OpenAiExchangeEnvelope {
             nonce_source,
             serving_provenance: None,
             usage: None,
+            request_digest: None,
         }
     }
 
@@ -255,6 +271,166 @@ impl OpenAiExchangeEnvelope {
         self.usage = Some(usage);
         self
     }
+
+    /// Attach the canonical JSON-DIGEST of the REAL request body this host
+    /// dispatched, so a downstream capsule can bind its `agent_input_digest` to
+    /// the real bytes. Mirrors the other builders — a small one-liner the
+    /// raw-proxy host-served path calls after it has the request body in hand.
+    /// Only ever called with a real digest computed by [`request_body_digest`];
+    /// the field stays `None` when the host held no parsed body.
+    #[must_use]
+    pub fn with_request_digest(mut self, digest: String) -> Self {
+        self.request_digest = Some(digest);
+        self
+    }
+}
+
+/// The canonical JSON-DIGEST of a request body, byte-for-byte identical to the
+/// `capsule-emit-mesh` plugin's own `canonical_body_digest`
+/// (`plugins/admission-policy/src/capsule_emit.rs`) and the Python reference's
+/// `capsule_sidecar.digest_json` — so the digest the host forwards on a terminal
+/// event and the digest a verifier recomputes agree across implementations.
+///
+/// It is `HEX(SHA-256(JCS(normalize(stringify_floats(body)))))`:
+///  1. `stringify_floats` — every JSON float becomes its exact decimal string
+///     (JCS refuses floats in a digest-bearing value; OpenAI chat bodies are
+///     full of them: temperature, top_p, penalties);
+///  2. `normalize` — profile §2 bottom-up removal of null / empty-array /
+///     empty-object members;
+///  3. JCS — RFC 8785 canonical serialization (sorted keys, minimal form);
+///  4. SHA-256, lowercase hex.
+///
+/// A self-contained port kept in this crate (the host cannot depend on the
+/// plugin's `capsule-producer`), verified equal to the plugin on the shared
+/// Python-reference fixture in the tests below.
+pub fn request_body_digest(body: &serde_json::Value) -> String {
+    use sha2::{Digest, Sha256};
+    let canonical = jcs_bytes(&normalize(&stringify_floats(body)));
+    hex::encode(Sha256::digest(&canonical))
+}
+
+/// Replace every JSON float with its exact decimal-string form (mirrors the
+/// plugin's `stringify_floats` / the Python `_stringify_floats`).
+fn stringify_floats(value: &serde_json::Value) -> serde_json::Value {
+    use serde_json::Value;
+    match value {
+        Value::Number(n) => {
+            if n.is_f64() && !(n.is_i64() || n.is_u64()) {
+                if let Some(f) = n.as_f64() {
+                    let s = format!("{f}");
+                    let s = if s.contains('.') || s.contains('e') || s.contains('E') {
+                        s
+                    } else {
+                        format!("{s}.0")
+                    };
+                    return Value::String(s);
+                }
+            }
+            value.clone()
+        }
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .map(|(k, v)| (k.clone(), stringify_floats(v)))
+                .collect(),
+        ),
+        Value::Array(arr) => Value::Array(arr.iter().map(stringify_floats).collect()),
+        other => other.clone(),
+    }
+}
+
+/// Profile §2 absent-field normalization: bottom-up removal of members whose
+/// value is null, an empty array, or an empty object (mirror of the plugin's
+/// `jcs::normalize`).
+fn normalize(v: &serde_json::Value) -> serde_json::Value {
+    use serde_json::{Map, Value};
+    match v {
+        Value::Object(map) => {
+            let mut out = Map::new();
+            for (key, val) in map {
+                let nv = normalize(val);
+                let drop = match &nv {
+                    Value::Null => true,
+                    Value::Array(a) => a.is_empty(),
+                    Value::Object(o) => o.is_empty(),
+                    _ => false,
+                };
+                if !drop {
+                    out.insert(key.clone(), nv);
+                }
+            }
+            Value::Object(out)
+        }
+        Value::Array(arr) => Value::Array(arr.iter().map(normalize).collect()),
+        other => other.clone(),
+    }
+}
+
+/// RFC 8785 JCS serialization (mirror of the plugin's `jcs::jcs`). Floats are
+/// already stringified before this runs, so a bare float here is a programmer
+/// error, serialized via serde's default rather than panicking.
+fn jcs_bytes(v: &serde_json::Value) -> Vec<u8> {
+    let mut out = String::new();
+    jcs_value(v, &mut out);
+    out.into_bytes()
+}
+
+fn jcs_value(v: &serde_json::Value, out: &mut String) {
+    use serde_json::Value;
+    match v {
+        Value::Null => out.push_str("null"),
+        Value::Bool(true) => out.push_str("true"),
+        Value::Bool(false) => out.push_str("false"),
+        Value::String(s) => jcs_string(s, out),
+        Value::Number(n) => out.push_str(&n.to_string()),
+        Value::Array(arr) => {
+            out.push('[');
+            for (i, x) in arr.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                jcs_value(x, out);
+            }
+            out.push(']');
+        }
+        Value::Object(map) => {
+            // RFC 8785 §3.2.3: object members sorted by UTF-16 code-unit sequence.
+            let mut items: Vec<(&String, &Value)> = map.iter().collect();
+            items.sort_by(|(a, _), (b, _)| {
+                let au: Vec<u16> = a.encode_utf16().collect();
+                let bu: Vec<u16> = b.encode_utf16().collect();
+                au.cmp(&bu).then_with(|| a.cmp(b))
+            });
+            out.push('{');
+            for (i, (k, val)) in items.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                jcs_string(k, out);
+                out.push(':');
+                jcs_value(val, out);
+            }
+            out.push('}');
+        }
+    }
+}
+
+fn jcs_string(s: &str, out: &mut String) {
+    out.push('"');
+    for ch in s.chars() {
+        let o = ch as u32;
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            _ if o == 0x08 => out.push_str("\\b"),
+            _ if o == 0x09 => out.push_str("\\t"),
+            _ if o == 0x0A => out.push_str("\\n"),
+            _ if o == 0x0C => out.push_str("\\f"),
+            _ if o == 0x0D => out.push_str("\\r"),
+            _ if o < 0x20 => out.push_str(&format!("\\u{o:04x}")),
+            _ => out.push(ch),
+        }
+    }
+    out.push('"');
 }
 
 /// Publishes [`OpenAiExchangeEnvelope`]s to whatever is subscribed on
@@ -500,6 +676,61 @@ mod tests {
         );
         let value = serde_json::to_value(&envelope).expect("serialize");
         assert!(value.get("usage").is_none());
+    }
+
+    /// The host's `request_body_digest` is byte-for-byte the value the
+    /// `capsule-emit-mesh` plugin's own `canonical_body_digest` produces — the
+    /// expected digest here is the SAME frozen constant the plugin pins against
+    /// the Python reference (`capsule_sidecar.digest_json`) in
+    /// `plugins/admission-policy/src/capsule_emit.rs`. This is the cross-impl
+    /// contract that lets the host forward `agent_input_digest` and a verifier
+    /// recompute it. `top_p: 1.0` exercises the whole-number-float edge case
+    /// (`stringify_floats` must emit "1.0", not "1").
+    #[test]
+    fn request_body_digest_matches_plugin_and_python_reference() {
+        let body = serde_json::json!({
+            "model": "hermes-2-pro-mistral-7b",
+            "messages": [{"role": "user", "content": "hello"}],
+            "temperature": 0.7,
+            "top_p": 1.0,
+            "max_tokens": 512
+        });
+        let expected = "a6329c5ebb66562f38a8136a8d8511b6aeed166e4c7d889b9133ac96fc49a9d5";
+        assert_eq!(request_body_digest(&body), expected);
+    }
+
+    /// A terminal envelope carrying a real request digest serializes it, and it
+    /// survives a round-trip — the one fact a downstream capsule binds its
+    /// `agent_input_digest` to.
+    #[test]
+    fn terminal_carries_request_digest_when_attached() {
+        let envelope = OpenAiExchangeEnvelope::terminal(
+            "exch-rd",
+            OpenAiExchangeDispatchPath::RawProxy,
+            "llama-3.2-3b-instruct",
+            Some(200),
+            None,
+            None,
+        )
+        .with_request_digest("deadbeef".to_string());
+        let value = serde_json::to_value(&envelope).expect("serialize");
+        assert_eq!(value["request_digest"], "deadbeef");
+    }
+
+    /// No request digest attached -> the key is omitted entirely (never a
+    /// fabricated empty digest), same honesty contract as usage/provenance.
+    #[test]
+    fn terminal_omits_request_digest_when_none_attached() {
+        let envelope = OpenAiExchangeEnvelope::terminal(
+            "exch-no-rd",
+            OpenAiExchangeDispatchPath::RawProxy,
+            "m",
+            Some(200),
+            None,
+            None,
+        );
+        let value = serde_json::to_value(&envelope).expect("serialize");
+        assert!(value.get("request_digest").is_none());
     }
 
     /// An effective-request envelope carries NO serving provenance (the field
