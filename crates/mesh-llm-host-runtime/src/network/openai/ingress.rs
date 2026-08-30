@@ -7,7 +7,8 @@ use crate::network::openai::automatic;
 use crate::network::openai::transport as proxy;
 use crate::network::router;
 use crate::plugin::openai_exchange::{
-    OpenAiExchangeChannel, OpenAiExchangeDispatchPath, OpenAiExchangeEnvelope, ServingProvenance,
+    ExchangeUsage, OpenAiExchangeChannel, OpenAiExchangeDispatchPath, OpenAiExchangeEnvelope,
+    ServingProvenance,
 };
 use mesh_llm_events::audit::{audit_events, emit_audit};
 use mesh_llm_events::{OutputEvent, emit_event};
@@ -81,19 +82,53 @@ async fn publish_raw_proxy_terminal(
     final_outcome: &proxy::RouteDispatchOutcome,
 ) {
     let provenance = serving_provenance_for_model(node, model_name).await;
-    plugin_manager
-        .publish(
-            &OpenAiExchangeEnvelope::terminal(
-                exchange_id.to_string(),
-                OpenAiExchangeDispatchPath::RawProxy,
-                model_name,
-                plugin_route_status(final_outcome),
-                None,
-                None,
+    let mut envelope = OpenAiExchangeEnvelope::terminal(
+        exchange_id.to_string(),
+        OpenAiExchangeDispatchPath::RawProxy,
+        model_name,
+        plugin_route_status(final_outcome),
+        None,
+        None,
+    )
+    .with_serving_provenance(provenance);
+    // The host-served (real-weights) branch reaches this via
+    // `route_model_request`, whose outcome carries the served backend's own
+    // `usage` object. Attach it so a downstream plugin can seal the REAL token
+    // counts of the exchange, not a zeroed stub. A plugin-served exchange has
+    // no such usage on the outcome, so this stays absent for it — never zeroed.
+    if let Some(usage) = exchange_usage_from_outcome(final_outcome) {
+        envelope = envelope.with_usage(usage);
+    }
+    plugin_manager.publish(&envelope).await;
+}
+
+/// Extract the served backend's real token usage from a dispatch outcome, when
+/// it carried one. Only `RespondedWithUsage` — the outcome the host-served
+/// `route_model_request` returns after reading the backend's `usage` object —
+/// yields counts; every other outcome (plugin stub, status-only, error, drop)
+/// yields `None`, so the terminal envelope omits `usage` rather than reporting
+/// fabricated zeros.
+fn exchange_usage_from_outcome(outcome: &proxy::RouteDispatchOutcome) -> Option<ExchangeUsage> {
+    match outcome {
+        proxy::RouteDispatchOutcome::RespondedWithUsage { usage, .. } => {
+            let prompt_tokens = usage.prompt_tokens.unwrap_or(0);
+            let completion_tokens = usage.completion_tokens.unwrap_or(0);
+            let total_tokens = usage
+                .total_tokens
+                .unwrap_or_else(|| prompt_tokens.saturating_add(completion_tokens));
+            // Guard against a usage object present but wholly empty: if the
+            // backend reported neither a prompt nor a completion count, we know
+            // nothing real, so omit rather than emit an all-zero record.
+            (usage.prompt_tokens.is_some() || usage.completion_tokens.is_some()).then_some(
+                ExchangeUsage {
+                    prompt_tokens,
+                    completion_tokens,
+                    total_tokens,
+                },
             )
-            .with_serving_provenance(provenance),
-        )
-        .await;
+        }
+        _ => None,
+    }
 }
 
 enum AutoRouteResolution {
@@ -794,7 +829,32 @@ async fn route_request(
         if !request.is_tokenize_request() && ctx.targets.candidates(model_name).len() > 1 {
             request.ensure_body_json();
         }
-        proxy::route_model_request(
+        // Host-served (real-weights) exchange. This branch, unlike the
+        // plugin-served `try_route_plugin_model` path, previously published NO
+        // `openai.exchange.v1` terminal event — so a downstream capsule-emit
+        // plugin never saw the exchange that carried the host's REAL served-model
+        // descriptor (architecture / context / layers / params / identity) AND
+        // the backend's REAL token usage. Publish the same effective→terminal
+        // pair the plugin path does, resolving provenance by the actually-served
+        // model and attaching the real usage the dispatch outcome carries, so
+        // one sealed capsule can hold real model identity + real usage + real
+        // hardware together. Tokenize requests are not chat exchanges, so they
+        // are not announced. `plugin_manager` is `None` when no plugin is loaded,
+        // in which case there is no subscriber and nothing to publish.
+        let announce = (!request.is_tokenize_request())
+            .then_some(ctx.plugin_manager)
+            .flatten()
+            .map(|plugin_manager| (plugin_manager, uuid::Uuid::new_v4().to_string()));
+        if let Some((plugin_manager, exchange_id)) = announce.as_ref() {
+            plugin_manager
+                .publish(&OpenAiExchangeEnvelope::effective(
+                    exchange_id.clone(),
+                    OpenAiExchangeDispatchPath::RawProxy,
+                    model_name,
+                ))
+                .await;
+        }
+        let outcome = proxy::route_model_request(
             ctx.node.clone(),
             tcp_stream,
             ctx.targets,
@@ -806,7 +866,12 @@ async fn route_request(
                 route_observer,
             },
         )
-        .await
+        .await;
+        if let Some((plugin_manager, exchange_id)) = announce.as_ref() {
+            publish_raw_proxy_terminal(ctx.node, plugin_manager, exchange_id, model_name, &outcome)
+                .await;
+        }
+        outcome
     } else {
         // No model specified — generic fallback routing to first available target.
 

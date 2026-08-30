@@ -131,6 +131,21 @@ pub struct ServingProvenance {
     pub is_soc: Option<bool>,
 }
 
+/// The real token accounting the host observed for a served exchange, from the
+/// dispatch outcome's [`crate::network::openai::transport::RouteDispatchOutcome::RespondedWithUsage`]
+/// (the served backend's own OpenAI-shaped `usage` object). Present on a
+/// terminal envelope only when the served response actually carried usage;
+/// omitted (never zeroed) when the dispatch produced no usage — so a downstream
+/// plugin can seal the REAL token counts of a host-served real-weights exchange
+/// rather than a stub's zeros. Every field is a real count the host read off the
+/// wire; nothing is fabricated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct ExchangeUsage {
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+    pub total_tokens: u64,
+}
+
 /// The wire shape both dispatch paths publish on [`OPENAI_EXCHANGE_CHANNEL`].
 /// Deliberately independent of `openai_frontend`'s typed request/response —
 /// the raw-proxy path never has one — so one shape covers both paths without
@@ -167,6 +182,13 @@ pub struct OpenAiExchangeEnvelope {
     /// served (a denial/error before dispatch).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub serving_provenance: Option<ServingProvenance>,
+    /// The real token usage the served backend reported for this exchange (see
+    /// [`ExchangeUsage`]). Present on a terminal envelope for a host-served
+    /// exchange whose response carried a `usage` object; `None` on
+    /// effective-request envelopes and wherever the dispatch produced no usage
+    /// (a plugin-served stub, a denial, or a non-usage-bearing backend).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usage: Option<ExchangeUsage>,
 }
 
 impl OpenAiExchangeEnvelope {
@@ -185,6 +207,7 @@ impl OpenAiExchangeEnvelope {
             nonce: None,
             nonce_source: None,
             serving_provenance: None,
+            usage: None,
         }
     }
 
@@ -206,6 +229,7 @@ impl OpenAiExchangeEnvelope {
             nonce: marker.as_ref().map(|marker| marker.nonce.clone()),
             nonce_source,
             serving_provenance: None,
+            usage: None,
         }
     }
 
@@ -217,6 +241,18 @@ impl OpenAiExchangeEnvelope {
     #[must_use]
     pub fn with_serving_provenance(mut self, provenance: ServingProvenance) -> Self {
         self.serving_provenance = Some(provenance);
+        self
+    }
+
+    /// Attach the real token usage the served backend reported. Mirrors
+    /// [`Self::with_serving_provenance`] — a small builder so the host-served
+    /// raw-proxy path can add the REAL counts it read off the dispatch outcome
+    /// in one readable line, without churning the positional `terminal`
+    /// constructor. Only ever called with real usage; the field stays `None`
+    /// when the dispatch produced none.
+    #[must_use]
+    pub fn with_usage(mut self, usage: ExchangeUsage) -> Self {
+        self.usage = Some(usage);
         self
     }
 }
@@ -422,6 +458,48 @@ mod tests {
         assert!(prov.get("model_revision").is_none());
         assert!(prov.get("gpu").is_none());
         assert!(prov.get("vram_bytes").is_none());
+    }
+
+    /// The real token usage the host-served path reads off its dispatch outcome
+    /// rides the terminal envelope, so a downstream plugin can seal the REAL
+    /// counts of a host-served real-weights exchange instead of a stub's zeros.
+    #[test]
+    fn terminal_carries_real_usage_when_attached() {
+        let envelope = OpenAiExchangeEnvelope::terminal(
+            "exch-usage",
+            OpenAiExchangeDispatchPath::RawProxy,
+            "llama-3.2-3b-instruct",
+            Some(200),
+            None,
+            None,
+        )
+        .with_usage(ExchangeUsage {
+            prompt_tokens: 42,
+            completion_tokens: 6,
+            total_tokens: 48,
+        });
+
+        let value = serde_json::to_value(&envelope).expect("serialize");
+        assert_eq!(value["usage"]["prompt_tokens"], 42);
+        assert_eq!(value["usage"]["completion_tokens"], 6);
+        assert_eq!(value["usage"]["total_tokens"], 48);
+    }
+
+    /// A terminal envelope with no usage attached OMITS the `usage` key entirely
+    /// (never a fabricated all-zero object) — the same honesty contract the
+    /// serving-provenance fields hold: absent means genuinely unknown.
+    #[test]
+    fn terminal_omits_usage_when_none_attached() {
+        let envelope = OpenAiExchangeEnvelope::terminal(
+            "exch-no-usage",
+            OpenAiExchangeDispatchPath::RawProxy,
+            "some-plugin-model",
+            Some(200),
+            None,
+            None,
+        );
+        let value = serde_json::to_value(&envelope).expect("serialize");
+        assert!(value.get("usage").is_none());
     }
 
     /// An effective-request envelope carries NO serving provenance (the field
