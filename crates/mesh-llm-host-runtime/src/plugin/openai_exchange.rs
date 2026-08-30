@@ -429,11 +429,8 @@ mod tests {
     /// fact — never claimed before the exchange actually ran.
     #[test]
     fn effective_envelope_has_no_serving_provenance() {
-        let envelope = OpenAiExchangeEnvelope::effective(
-            "exch-1",
-            OpenAiExchangeDispatchPath::RawProxy,
-            "m",
-        );
+        let envelope =
+            OpenAiExchangeEnvelope::effective("exch-1", OpenAiExchangeDispatchPath::RawProxy, "m");
         assert!(envelope.serving_provenance.is_none());
         let value = serde_json::to_value(&envelope).expect("serialize");
         assert!(value.get("serving_provenance").is_none());
