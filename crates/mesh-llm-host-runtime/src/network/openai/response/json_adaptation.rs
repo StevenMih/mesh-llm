@@ -55,6 +55,13 @@ pub(in crate::network::openai::response) async fn relay_translated_responses_jso
     }
     let translated_body = response_adapter::translate_chat_completion_to_responses(body)?;
     let usage = parse_token_usage_from_json_body(&translated_body);
+    // Non-streamed body in hand: digest the REAL response served to the client.
+    // This branch reshapes to the Responses API (tool_calls/reasoning under a
+    // different structure than the chat.completion path), so the response-body
+    // digest is always real; tool_calls/reasoning stay honestly absent unless
+    // the reshaped body carries them under the observed keys.
+    let output_digests =
+        crate::plugin::openai_exchange::ExchangeOutputDigests::from_response_body(&translated_body);
     let header = format!(
         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         translated_body.len()
@@ -66,6 +73,7 @@ pub(in crate::network::openai::response) async fn relay_translated_responses_jso
     Ok(RouteAttemptResult::Delivered {
         status_code: 200,
         usage,
+        output_digests,
     })
 }
 
@@ -103,6 +111,15 @@ pub(in crate::network::openai::response) async fn relay_normalized_chat_completi
         return Ok(result);
     }
     let usage = parse_token_usage_from_json_body(&normalized_body);
+    // The whole (non-streamed) chat.completion body is in hand here — the one
+    // point the host can digest the REAL response and lift the model's
+    // `tool_calls` / `reasoning_content` for a downstream capsule to seal. This
+    // is the branch that preserves the OpenAI chat.completion shape (tool_calls
+    // under `choices[].message.tool_calls`), so it is where a real
+    // `tool_calls_digest` becomes available. Computed over the exact bytes
+    // served to the client.
+    let output_digests =
+        crate::plugin::openai_exchange::ExchangeOutputDigests::from_response_body(&normalized_body);
     let header = format!(
         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         normalized_body.len()
@@ -114,6 +131,7 @@ pub(in crate::network::openai::response) async fn relay_normalized_chat_completi
     Ok(RouteAttemptResult::Delivered {
         status_code: 200,
         usage,
+        output_digests,
     })
 }
 
@@ -206,17 +224,33 @@ mod tests {
 
         assert!(output.starts_with(b"HTTP/1.1 200 OK\r\n"));
 
+        // Destructure rather than compare the whole `Delivered` literal: this
+        // relay now also carries real `output_digests` over the served body, so
+        // assert the status/usage as before AND that the tool_calls digest is
+        // present (the body carried a tool call). A non-null tool_calls digest
+        // here is exactly the fact a downstream capsule seals.
+        let RouteAttemptResult::Delivered {
+            status_code,
+            usage,
+            output_digests,
+        } = route_result
+        else {
+            panic!("expected Delivered, got {route_result:?}");
+        };
+        assert_eq!(status_code, 200);
         assert_eq!(
-            route_result,
-            RouteAttemptResult::Delivered {
-                status_code: 200,
-                usage: Some(mesh_llm_events::logging::events::TokenUsage {
-                    prompt_tokens: Some(2),
-                    completion_tokens: Some(4),
-                    total_tokens: Some(6),
-                }),
-            }
+            usage,
+            Some(mesh_llm_events::logging::events::TokenUsage {
+                prompt_tokens: Some(2),
+                completion_tokens: Some(4),
+                total_tokens: Some(6),
+            })
         );
+        assert!(
+            output_digests.tool_calls.is_some(),
+            "the served body carried a tool call, so its tool_calls digest must be present"
+        );
+        assert!(output_digests.response_body.is_some());
         assert_eq!(
             parsed["choices"][0]["message"]["tool_calls"][0]["id"],
             "call_mesh_chatcmpl_a_0_0"
@@ -270,16 +304,26 @@ mod tests {
         let route_result = server_task.await.expect("server task");
 
         assert!(output.starts_with(b"HTTP/1.1 200 OK\r\n"));
+        let RouteAttemptResult::Delivered {
+            status_code,
+            usage,
+            output_digests,
+        } = route_result
+        else {
+            panic!("expected Delivered, got {route_result:?}");
+        };
+        assert_eq!(status_code, 200);
         assert_eq!(
-            route_result,
-            RouteAttemptResult::Delivered {
-                status_code: 200,
-                usage: Some(mesh_llm_events::logging::events::TokenUsage {
-                    prompt_tokens: Some(2),
-                    completion_tokens: Some(4),
-                    total_tokens: Some(6),
-                }),
-            }
+            usage,
+            Some(mesh_llm_events::logging::events::TokenUsage {
+                prompt_tokens: Some(2),
+                completion_tokens: Some(4),
+                total_tokens: Some(6),
+            })
         );
+        // This response had no tool call, so the tool_calls digest stays absent
+        // (honest null); the response-body digest is still real.
+        assert!(output_digests.tool_calls.is_none());
+        assert!(output_digests.response_body.is_some());
     }
 }
