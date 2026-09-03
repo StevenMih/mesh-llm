@@ -392,6 +392,9 @@ pub struct TerminalGuardedChatStream {
 }
 
 impl TerminalGuardedChatStream {
+    // Returns the boxed/pinned stream alias, not `Self`, by design: callers
+    // consume this as an opaque `ChatCompletionStream`, never the guard wrapper.
+    #[allow(clippy::new_ret_no_self)]
     pub fn new(inner: ChatCompletionStream, guard: TerminalGuard) -> ChatCompletionStream {
         Box::pin(Self {
             inner,

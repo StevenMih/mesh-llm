@@ -597,8 +597,8 @@ fn plugin_route_success_records_one_attempt_and_one_terminal_outcome() {
         }
     ));
 
-    attachment.terminal(terminal_outcome_for_dispatch(&
-        proxy::RouteDispatchOutcome::Responded(200),
+    attachment.terminal(terminal_outcome_for_dispatch(
+        &proxy::RouteDispatchOutcome::Responded(200),
     ));
     attachment.terminal(TerminalOutcome::Failed("late_plugin_failure".into()));
 
@@ -672,8 +672,8 @@ fn plugin_route_failure_records_failed_attempt_and_terminal_outcome() {
         super::super::response::RouteAttemptResult::RetryableUnavailable
     );
 
-    attachment.terminal(terminal_outcome_for_dispatch(&
-        proxy::RouteDispatchOutcome::Failed("plugin_endpoint_failed"),
+    attachment.terminal(terminal_outcome_for_dispatch(
+        &proxy::RouteDispatchOutcome::Failed("plugin_endpoint_failed"),
     ));
     attachment.terminal(TerminalOutcome::Completed);
 
@@ -727,8 +727,8 @@ fn plugin_route_without_endpoint_records_decision_without_attempt_or_payload() {
         Some("plugin"),
         Some("inference_endpoint"),
     );
-    attachment.terminal(terminal_outcome_for_dispatch(&
-        proxy::RouteDispatchOutcome::Responded(404),
+    attachment.terminal(terminal_outcome_for_dispatch(
+        &proxy::RouteDispatchOutcome::Responded(404),
     ));
     attachment.terminal(TerminalOutcome::Failed("late_plugin_failure".into()));
 
@@ -904,11 +904,11 @@ fn disconnect_is_dropped_and_cannot_audit_model_access_as_success() {
         TerminalOutcome::Dropped(_)
     ));
     assert!(!model_access_succeeded(&outcome));
-    assert!(!model_access_succeeded(&
-        proxy::RouteDispatchOutcome::Responded(502)
+    assert!(!model_access_succeeded(
+        &proxy::RouteDispatchOutcome::Responded(502)
     ));
-    assert!(model_access_succeeded(&
-        proxy::RouteDispatchOutcome::Responded(200)
+    assert!(model_access_succeeded(
+        &proxy::RouteDispatchOutcome::Responded(200)
     ));
 }
 

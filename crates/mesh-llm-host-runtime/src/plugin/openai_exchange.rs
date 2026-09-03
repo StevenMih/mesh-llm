@@ -33,7 +33,10 @@ pub const OPENAI_EXCHANGE_CHANNEL: &str = "openai.exchange.v1";
 /// privacy, matching the Python sidecar's `--no-disclose`.
 pub fn disclosure_enabled() -> bool {
     match std::env::var("MESH_LLM_DISCLOSE_PREIMAGE") {
-        Ok(v) => !matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "false" | "off" | "no"),
+        Ok(v) => !matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "0" | "false" | "off" | "no"
+        ),
         Err(_) => true,
     }
 }
@@ -237,8 +240,10 @@ impl ExchangeOutputDigests {
             disclosure_enabled().then(|| String::from_utf8_lossy(body).into_owned());
         Self {
             response_body,
-            tool_calls: (!tool_calls.is_empty()).then(|| jcs_sha256(&serde_json::Value::Array(tool_calls))),
-            reasoning: (!reasoning.is_empty()).then(|| jcs_sha256(&serde_json::Value::Array(reasoning))),
+            tool_calls: (!tool_calls.is_empty())
+                .then(|| jcs_sha256(&serde_json::Value::Array(tool_calls))),
+            reasoning: (!reasoning.is_empty())
+                .then(|| jcs_sha256(&serde_json::Value::Array(reasoning))),
             response_body_text,
         }
     }
@@ -293,10 +298,9 @@ fn collect_reasoning(response: &serde_json::Value) -> Vec<serde_json::Value> {
                 .get("message")
                 .and_then(|m| m.get("reasoning_content"))
                 .filter(|r| !r.is_null())
+                && !matches!(r, serde_json::Value::String(s) if s.is_empty())
             {
-                if !matches!(r, serde_json::Value::String(s) if s.is_empty()) {
-                    out.push(r.clone());
-                }
+                out.push(r.clone());
             }
         }
     }
@@ -559,16 +563,17 @@ fn stringify_floats(value: &serde_json::Value) -> serde_json::Value {
     use serde_json::Value;
     match value {
         Value::Number(n) => {
-            if n.is_f64() && !(n.is_i64() || n.is_u64()) {
-                if let Some(f) = n.as_f64() {
-                    let s = format!("{f}");
-                    let s = if s.contains('.') || s.contains('e') || s.contains('E') {
-                        s
-                    } else {
-                        format!("{s}.0")
-                    };
-                    return Value::String(s);
-                }
+            if n.is_f64()
+                && !(n.is_i64() || n.is_u64())
+                && let Some(f) = n.as_f64()
+            {
+                let s = format!("{f}");
+                let s = if s.contains('.') || s.contains('e') || s.contains('E') {
+                    s
+                } else {
+                    format!("{s}.0")
+                };
+                return Value::String(s);
             }
             value.clone()
         }
@@ -966,11 +971,13 @@ mod tests {
         // preserves), plus a real usage block — exactly what the host serves.
         let body = br#"{"id":"chatcmpl-seti","object":"chat.completion","created":1,"model":"llama-3.2-3b-instruct","choices":[{"index":0,"message":{"role":"assistant","content":"","tool_calls":[{"function":{"arguments":"{\"query\": \"mesh-llm vs SETI@Home\"}","name":"web_search"},"id":"call_719a955fb46a41008dd847d412f00795","type":"function"}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":202,"completion_tokens":25,"total_tokens":227}}"#;
         let digests = ExchangeOutputDigests::from_response_body(body);
-        let tool_calls_hex =
-            hex::encode(digests.tool_calls.expect("tool_calls digest present for a real tool call"));
+        let tool_calls_hex = hex::encode(
+            digests
+                .tool_calls
+                .expect("tool_calls digest present for a real tool call"),
+        );
         assert_eq!(
-            tool_calls_hex,
-            "f294be8a53bb9c29cd94472721f0857591f34b23fe010882de79b9fb210b1395",
+            tool_calls_hex, "f294be8a53bb9c29cd94472721f0857591f34b23fe010882de79b9fb210b1395",
             "host tool_calls_digest must equal the Python reference json_digest(tool_calls)"
         );
         // The response-body digest is real (present), and a non-reasoning model
@@ -1003,8 +1010,7 @@ mod tests {
         //     print(json_digest(['let me think about this']))"
         let body = br#"{"id":"x","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"42","reasoning_content":"let me think about this"},"finish_reason":"stop"}]}"#;
         let digests = ExchangeOutputDigests::from_response_body(body);
-        let reasoning_hex =
-            hex::encode(digests.reasoning.expect("reasoning digest present"));
+        let reasoning_hex = hex::encode(digests.reasoning.expect("reasoning digest present"));
         // Recompute the expected value the same way json_digest would: plain JCS
         // over ["let me think about this"], sha-256, hex.
         let expected = {

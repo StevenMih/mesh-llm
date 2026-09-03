@@ -7,8 +7,8 @@ use crate::network::openai::automatic;
 use crate::network::openai::transport as proxy;
 use crate::network::router;
 use crate::plugin::openai_exchange::{
-    request_body_digest, ExchangeUsage, OpenAiExchangeChannel, OpenAiExchangeDispatchPath,
-    OpenAiExchangeEnvelope, ServingProvenance,
+    ExchangeUsage, OpenAiExchangeChannel, OpenAiExchangeDispatchPath, OpenAiExchangeEnvelope,
+    ServingProvenance, request_body_digest,
 };
 use mesh_llm_events::audit::{audit_events, emit_audit};
 use mesh_llm_events::{OutputEvent, emit_event};
@@ -808,7 +808,12 @@ async fn try_route_plugin_model(
             // [disclosure-default-on] The same parsed body, re-serialized as the
             // LOCAL disclosure preimage text -- only when disclosure is on.
             let request_body_text = crate::plugin::openai_exchange::disclosure_enabled()
-                .then(|| request.body_json.as_ref().and_then(|v| serde_json::to_string(v).ok()))
+                .then(|| {
+                    request
+                        .body_json
+                        .as_ref()
+                        .and_then(|v| serde_json::to_string(v).ok())
+                })
                 .flatten();
             publish_raw_proxy_terminal(
                 ctx.node,
@@ -926,7 +931,12 @@ async fn route_request(
         // forces a second parse.
         let request_body_text = announce.as_ref().and_then(|_| {
             crate::plugin::openai_exchange::disclosure_enabled()
-                .then(|| request.body_json.as_ref().and_then(|v| serde_json::to_string(v).ok()))
+                .then(|| {
+                    request
+                        .body_json
+                        .as_ref()
+                        .and_then(|v| serde_json::to_string(v).ok())
+                })
                 .flatten()
         });
         if let Some((plugin_manager, exchange_id)) = announce.as_ref() {
