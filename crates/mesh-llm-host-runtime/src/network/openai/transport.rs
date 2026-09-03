@@ -55,7 +55,7 @@ pub use route_model::route_model_request;
 /// Response result returned to the ingress boundary. Unlike the historical
 /// boolean, this preserves the downstream HTTP status and distinguishes a
 /// transport failure from a client disconnect.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum RouteDispatchOutcome {
     Responded(u16),
     RespondedWithUsage {
@@ -63,9 +63,12 @@ pub(crate) enum RouteDispatchOutcome {
         usage: TokenUsage,
         /// Digests over the REAL served response body (response-body /
         /// tool_calls / reasoning), captured at the JSON-relay delivery point.
-        /// `Copy` (raw sha-256 bytes) so this outcome stays `Copy`. Default
-        /// (all-`None`) on a streamed / non-JSON delivery, so the terminal
-        /// event simply omits the response/tool_calls/reasoning digests then.
+        /// [disclosure-default-on] Also OPTIONALLY carries the exact response
+        /// TEXT (`ExchangeOutputDigests::response_body_text`) -- which is why
+        /// this bundle, and therefore this outcome/variant, is `Clone` rather
+        /// than the old `Copy`: a `String` cannot be `Copy`. Default (all-
+        /// `None`) on a streamed / non-JSON delivery, so the terminal event
+        /// simply omits the response/tool_calls/reasoning digests then.
         output_digests: crate::plugin::openai_exchange::ExchangeOutputDigests,
     },
     Failed(&'static str),
@@ -79,7 +82,7 @@ pub(crate) enum RouteDispatchOutcome {
 pub(super) fn record_moa_stream_lifecycle(
     observer: OpenAiRouteObserver<'_>,
     adapter: ResponseAdapter,
-    outcome: RouteDispatchOutcome,
+    outcome: &RouteDispatchOutcome,
 ) {
     if !matches!(
         adapter,
@@ -93,7 +96,7 @@ pub(super) fn record_moa_stream_lifecycle(
             status_code: 200..=299,
             usage,
             ..
-        } => observer.stream_completed(Some(usage)),
+        } => observer.stream_completed(Some(*usage)),
         RouteDispatchOutcome::Responded(200..=299) => observer.stream_completed(None),
         RouteDispatchOutcome::Failed(_)
         | RouteDispatchOutcome::FailedWithStatus { .. }
@@ -104,49 +107,52 @@ pub(super) fn record_moa_stream_lifecycle(
 }
 
 impl RouteDispatchOutcome {
-    pub(crate) const fn response_written(self) -> bool {
+    pub(crate) fn response_written(&self) -> bool {
         matches!(self, Self::Responded(_) | Self::RespondedWithUsage { .. })
     }
 
-    pub(crate) fn terminal_outcome(self) -> crate::logging::TerminalOutcome {
+    pub(crate) fn terminal_outcome(&self) -> crate::logging::TerminalOutcome {
         match self {
             Self::Responded(status @ 200..=299) => {
-                crate::logging::TerminalOutcome::CompletedWithStatus(status)
+                crate::logging::TerminalOutcome::CompletedWithStatus(*status)
             }
             Self::RespondedWithUsage {
                 status_code, usage, ..
-            } => match status_code {
-                200..=299 => {
-                    crate::logging::TerminalOutcome::CompletedWithUsage { status_code, usage }
-                }
+            } => match *status_code {
+                200..=299 => crate::logging::TerminalOutcome::CompletedWithUsage {
+                    status_code: *status_code,
+                    usage: *usage,
+                },
                 400..=499 => crate::logging::TerminalOutcome::RejectedWithStatus {
                     reason: Some(format!("http_status_{status_code}")),
-                    status_code,
+                    status_code: *status_code,
                 },
                 _ => crate::logging::TerminalOutcome::FailedWithStatus {
                     error: format!("http_status_{status_code}"),
-                    status_code,
+                    status_code: *status_code,
                 },
             },
             Self::Responded(status @ 400..=499) => {
                 crate::logging::TerminalOutcome::RejectedWithStatus {
                     reason: Some(format!("http_status_{status}")),
-                    status_code: status,
+                    status_code: *status,
                 }
             }
             Self::Responded(status) => crate::logging::TerminalOutcome::FailedWithStatus {
                 error: format!("http_status_{status}"),
-                status_code: status,
+                status_code: *status,
             },
-            Self::Failed(reason) => crate::logging::TerminalOutcome::Failed(reason.into()),
+            Self::Failed(reason) => crate::logging::TerminalOutcome::Failed((*reason).into()),
             Self::FailedWithStatus {
                 status_code,
                 reason,
             } => crate::logging::TerminalOutcome::FailedWithStatus {
-                error: reason.into(),
-                status_code,
+                error: (*reason).into(),
+                status_code: *status_code,
             },
-            Self::Dropped(reason) => crate::logging::TerminalOutcome::Dropped(Some(reason.into())),
+            Self::Dropped(reason) => {
+                crate::logging::TerminalOutcome::Dropped(Some((*reason).into()))
+            }
         }
     }
 }
@@ -462,7 +468,7 @@ async fn route_mesh_moa_or_passthrough(
         }
     };
     if let Err(outcome) = &result {
-        record_moa_stream_lifecycle(route_observer, adapter, *outcome);
+        record_moa_stream_lifecycle(route_observer, adapter, outcome);
     }
     result
 }
@@ -1348,7 +1354,7 @@ async fn route_remote_attempt_with_retry(
     )
     .await;
     for retry in 1..=REMOTE_UNCOMMITTED_RETRIES {
-        if !should_retry_uncommitted_remote_attempt(result) {
+        if !should_retry_uncommitted_remote_attempt(&result) {
             return result;
         }
         tracing::warn!(
@@ -1427,7 +1433,7 @@ fn record_remote_transport_attempt(
     result
 }
 
-fn should_retry_uncommitted_remote_attempt(result: RouteAttemptResult) -> bool {
+fn should_retry_uncommitted_remote_attempt(result: &RouteAttemptResult) -> bool {
     matches!(
         result,
         RouteAttemptResult::RetryableTimeout | RouteAttemptResult::RetryableUnavailable

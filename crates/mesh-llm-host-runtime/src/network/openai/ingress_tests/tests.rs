@@ -597,7 +597,7 @@ fn plugin_route_success_records_one_attempt_and_one_terminal_outcome() {
         }
     ));
 
-    attachment.terminal(terminal_outcome_for_dispatch(
+    attachment.terminal(terminal_outcome_for_dispatch(&
         proxy::RouteDispatchOutcome::Responded(200),
     ));
     attachment.terminal(TerminalOutcome::Failed("late_plugin_failure".into()));
@@ -672,7 +672,7 @@ fn plugin_route_failure_records_failed_attempt_and_terminal_outcome() {
         super::super::response::RouteAttemptResult::RetryableUnavailable
     );
 
-    attachment.terminal(terminal_outcome_for_dispatch(
+    attachment.terminal(terminal_outcome_for_dispatch(&
         proxy::RouteDispatchOutcome::Failed("plugin_endpoint_failed"),
     ));
     attachment.terminal(TerminalOutcome::Completed);
@@ -727,7 +727,7 @@ fn plugin_route_without_endpoint_records_decision_without_attempt_or_payload() {
         Some("plugin"),
         Some("inference_endpoint"),
     );
-    attachment.terminal(terminal_outcome_for_dispatch(
+    attachment.terminal(terminal_outcome_for_dispatch(&
         proxy::RouteDispatchOutcome::Responded(404),
     ));
     attachment.terminal(TerminalOutcome::Failed("late_plugin_failure".into()));
@@ -768,7 +768,7 @@ fn plugin_route_without_endpoint_records_decision_without_attempt_or_payload() {
 fn load_and_unload_error_statuses_never_complete_lifecycle() {
     for status in [400, 404, 409, 500, 503] {
         assert!(!matches!(
-            terminal_outcome_for_dispatch(proxy::RouteDispatchOutcome::Responded(status)),
+            terminal_outcome_for_dispatch(&proxy::RouteDispatchOutcome::Responded(status)),
             TerminalOutcome::Completed
         ));
     }
@@ -777,14 +777,14 @@ fn load_and_unload_error_statuses_never_complete_lifecycle() {
 #[test]
 fn unknown_and_unavailable_models_map_to_rejected_and_failed() {
     assert!(matches!(
-        terminal_outcome_for_dispatch(proxy::RouteDispatchOutcome::Responded(404)),
+        terminal_outcome_for_dispatch(&proxy::RouteDispatchOutcome::Responded(404)),
         TerminalOutcome::RejectedWithStatus {
             status_code: 404,
             ..
         }
     ));
     assert!(matches!(
-        terminal_outcome_for_dispatch(proxy::RouteDispatchOutcome::Responded(503)),
+        terminal_outcome_for_dispatch(&proxy::RouteDispatchOutcome::Responded(503)),
         TerminalOutcome::FailedWithStatus {
             status_code: 503,
             ..
@@ -795,14 +795,14 @@ fn unknown_and_unavailable_models_map_to_rejected_and_failed() {
 #[test]
 fn invalid_and_failed_moa_responses_map_from_http_status() {
     assert!(matches!(
-        terminal_outcome_for_dispatch(proxy::RouteDispatchOutcome::Responded(400)),
+        terminal_outcome_for_dispatch(&proxy::RouteDispatchOutcome::Responded(400)),
         TerminalOutcome::RejectedWithStatus {
             status_code: 400,
             ..
         }
     ));
     assert!(matches!(
-        terminal_outcome_for_dispatch(proxy::RouteDispatchOutcome::Responded(502)),
+        terminal_outcome_for_dispatch(&proxy::RouteDispatchOutcome::Responded(502)),
         TerminalOutcome::FailedWithStatus {
             status_code: 502,
             ..
@@ -818,7 +818,7 @@ fn usage_never_turns_moa_or_pipeline_error_statuses_into_success() {
         total_tokens: Some(13),
     };
     assert!(matches!(
-        terminal_outcome_for_dispatch(proxy::RouteDispatchOutcome::RespondedWithUsage {
+        terminal_outcome_for_dispatch(&proxy::RouteDispatchOutcome::RespondedWithUsage {
             status_code: 400,
             usage,
             output_digests: Default::default(),
@@ -829,7 +829,7 @@ fn usage_never_turns_moa_or_pipeline_error_statuses_into_success() {
         }
     ));
     assert!(matches!(
-        terminal_outcome_for_dispatch(proxy::RouteDispatchOutcome::RespondedWithUsage {
+        terminal_outcome_for_dispatch(&proxy::RouteDispatchOutcome::RespondedWithUsage {
             status_code: 502,
             usage,
             output_digests: Default::default(),
@@ -858,8 +858,8 @@ fn streamed_moa_chat_and_responses_record_compatible_usage_lifecycle() {
             usage,
             output_digests: Default::default(),
         };
-        proxy::record_moa_stream_lifecycle(attachment.route_observer(), adapter, outcome);
-        attachment.terminal(terminal_outcome_for_dispatch(outcome));
+        proxy::record_moa_stream_lifecycle(attachment.route_observer(), adapter, &outcome);
+        attachment.terminal(terminal_outcome_for_dispatch(&outcome));
 
         let events = recorded_lifecycle_events(&service);
         assert!(events.iter().any(|event| matches!(
@@ -888,7 +888,7 @@ fn streamed_moa_chat_and_responses_record_compatible_usage_lifecycle() {
 #[test]
 fn pipeline_server_error_is_failed_not_completed() {
     assert!(matches!(
-        terminal_outcome_for_dispatch(proxy::RouteDispatchOutcome::Responded(500)),
+        terminal_outcome_for_dispatch(&proxy::RouteDispatchOutcome::Responded(500)),
         TerminalOutcome::FailedWithStatus {
             status_code: 500,
             ..
@@ -900,14 +900,14 @@ fn pipeline_server_error_is_failed_not_completed() {
 fn disconnect_is_dropped_and_cannot_audit_model_access_as_success() {
     let outcome = proxy::RouteDispatchOutcome::Dropped("client_disconnected");
     assert!(matches!(
-        terminal_outcome_for_dispatch(outcome),
+        terminal_outcome_for_dispatch(&outcome),
         TerminalOutcome::Dropped(_)
     ));
-    assert!(!model_access_succeeded(outcome));
-    assert!(!model_access_succeeded(
+    assert!(!model_access_succeeded(&outcome));
+    assert!(!model_access_succeeded(&
         proxy::RouteDispatchOutcome::Responded(502)
     ));
-    assert!(model_access_succeeded(
+    assert!(model_access_succeeded(&
         proxy::RouteDispatchOutcome::Responded(200)
     ));
 }

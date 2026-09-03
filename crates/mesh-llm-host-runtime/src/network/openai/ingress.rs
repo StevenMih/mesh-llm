@@ -81,6 +81,11 @@ async fn publish_raw_proxy_terminal(
     model_name: &str,
     final_outcome: &proxy::RouteDispatchOutcome,
     request_digest: Option<&str>,
+    // [disclosure-default-on] The EXACT raw request body text, only when
+    // `disclosure_enabled()` is true (the caller gates this so a disabled run
+    // never even serializes the body). A LOCAL preimage, not part of what the
+    // capsule seals -- see `OpenAiExchangeEnvelope::with_request_body_text`.
+    request_body_text: Option<&str>,
 ) {
     let provenance = serving_provenance_for_model(node, model_name).await;
     let mut envelope = OpenAiExchangeEnvelope::terminal(
@@ -107,6 +112,9 @@ async fn publish_raw_proxy_terminal(
     if let Some(digest) = request_digest {
         envelope = envelope.with_request_digest(digest.to_string());
     }
+    if let Some(text) = request_body_text {
+        envelope = envelope.with_request_body_text(text.to_string());
+    }
     // The digests over the REAL served response body (response-body / tool_calls
     // / reasoning), computed at the JSON-relay delivery point and carried up on
     // the dispatch outcome. This is what lets a downstream capsule bind
@@ -130,7 +138,9 @@ fn exchange_output_digests_from_outcome(
     outcome: &proxy::RouteDispatchOutcome,
 ) -> crate::plugin::openai_exchange::ExchangeOutputDigests {
     match outcome {
-        proxy::RouteDispatchOutcome::RespondedWithUsage { output_digests, .. } => *output_digests,
+        proxy::RouteDispatchOutcome::RespondedWithUsage { output_digests, .. } => {
+            output_digests.clone()
+        }
         _ => Default::default(),
     }
 }
@@ -190,12 +200,12 @@ struct AutoRouteDecision {
 }
 
 fn terminal_outcome_for_dispatch(
-    outcome: proxy::RouteDispatchOutcome,
+    outcome: &proxy::RouteDispatchOutcome,
 ) -> crate::logging::TerminalOutcome {
     outcome.terminal_outcome()
 }
 
-fn model_access_succeeded(outcome: proxy::RouteDispatchOutcome) -> bool {
+fn model_access_succeeded(outcome: &proxy::RouteDispatchOutcome) -> bool {
     matches!(
         outcome,
         proxy::RouteDispatchOutcome::Responded(200..=299)
@@ -795,6 +805,11 @@ async fn try_route_plugin_model(
             // plugin-served completion itself is a stub (zero usage), but the
             // request digest is still the real request that was asked.
             let request_digest = request.body_json.as_ref().map(request_body_digest);
+            // [disclosure-default-on] The same parsed body, re-serialized as the
+            // LOCAL disclosure preimage text -- only when disclosure is on.
+            let request_body_text = crate::plugin::openai_exchange::disclosure_enabled()
+                .then(|| request.body_json.as_ref().and_then(|v| serde_json::to_string(v).ok()))
+                .flatten();
             publish_raw_proxy_terminal(
                 ctx.node,
                 plugin_manager,
@@ -802,6 +817,7 @@ async fn try_route_plugin_model(
                 model_name,
                 &final_outcome,
                 request_digest.as_deref(),
+                request_body_text.as_deref(),
             )
             .await;
             final_outcome
@@ -904,6 +920,15 @@ async fn route_request(
             request.ensure_body_json();
             request.body_json.as_ref().map(request_body_digest)
         });
+        // [disclosure-default-on] The same parsed body, re-serialized as the
+        // LOCAL disclosure preimage text -- only when disclosure is on. Reuses
+        // the `ensure_body_json()` call above (idempotent), so this never
+        // forces a second parse.
+        let request_body_text = announce.as_ref().and_then(|_| {
+            crate::plugin::openai_exchange::disclosure_enabled()
+                .then(|| request.body_json.as_ref().and_then(|v| serde_json::to_string(v).ok()))
+                .flatten()
+        });
         if let Some((plugin_manager, exchange_id)) = announce.as_ref() {
             plugin_manager
                 .publish(&OpenAiExchangeEnvelope::effective(
@@ -934,6 +959,7 @@ async fn route_request(
                 model_name,
                 &outcome,
                 request_digest.as_deref(),
+                request_body_text.as_deref(),
             )
             .await;
         }
@@ -1193,7 +1219,7 @@ async fn handle_buffered_api_request(
             .await
         {
             Ok(outcome) => {
-                lifecycle.terminal(terminal_outcome_for_dispatch(outcome));
+                lifecycle.terminal(terminal_outcome_for_dispatch(&outcome));
                 return;
             }
             Err(tcp_stream) => tcp_stream,
@@ -1215,7 +1241,7 @@ async fn handle_buffered_api_request(
     {
         Ok(stream) => stream,
         Err(outcome) => {
-            lifecycle.terminal(terminal_outcome_for_dispatch(outcome));
+            lifecycle.terminal(terminal_outcome_for_dispatch(&outcome));
             return;
         }
     };
@@ -1224,7 +1250,7 @@ async fn handle_buffered_api_request(
         Ok(decision) => decision,
         Err(()) => {
             let outcome = send_media_unsupported(tcp_stream, lifecycle.route_observer()).await;
-            lifecycle.terminal(terminal_outcome_for_dispatch(outcome));
+            lifecycle.terminal(terminal_outcome_for_dispatch(&outcome));
             return;
         }
     };
@@ -1243,9 +1269,9 @@ async fn handle_buffered_api_request(
             proxy::record_moa_stream_lifecycle(
                 lifecycle.route_observer(),
                 request.response_adapter,
-                outcome,
+                &outcome,
             );
-            lifecycle.terminal(terminal_outcome_for_dispatch(outcome));
+            lifecycle.terminal(terminal_outcome_for_dispatch(&outcome));
             return;
         }
         MoaInterceptResult::NotMoa(stream) => stream,
@@ -1266,7 +1292,7 @@ async fn handle_buffered_api_request(
     .await
     {
         proxy::release_request_objects(ctx.route.node, &request.request_object_request_ids).await;
-        lifecycle.terminal(terminal_outcome_for_dispatch(outcome));
+        lifecycle.terminal(terminal_outcome_for_dispatch(&outcome));
         return;
     }
 
@@ -1286,14 +1312,14 @@ async fn handle_buffered_api_request(
         && !request.is_tokenize_request()
     {
         let mut event =
-            audit_events::model_access(None, model, "route", model_access_succeeded(outcome));
+            audit_events::model_access(None, model, "route", model_access_succeeded(&outcome));
         if let Some(cid) = request.correlation_id.as_deref() {
             event = event.with_metadata("request_id", serde_json::Value::String(cid.to_string()));
         }
         let _ = emit_audit(event);
     }
     proxy::release_request_objects(ctx.route.node, &request.request_object_request_ids).await;
-    lifecycle.terminal(terminal_outcome_for_dispatch(outcome));
+    lifecycle.terminal(terminal_outcome_for_dispatch(&outcome));
 }
 
 async fn handle_api_proxy_connection(

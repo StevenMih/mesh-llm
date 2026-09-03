@@ -18,6 +18,26 @@ use super::PluginManager;
 /// The single mesh channel both dispatch paths publish to.
 pub const OPENAI_EXCHANGE_CHANNEL: &str = "openai.exchange.v1";
 
+/// [disclosure-default-on] Whether the host forwards the RAW request/response
+/// TEXT (not just digests) on the terminal envelope, for a downstream
+/// disclosure sink (capsule-emit-mesh's admission-policy plugin) to persist a
+/// LOCAL, out-of-band preimage next to the signed capsule -- mirroring
+/// capsule-emit-mesh PR #79's `capsule_sidecar.disclose_preimage`
+/// (`persist_disclosure_preimage`), same default and same posture: DEFAULT
+/// ON, "so the human can see the data" (Steven), because this stays entirely
+/// host-process -> plugin-process, in-process on this machine -- nothing raw
+/// goes out over the wire, and the SIGNED capsule this text rides alongside
+/// still commits to request/response by digest only (see
+/// [`request_body_digest`] / [`ExchangeOutputDigests`]). Set
+/// `MESH_LLM_DISCLOSE_PREIMAGE=0` (or `false`/`off`/`no`) to turn it off for
+/// privacy, matching the Python sidecar's `--no-disclose`.
+pub fn disclosure_enabled() -> bool {
+    match std::env::var("MESH_LLM_DISCLOSE_PREIMAGE") {
+        Ok(v) => !matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "false" | "off" | "no"),
+        Err(_) => true,
+    }
+}
+
 /// Which real dispatch path produced an [`OpenAiExchangeEnvelope`] — the two
 /// paths M1 found are disjoint and don't share a request type, so the
 /// envelope carries this instead of assuming one shape fits both.
@@ -162,7 +182,7 @@ pub struct ExchangeUsage {
 /// (`capsule_ledger/conversation/exchange.py`) which leaves those sub-digests
 /// absent rather than fabricating one. `response_body` is `None` only when the
 /// body could not be parsed as JSON.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ExchangeOutputDigests {
     /// SHA-256 over the plain-JCS canonicalization of the FULL response body
     /// JSON — the real bytes the host produced. Binds `agent_output_digest` to
@@ -178,6 +198,17 @@ pub struct ExchangeOutputDigests {
     /// surfaced no reasoning (an honest null for a non-reasoning model like
     /// Llama-3.2) — never fabricated. Matches `json_digest(reasoning_chunks)`.
     pub reasoning: Option<[u8; 32]>,
+    /// [disclosure-default-on] The EXACT raw response body bytes (UTF-8), only
+    /// when disclosure is enabled (`disclosure::enabled()`, default ON). This
+    /// is a LOCAL preimage carried alongside the digest above so a downstream
+    /// disclosure sink (capsule-emit-mesh's admission-policy plugin) can write
+    /// the human-visible request/response TEXT next to the signed capsule --
+    /// it never substitutes for `response_body` above, which is what actually
+    /// gets sealed. `None` when disclosure is off, or the body wasn't valid
+    /// UTF-8/JSON -- never fabricated. Breaks this struct's `Copy` (a `String`
+    /// isn't `Copy`); see `RouteDispatchOutcome::RespondedWithUsage`'s doc for
+    /// why that's an accepted, narrowly-scoped cost.
+    pub response_body_text: Option<String>,
 }
 
 impl ExchangeOutputDigests {
@@ -196,10 +227,19 @@ impl ExchangeOutputDigests {
         let response_body = Some(jcs_sha256(&value));
         let tool_calls = collect_tool_calls(&value);
         let reasoning = collect_reasoning(&value);
+        // [disclosure-default-on] Carry the exact served bytes as text too,
+        // only when disclosure is on -- a disabled run pays no allocation
+        // beyond the digest path already computed above. Lossy UTF-8 decode:
+        // an OpenAI-shaped JSON body is always valid UTF-8 in practice, and a
+        // decode failure here must never break the digest this fn otherwise
+        // returns, so it degrades to no text rather than an error.
+        let response_body_text =
+            disclosure_enabled().then(|| String::from_utf8_lossy(body).into_owned());
         Self {
             response_body,
             tool_calls: (!tool_calls.is_empty()).then(|| jcs_sha256(&serde_json::Value::Array(tool_calls))),
             reasoning: (!reasoning.is_empty()).then(|| jcs_sha256(&serde_json::Value::Array(reasoning))),
+            response_body_text,
         }
     }
 
@@ -320,6 +360,14 @@ pub struct OpenAiExchangeEnvelope {
     /// digest.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub request_digest: Option<String>,
+    /// [disclosure-default-on] The EXACT raw request body (re-serialized from
+    /// the host's own parsed `body_json`), forwarded only when
+    /// [`disclosure_enabled`] is true. This is the LOCAL preimage a downstream
+    /// disclosure sink persists next to the ledger -- never part of what the
+    /// capsule seals (`request_digest` above is). `None` when disclosure is
+    /// off, or the host held no parsed body -- never fabricated.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_body_text: Option<String>,
     /// The canonical JSON-DIGEST (plain RFC 8785 JCS, matching the Python
     /// reference `json_digest`) of the REAL response body the host served for
     /// this exchange, computed at the JSON-relay delivery point where the host
@@ -346,6 +394,13 @@ pub struct OpenAiExchangeEnvelope {
     /// Llama-3.2 — never fabricated.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_digest: Option<String>,
+    /// [disclosure-default-on] The EXACT raw response body text captured at
+    /// the JSON-relay delivery point (see [`ExchangeOutputDigests::
+    /// response_body_text`]), forwarded only when [`disclosure_enabled`] is
+    /// true. `None` when disclosure is off, or no JSON body was captured
+    /// there (streamed / non-JSON delivery) -- never fabricated.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response_body_text: Option<String>,
 }
 
 impl OpenAiExchangeEnvelope {
@@ -366,9 +421,11 @@ impl OpenAiExchangeEnvelope {
             serving_provenance: None,
             usage: None,
             request_digest: None,
+            request_body_text: None,
             response_digest: None,
             tool_calls_digest: None,
             reasoning_digest: None,
+            response_body_text: None,
         }
     }
 
@@ -392,9 +449,11 @@ impl OpenAiExchangeEnvelope {
             serving_provenance: None,
             usage: None,
             request_digest: None,
+            request_body_text: None,
             response_digest: None,
             tool_calls_digest: None,
             reasoning_digest: None,
+            response_body_text: None,
         }
     }
 
@@ -433,12 +492,25 @@ impl OpenAiExchangeEnvelope {
         self
     }
 
+    /// [disclosure-default-on] Attach the EXACT raw request body text, only
+    /// when [`disclosure_enabled`] is true -- the caller (`ingress.rs`) gates
+    /// this itself so a disabled-disclosure run never even serializes the
+    /// body. Mirrors [`Self::with_request_digest`]; a LOCAL preimage, not
+    /// part of what the capsule seals.
+    #[must_use]
+    pub fn with_request_body_text(mut self, text: String) -> Self {
+        self.request_body_text = Some(text);
+        self
+    }
+
     /// Attach the response-body / tool_calls / reasoning digests computed over
     /// the REAL served response at the JSON-relay delivery point (see
     /// [`ExchangeOutputDigests`]). Hex-encodes each raw digest onto the wire.
     /// Only the digests the response actually yielded are set: an absent
     /// tool_calls/reasoning digest stays absent (honest null), never fabricated.
     /// A no-op for an all-`None` bundle, so a non-JSON body adds nothing.
+    /// [disclosure-default-on]: also carries over `response_body_text` when
+    /// the bundle captured one (disclosure on and a JSON body was captured).
     #[must_use]
     pub fn with_output_digests(mut self, digests: ExchangeOutputDigests) -> Self {
         if let Some(d) = digests.response_body {
@@ -449,6 +521,9 @@ impl OpenAiExchangeEnvelope {
         }
         if let Some(d) = digests.reasoning {
             self.reasoning_digest = Some(hex::encode(d));
+        }
+        if let Some(text) = digests.response_body_text {
+            self.response_body_text = Some(text);
         }
         self
     }

@@ -47,7 +47,7 @@ fn passive_moa_chat_and_responses_streams_record_usage_lifecycle() {
             output_digests: Default::default(),
         };
 
-        record_moa_stream_lifecycle(attachment.route_observer(), adapter, outcome);
+        record_moa_stream_lifecycle(attachment.route_observer(), adapter, &outcome);
         attachment.terminal(outcome.terminal_outcome());
 
         let events = recorded_lifecycle_events(&service);
@@ -92,7 +92,7 @@ fn passive_moa_stream_failure_records_stream_error_before_terminal_failure() {
     record_moa_stream_lifecycle(
         attachment.route_observer(),
         ResponseAdapter::OpenAiResponsesStream,
-        outcome,
+        &outcome,
     );
     attachment.terminal(outcome.terminal_outcome());
 

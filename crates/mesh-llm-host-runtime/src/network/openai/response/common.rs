@@ -14,17 +14,18 @@ pub(in crate::network::openai) struct RouteAttemptLoggingContext<'a> {
     pub(in crate::network::openai) route_observer: OpenAiRouteObserver<'a>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::network::openai) enum RouteAttemptResult {
     Delivered {
         status_code: u16,
         usage: Option<TokenUsage>,
         /// Digests over the REAL served response body (response-body /
         /// tool_calls / reasoning), captured at the JSON-relay delivery point
-        /// where the whole body is still in hand. `Copy` (raw sha-256 bytes),
-        /// so it rides the enum without breaking the `Copy` derive. Default
-        /// (all-`None`) for a streamed / non-JSON delivery that never buffered
-        /// a full body to digest.
+        /// where the whole body is still in hand. [disclosure-default-on]
+        /// also OPTIONALLY carries the exact response TEXT, which is why this
+        /// enum is `Clone` rather than the old `Copy` (a `String` cannot be
+        /// `Copy`). Default (all-`None`) for a streamed / non-JSON delivery
+        /// that never buffered a full body to digest.
         output_digests: crate::plugin::openai_exchange::ExchangeOutputDigests,
     },
     RetryableTimeout,
