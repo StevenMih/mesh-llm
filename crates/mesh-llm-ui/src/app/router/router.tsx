@@ -85,6 +85,13 @@ const configurationTabRoute = createRoute({
   ),
   errorComponent: FeatureErrorBoundary
 })
+const capsulesRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/capsules',
+  head: () => ({ meta: [{ title: 'MeshLLM - Capsules' }] }),
+  component: lazyRouteComponent(() => import('@/features/capsules/pages/CapsulesPage'), 'CapsulesPageContent'),
+  errorComponent: FeatureErrorBoundary
+})
 const pluginWebUiRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/plugins/$pluginName/$pageId',
@@ -117,6 +124,7 @@ export const routeTree = rootRoute.addChildren([
   chatRoute,
   configurationRoute,
   configurationTabRoute,
+  capsulesRoute,
   pluginWebUiRoute,
   ...(developerPlaygroundRoute ? [developerPlaygroundRoute] : []),
   ...(enableMeshVizPerfRoute ? [meshVizPerfRoute] : [])

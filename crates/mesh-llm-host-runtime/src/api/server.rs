@@ -179,6 +179,8 @@ pub(crate) fn is_console_index_route(path: &str) -> bool {
             | "/chat/"
             | "/configuration"
             | "/configuration/"
+            | "/capsules"
+            | "/capsules/"
             | "/plugins"
             | "/__playground"
             | "/__meshviz-perf"

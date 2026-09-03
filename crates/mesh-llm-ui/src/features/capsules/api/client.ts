@@ -1,0 +1,52 @@
+// Fetches the capsule ledger from the mesh-llm host's read-only ledger route
+// (crates/mesh-llm-host-runtime/src/api/routes/capsules.rs). This tab has its
+// OWN data source -- the capsule ledger the admission-policy plugin writes to
+// disk -- and never joins into mesh-llm's own log store.
+import { env } from '@/lib/env'
+import type { CapsuleLedger, CapsuleRecord } from '@/features/capsules/api/types'
+
+const LEDGER_BASE = `${env.managementApiUrl}/api/capsules/ledger`
+
+function parseJsonl(text: string): CapsuleRecord[] {
+  const records: CapsuleRecord[] = []
+  for (const line of text.split('\n')) {
+    const trimmed = line.trim()
+    if (!trimmed) continue
+    try {
+      records.push(JSON.parse(trimmed) as CapsuleRecord)
+    } catch {
+      // Skip a malformed line rather than failing the whole ledger view.
+    }
+  }
+  return records
+}
+
+export async function fetchCapsuleLedger(): Promise<CapsuleLedger> {
+  const ledgerResponse = await fetch(`${LEDGER_BASE}/capsules.jsonl`)
+  if (!ledgerResponse.ok) {
+    if (ledgerResponse.status === 404) return { records: [], nodePubKeyPem: null }
+    throw new Error(`capsule ledger fetch failed: HTTP ${ledgerResponse.status}`)
+  }
+  const records = parseJsonl(await ledgerResponse.text())
+
+  let nodePubKeyPem: string | null = null
+  try {
+    const keyResponse = await fetch(`${LEDGER_BASE}/node-key.pub.pem`)
+    if (keyResponse.ok) nodePubKeyPem = await keyResponse.text()
+  } catch {
+    nodePubKeyPem = null
+  }
+
+  return { records, nodePubKeyPem }
+}
+
+/** Fetches capsule_id's detached COSE_Sign1 signed statement, or null if none exists. */
+export async function fetchSignedStatement(capsuleId: string): Promise<Uint8Array | null> {
+  try {
+    const response = await fetch(`${LEDGER_BASE}/signed-statements/${encodeURIComponent(capsuleId)}.cose`)
+    if (!response.ok) return null
+    return new Uint8Array(await response.arrayBuffer())
+  } catch {
+    return null
+  }
+}

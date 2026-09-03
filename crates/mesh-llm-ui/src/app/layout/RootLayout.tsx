@@ -31,15 +31,17 @@ function pathToTab(pathname: string): AppTab | null {
   if (pathname.startsWith('/reserves')) return 'reserves'
   if (pathname.startsWith('/logs')) return 'logs'
   if (pathname.startsWith('/configuration')) return 'configuration'
+  if (pathname.startsWith('/capsules')) return 'capsules'
   if (pathname.startsWith('/plugins/')) return null
   if (env.isDevelopment && pathname.startsWith('/__playground')) return null
   return 'network'
 }
 
-function tabToPath(tab: Exclude<AppTab, 'configuration'>): '/' | '/chat' | '/reserves' | '/logs' {
+function tabToPath(tab: Exclude<AppTab, 'configuration'>): '/' | '/chat' | '/reserves' | '/logs' | '/capsules' {
   if (tab === 'chat') return '/chat'
   if (tab === 'reserves') return '/reserves'
   if (tab === 'logs') return '/logs'
+  if (tab === 'capsules') return '/capsules'
   return '/'
 }
 
@@ -104,6 +106,7 @@ export function RootLayout({ data = SHELL_HARNESS }: RootLayoutProps = {}) {
       reserves: hrefWithBasePath('/reserves'),
       logs: hrefWithBasePath('/logs'),
       chat: hrefWithBasePath('/chat'),
+      capsules: hrefWithBasePath('/capsules'),
       configuration: hrefWithBasePath(
         `/configuration/${pathToConfigurationTab(pathname, enabledConfigurationTabs) ?? 'general'}`
       )
