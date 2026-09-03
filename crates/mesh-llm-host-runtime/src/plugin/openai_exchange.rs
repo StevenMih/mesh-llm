@@ -839,6 +839,12 @@ mod tests {
 
     use super::*;
 
+    /// [mesh-disclosure-recompute-jcs-float] A real llama.cpp `timings` block,
+    /// shared (as identical literal JSON text) with `canonical.test.ts`'s
+    /// browser-JCS parity test in `mesh-llm-ui` -- keep the two in sync
+    /// character-for-character if either changes.
+    const LLAMA_CPP_TIMINGS_FIXTURE: &str = r#"{"id":"chatcmpl-mesh-1","object":"chat.completion","created":1700000000,"model":"llama-3.2-3b-instruct","choices":[{"index":0,"message":{"role":"assistant","content":"hi there"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15},"timings":{"prompt_n":10,"prompt_ms":123.456,"prompt_per_token_ms":12.3456,"prompt_per_second":81.0,"predicted_n":5,"predicted_ms":234.567,"predicted_per_token_ms":46.9134,"predicted_per_second":21.3169}}"#;
+
     /// A terminal envelope with serving provenance serializes the known fields
     /// and OMITS the unknown ones (never a fabricated `null` or empty string) —
     /// this is the honesty contract a downstream capsule relies on: a field
@@ -1019,6 +1025,46 @@ mod tests {
             hex::encode(Sha256::digest(jcs))
         };
         assert_eq!(reasoning_hex, expected);
+    }
+
+    /// [mesh-disclosure-recompute-jcs-float] A real llama.cpp `timings` block
+    /// is full of non-integer floats (`prompt_ms`, `predicted_per_second`,
+    /// ...), including `prompt_per_second: 81.0` -- a WHOLE-NUMBER float,
+    /// which exercises the case a naive fix could get wrong (JSON `81.0` and
+    /// `81` both parse to the same f64; only the source token's `.` tells
+    /// `is_f64()` to take the float branch and print `81.0`, not `81`). This
+    /// pins `response_body`'s digest so the browser JCS port
+    /// (`mesh-llm-ui/src/features/capsules/lib/canonical.ts`,
+    /// `digestResponseBody`) can be asserted equal to it on the SAME fixture
+    /// text -- see `canonical.test.ts`'s
+    /// `matches_the_rust_seal_path_digest_for_a_real_llama_cpp_timings_body`.
+    #[test]
+    fn response_digest_over_real_llama_cpp_timings_floats() {
+        let body = LLAMA_CPP_TIMINGS_FIXTURE.as_bytes();
+        let digests = ExchangeOutputDigests::from_response_body(body);
+        let response_hex = hex::encode(digests.response_body.expect("response digest present"));
+        assert_eq!(
+            response_hex,
+            "7179feb00c2b4e2a99a785449eb202c2faf9694cc77501876802c300f57b298a",
+            "response_body digest over a real llama.cpp timings block (see doc comment)"
+        );
+    }
+
+    /// [mesh-disclosure-recompute-jcs-float] Mutant 3 (no regression):
+    /// an integer-only response body -- the path that already worked before
+    /// this fix -- still digests correctly. Shared (as identical literal
+    /// JSON text) with `canonical.test.ts`'s
+    /// `still_matches_for_an_integer_only_response_body_no_regression` test.
+    #[test]
+    fn response_digest_over_integer_only_body_unchanged() {
+        let body = br#"{"id":"x","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":1,"total_tokens":3}}"#;
+        let digests = ExchangeOutputDigests::from_response_body(body);
+        let response_hex = hex::encode(digests.response_body.expect("response digest present"));
+        assert_eq!(
+            response_hex,
+            "660e8a56afa6b1cdf4b088c0c42be7f6af958b28492b7583d6676a684dbe5bd7",
+            "response_body digest over an integer-only body (see doc comment)"
+        );
     }
 
     /// The three output digests round-trip onto a terminal envelope as

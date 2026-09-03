@@ -62,7 +62,12 @@ export async function fetchDisclosurePreimage(capsuleId: string): Promise<Disclo
   try {
     const response = await fetch(`${LEDGER_BASE}/disclosures/${encodeURIComponent(capsuleId)}.json`)
     if (!response.ok) return null
-    return (await response.json()) as DisclosurePreimage
+    const text = await response.text()
+    const preimage = JSON.parse(text) as DisclosurePreimage
+    // Kept alongside the parsed object so `digestResponseBody` can recompute
+    // from the exact bytes -- see `DisclosurePreimage._rawText`'s doc.
+    preimage._rawText = text
+    return preimage
   } catch {
     return null
   }
