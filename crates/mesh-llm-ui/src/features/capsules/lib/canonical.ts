@@ -10,7 +10,7 @@ const LOCAL_ONLY = ['signature', 'key_id']
 const CHAIN_LINKAGE = ['capsule_id', 'chain']
 const MAX_SAFE = 9007199254740991 // 2^53 - 1
 
-type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue }
+export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue }
 
 function normalize(value: JsonValue): JsonValue {
   if (Array.isArray(value)) return value.map(normalize)

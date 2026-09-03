@@ -3,7 +3,7 @@
 // OWN data source -- the capsule ledger the admission-policy plugin writes to
 // disk -- and never joins into mesh-llm's own log store.
 import { env } from '@/lib/env'
-import type { CapsuleLedger, CapsuleRecord } from '@/features/capsules/api/types'
+import type { CapsuleLedger, CapsuleRecord, DisclosurePreimage } from '@/features/capsules/api/types'
 
 const LEDGER_BASE = `${env.managementApiUrl}/api/capsules/ledger`
 
@@ -46,6 +46,23 @@ export async function fetchSignedStatement(capsuleId: string): Promise<Uint8Arra
     const response = await fetch(`${LEDGER_BASE}/signed-statements/${encodeURIComponent(capsuleId)}.cose`)
     if (!response.ok) return null
     return new Uint8Array(await response.arrayBuffer())
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Fetches capsule_id's OPTIONAL local disclosure preimage (the request+
+ * response TEXT a capsule-emit-mesh sidecar wrote next to the ledger --
+ * capsule-emit-mesh PR #79), or null when none exists. Most capsules have
+ * none: the signed capsule commits to request/response by digest only, and
+ * this file is a separate, out-of-band attachment.
+ */
+export async function fetchDisclosurePreimage(capsuleId: string): Promise<DisclosurePreimage | null> {
+  try {
+    const response = await fetch(`${LEDGER_BASE}/disclosures/${encodeURIComponent(capsuleId)}.json`)
+    if (!response.ok) return null
+    return (await response.json()) as DisclosurePreimage
   } catch {
     return null
   }

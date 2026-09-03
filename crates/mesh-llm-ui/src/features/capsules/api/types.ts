@@ -72,3 +72,18 @@ export type CapsuleLedger = {
   records: CapsuleRecord[]
   nodePubKeyPem: string | null
 }
+
+// The OPTIONAL local disclosure preimage a capsule-emit-mesh sidecar writes
+// to `<ledger_dir>/disclosures/<capsule_id>.json` (capsule-emit-mesh PR #79,
+// `capsule_sidecar.persist_disclosure_preimage`). Never part of the signed
+// capsule -- request_body/response_body are the EXACT JSON bodies the sidecar
+// digested, so the UI can recompute request_digest/response_digest from them
+// in-browser and prove (or disprove) a match against the sealed digests.
+export type DisclosurePreimage = {
+  capsule_id?: string
+  request_body?: JsonRecord
+  response_body?: JsonRecord
+  request_text?: string | null
+  response_text?: string | null
+  tool_calls_note?: string | null
+}
