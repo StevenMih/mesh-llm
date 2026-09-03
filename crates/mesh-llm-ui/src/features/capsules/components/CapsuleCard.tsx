@@ -5,7 +5,7 @@ import { cn } from '@/lib/utils'
 import { fetchDisclosurePreimage, fetchSignedStatement } from '@/features/capsules/api/client'
 import type { CapsuleRecord, DisclosurePreimage, JsonRecord } from '@/features/capsules/api/types'
 import { reconcileAdvertisedVsServed } from '@/features/capsules/lib/advertisement'
-import { digestFacts, type JsonValue, recomputeCapsuleId } from '@/features/capsules/lib/canonical'
+import { digestFacts, digestResponseBody, type JsonValue, recomputeCapsuleId } from '@/features/capsules/lib/canonical'
 import { ed25519PublicKeyFromSpkiPem, verifyCoseSign1 } from '@/features/capsules/lib/cose'
 import {
   friendlyModelName,
@@ -102,7 +102,14 @@ export function CapsuleCard({ record, nodePubKeyPem }: CapsuleCardProps) {
       // mismatch, not an honest check.
       if (disclosed?.response_body) {
         try {
-          const computed = await digestFacts(disclosed.response_body as JsonValue)
+          // response_digest is NOT the strict capsule form digestFacts/
+          // jcsValue implements -- it's plain JCS over the response AS
+          // SERVED (no normalize, real floats). digestResponseBody needs the
+          // preimage's raw JSON text (not the already-JSON.parse'd object)
+          // to preserve each number's lexical float-vs-integer form -- see
+          // its doc comment (mesh-disclosure-recompute-jcs-float).
+          if (!disclosed._rawText) throw new Error('disclosure preimage missing raw text')
+          const computed = await digestResponseBody(disclosed._rawText)
           if (!cancelled) {
             setResponseBodyCheck({
               sealedDigest: sealedResponseDigest,
