@@ -1044,8 +1044,7 @@ mod tests {
         let digests = ExchangeOutputDigests::from_response_body(body);
         let response_hex = hex::encode(digests.response_body.expect("response digest present"));
         assert_eq!(
-            response_hex,
-            "7179feb00c2b4e2a99a785449eb202c2faf9694cc77501876802c300f57b298a",
+            response_hex, "7179feb00c2b4e2a99a785449eb202c2faf9694cc77501876802c300f57b298a",
             "response_body digest over a real llama.cpp timings block (see doc comment)"
         );
     }
@@ -1061,8 +1060,7 @@ mod tests {
         let digests = ExchangeOutputDigests::from_response_body(body);
         let response_hex = hex::encode(digests.response_body.expect("response digest present"));
         assert_eq!(
-            response_hex,
-            "660e8a56afa6b1cdf4b088c0c42be7f6af958b28492b7583d6676a684dbe5bd7",
+            response_hex, "660e8a56afa6b1cdf4b088c0c42be7f6af958b28492b7583d6676a684dbe5bd7",
             "response_body digest over an integer-only body (see doc comment)"
         );
     }
