@@ -146,6 +146,123 @@ pub struct ExchangeUsage {
     pub total_tokens: u64,
 }
 
+/// The digests a host-served exchange yields OVER ITS RESPONSE BODY, computed at
+/// the JSON-relay delivery point (`response::json_adaptation` /
+/// `response::pipeline`) where the host still holds the complete, non-streamed
+/// response body in hand. This is the fact the terminal event previously lacked:
+/// the host streamed the body to the client and only `usage` returned on the
+/// `Copy` `RouteDispatchOutcome`, so a downstream capsule could bind neither the
+/// real response nor the model's tool_calls/reasoning. Threaded here as a `Copy`
+/// bundle of RAW sha-256 bytes (never allocated strings, so the enums it rides
+/// stay `Copy`), hex-encoded only when serialized onto the terminal envelope.
+///
+/// Every field is honest-optional: `tool_calls`/`reasoning` are `None` (never a
+/// digest over an empty list) when the served response carried none, exactly
+/// mirroring the Python reference `digest_conversation_exchange`
+/// (`capsule_ledger/conversation/exchange.py`) which leaves those sub-digests
+/// absent rather than fabricating one. `response_body` is `None` only when the
+/// body could not be parsed as JSON.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ExchangeOutputDigests {
+    /// SHA-256 over the plain-JCS canonicalization of the FULL response body
+    /// JSON — the real bytes the host produced. Binds `agent_output_digest` to
+    /// the real response, not just the terminal accounting facts.
+    pub response_body: Option<[u8; 32]>,
+    /// SHA-256 over the plain-JCS canonicalization of the flattened `tool_calls`
+    /// array across the response's assistant message(s). `None` when the model
+    /// emitted none — never a digest over `[]`. Byte-for-byte identical to the
+    /// Python reference `json_digest(tool_calls)`.
+    pub tool_calls: Option<[u8; 32]>,
+    /// SHA-256 over the plain-JCS canonicalization of the list of
+    /// `reasoning_content` chunks the response carried. `None` when the model
+    /// surfaced no reasoning (an honest null for a non-reasoning model like
+    /// Llama-3.2) — never fabricated. Matches `json_digest(reasoning_chunks)`.
+    pub reasoning: Option<[u8; 32]>,
+}
+
+impl ExchangeOutputDigests {
+    /// Compute the response-body / tool_calls / reasoning digests over a served
+    /// OpenAI chat-completion (or Responses-API) response body, at the one point
+    /// the host still holds the whole body. Canonicalization is PLAIN JCS (no
+    /// float-stringification): the tool_calls/reasoning values are strings and
+    /// structural JSON with no floats, so plain JCS matches the Python reference
+    /// `agent_action_capsule.json_digest` exactly (verified by the parity test
+    /// below and the shared fixture). A body that does not parse as JSON yields
+    /// an all-`None` bundle rather than a fabricated digest.
+    pub fn from_response_body(body: &[u8]) -> Self {
+        let Ok(value) = serde_json::from_slice::<serde_json::Value>(body) else {
+            return Self::default();
+        };
+        let response_body = Some(jcs_sha256(&value));
+        let tool_calls = collect_tool_calls(&value);
+        let reasoning = collect_reasoning(&value);
+        Self {
+            response_body,
+            tool_calls: (!tool_calls.is_empty()).then(|| jcs_sha256(&serde_json::Value::Array(tool_calls))),
+            reasoning: (!reasoning.is_empty()).then(|| jcs_sha256(&serde_json::Value::Array(reasoning))),
+        }
+    }
+
+    /// True when the bundle carries at least one real digest — the caller only
+    /// attaches it to the terminal envelope then, so an all-`None` bundle (a
+    /// non-JSON body) never adds empty fields.
+    pub fn has_any(&self) -> bool {
+        self.response_body.is_some() || self.tool_calls.is_some() || self.reasoning.is_some()
+    }
+}
+
+/// SHA-256 over the PLAIN-JCS canonicalization of `value` (no float
+/// stringification), lowercase-hex-equivalent as raw bytes. This is the exact
+/// preimage the Python reference `json_digest` uses (`HEX(SHA-256(JCS(v)))`);
+/// returning raw bytes keeps the result `Copy` for the carrier struct.
+fn jcs_sha256(value: &serde_json::Value) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(jcs_bytes(value)).into()
+}
+
+/// Flatten the `tool_calls` array across every assistant `choices[].message`
+/// (mirrors the Python reference's `[tc for m in messages for tc in
+/// m.get("tool_calls")]`). The host-served single response has one choice, but
+/// this tolerates multiple. Returns an empty vec — never a synthetic entry —
+/// when the response has none.
+fn collect_tool_calls(response: &serde_json::Value) -> Vec<serde_json::Value> {
+    let mut out = Vec::new();
+    if let Some(choices) = response.get("choices").and_then(|c| c.as_array()) {
+        for choice in choices {
+            if let Some(tcs) = choice
+                .get("message")
+                .and_then(|m| m.get("tool_calls"))
+                .and_then(|t| t.as_array())
+            {
+                out.extend(tcs.iter().cloned());
+            }
+        }
+    }
+    out
+}
+
+/// Collect the `reasoning_content` chunks across every assistant
+/// `choices[].message` (mirrors the Python reference's per-message
+/// `m.get("reasoning")` collection). Empty — yielding an absent digest — when no
+/// message surfaced reasoning, the honest case for a non-reasoning model.
+fn collect_reasoning(response: &serde_json::Value) -> Vec<serde_json::Value> {
+    let mut out = Vec::new();
+    if let Some(choices) = response.get("choices").and_then(|c| c.as_array()) {
+        for choice in choices {
+            if let Some(r) = choice
+                .get("message")
+                .and_then(|m| m.get("reasoning_content"))
+                .filter(|r| !r.is_null())
+            {
+                if !matches!(r, serde_json::Value::String(s) if s.is_empty()) {
+                    out.push(r.clone());
+                }
+            }
+        }
+    }
+    out
+}
+
 /// The wire shape both dispatch paths publish on [`OPENAI_EXCHANGE_CHANNEL`].
 /// Deliberately independent of `openai_frontend`'s typed request/response —
 /// the raw-proxy path never has one — so one shape covers both paths without
@@ -203,6 +320,32 @@ pub struct OpenAiExchangeEnvelope {
     /// digest.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub request_digest: Option<String>,
+    /// The canonical JSON-DIGEST (plain RFC 8785 JCS, matching the Python
+    /// reference `json_digest`) of the REAL response body the host served for
+    /// this exchange, computed at the JSON-relay delivery point where the host
+    /// still holds the whole body. Lets a downstream capsule bind its
+    /// `agent_output_digest` to the real response, not merely the terminal
+    /// accounting facts (model + usage). `None` on effective-request envelopes
+    /// and where no JSON response body was captured — never fabricated.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response_digest: Option<String>,
+    /// The canonical JSON-DIGEST of the flattened `tool_calls` array the model
+    /// actually emitted on this exchange (plain JCS, byte-for-byte identical to
+    /// the Python reference `json_digest(tool_calls)`). This is the fact that
+    /// lets a downstream capsule seal a real `tool_calls_digest`. Present ONLY
+    /// when the model emitted at least one tool call; `None` — never a digest
+    /// over `[]` — when it emitted none, so a plugin can never misread it as
+    /// "asserted zero tool calls". No raw arguments text is carried, only the
+    /// digest.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_calls_digest: Option<String>,
+    /// The canonical JSON-DIGEST of the model's `reasoning_content` chunk(s) on
+    /// this exchange (plain JCS, matching the Python reference
+    /// `json_digest(reasoning_chunks)`). Present only when the model surfaced
+    /// reasoning; `None` (honest null) for a non-reasoning model such as
+    /// Llama-3.2 — never fabricated.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_digest: Option<String>,
 }
 
 impl OpenAiExchangeEnvelope {
@@ -223,6 +366,9 @@ impl OpenAiExchangeEnvelope {
             serving_provenance: None,
             usage: None,
             request_digest: None,
+            response_digest: None,
+            tool_calls_digest: None,
+            reasoning_digest: None,
         }
     }
 
@@ -246,6 +392,9 @@ impl OpenAiExchangeEnvelope {
             serving_provenance: None,
             usage: None,
             request_digest: None,
+            response_digest: None,
+            tool_calls_digest: None,
+            reasoning_digest: None,
         }
     }
 
@@ -281,6 +430,26 @@ impl OpenAiExchangeEnvelope {
     #[must_use]
     pub fn with_request_digest(mut self, digest: String) -> Self {
         self.request_digest = Some(digest);
+        self
+    }
+
+    /// Attach the response-body / tool_calls / reasoning digests computed over
+    /// the REAL served response at the JSON-relay delivery point (see
+    /// [`ExchangeOutputDigests`]). Hex-encodes each raw digest onto the wire.
+    /// Only the digests the response actually yielded are set: an absent
+    /// tool_calls/reasoning digest stays absent (honest null), never fabricated.
+    /// A no-op for an all-`None` bundle, so a non-JSON body adds nothing.
+    #[must_use]
+    pub fn with_output_digests(mut self, digests: ExchangeOutputDigests) -> Self {
+        if let Some(d) = digests.response_body {
+            self.response_digest = Some(hex::encode(d));
+        }
+        if let Some(d) = digests.tool_calls {
+            self.tool_calls_digest = Some(hex::encode(d));
+        }
+        if let Some(d) = digests.reasoning {
+            self.reasoning_digest = Some(hex::encode(d));
+        }
         self
     }
 }
@@ -697,6 +866,103 @@ mod tests {
         });
         let expected = "a6329c5ebb66562f38a8136a8d8511b6aeed166e4c7d889b9133ac96fc49a9d5";
         assert_eq!(request_body_digest(&body), expected);
+    }
+
+    /// PARITY PIN: the host's `tool_calls_digest`, computed over the REAL
+    /// `tool_calls` the model emitted on the live SETI@Home / web_search demo
+    /// exchange, is byte-for-byte identical to the Python reference
+    /// `agent_action_capsule.json_digest(tool_calls)`. The expected value is the
+    /// requester-side digest recorded in the live-demo capture
+    /// (`_work/mesh-live-demo/b-tool_calls.json`, `tool_calls_digest_requester_side`),
+    /// independently recomputed via:
+    ///
+    ///   python3 -c "from agent_action_capsule import json_digest; \
+    ///     print(json_digest([{ 'function': {'arguments': '{\"query\": \"mesh-llm vs SETI@Home\"}', \
+    ///     'name': 'web_search'}, 'id': 'call_719a955fb46a41008dd847d412f00795', 'type': 'function'}]))"
+    ///   -> f294be8a53bb9c29cd94472721f0857591f34b23fe010882de79b9fb210b1395
+    ///
+    /// This is the load-bearing guarantee that a capsule sealed from the host's
+    /// forwarded `tool_calls_digest` equals what any verifier recomputes with the
+    /// neutral Python reference over the same tool_calls.
+    #[test]
+    fn tool_calls_digest_over_real_seti_response_matches_python_reference() {
+        // A full chat.completion body carrying the real emitted tool call under
+        // choices[].message.tool_calls (the shape the normalized JSON relay
+        // preserves), plus a real usage block — exactly what the host serves.
+        let body = br#"{"id":"chatcmpl-seti","object":"chat.completion","created":1,"model":"llama-3.2-3b-instruct","choices":[{"index":0,"message":{"role":"assistant","content":"","tool_calls":[{"function":{"arguments":"{\"query\": \"mesh-llm vs SETI@Home\"}","name":"web_search"},"id":"call_719a955fb46a41008dd847d412f00795","type":"function"}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":202,"completion_tokens":25,"total_tokens":227}}"#;
+        let digests = ExchangeOutputDigests::from_response_body(body);
+        let tool_calls_hex =
+            hex::encode(digests.tool_calls.expect("tool_calls digest present for a real tool call"));
+        assert_eq!(
+            tool_calls_hex,
+            "f294be8a53bb9c29cd94472721f0857591f34b23fe010882de79b9fb210b1395",
+            "host tool_calls_digest must equal the Python reference json_digest(tool_calls)"
+        );
+        // The response-body digest is real (present), and a non-reasoning model
+        // (Llama-3.2) surfaces no reasoning_content -> honest null, never fabricated.
+        assert!(digests.response_body.is_some());
+        assert!(
+            digests.reasoning.is_none(),
+            "a non-reasoning model must yield an absent reasoning digest, not a fabricated one"
+        );
+    }
+
+    /// A response with NO tool_calls yields an absent tool_calls digest — never
+    /// a digest over `[]` — so a capsule can never be misread as asserting "zero
+    /// tool calls". The response-body digest is still real.
+    #[test]
+    fn no_tool_calls_yields_absent_tool_calls_digest() {
+        let body = br#"{"id":"x","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":1,"total_tokens":3}}"#;
+        let digests = ExchangeOutputDigests::from_response_body(body);
+        assert!(digests.tool_calls.is_none());
+        assert!(digests.reasoning.is_none());
+        assert!(digests.response_body.is_some());
+    }
+
+    /// When the model DOES surface `reasoning_content`, its digest is present and
+    /// equals the Python reference `json_digest([reasoning_content])`.
+    #[test]
+    fn reasoning_digest_over_real_reasoning_matches_python_reference() {
+        // json_digest(["let me think about this"]) via the Python reference:
+        //   python3 -c "from agent_action_capsule import json_digest; \
+        //     print(json_digest(['let me think about this']))"
+        let body = br#"{"id":"x","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"42","reasoning_content":"let me think about this"},"finish_reason":"stop"}]}"#;
+        let digests = ExchangeOutputDigests::from_response_body(body);
+        let reasoning_hex =
+            hex::encode(digests.reasoning.expect("reasoning digest present"));
+        // Recompute the expected value the same way json_digest would: plain JCS
+        // over ["let me think about this"], sha-256, hex.
+        let expected = {
+            use sha2::{Digest, Sha256};
+            let jcs = jcs_bytes(&serde_json::json!(["let me think about this"]));
+            hex::encode(Sha256::digest(jcs))
+        };
+        assert_eq!(reasoning_hex, expected);
+    }
+
+    /// The three output digests round-trip onto a terminal envelope as
+    /// lowercase-hex, and are omitted entirely when absent (honest null).
+    #[test]
+    fn terminal_carries_output_digests_and_omits_absent_ones() {
+        let body = br#"{"id":"x","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"","tool_calls":[{"function":{"arguments":"{\"query\": \"mesh-llm vs SETI@Home\"}","name":"web_search"},"id":"call_719a955fb46a41008dd847d412f00795","type":"function"}]},"finish_reason":"tool_calls"}]}"#;
+        let digests = ExchangeOutputDigests::from_response_body(body);
+        let envelope = OpenAiExchangeEnvelope::terminal(
+            "exch-od",
+            OpenAiExchangeDispatchPath::RawProxy,
+            "llama-3.2-3b-instruct",
+            Some(200),
+            None,
+            None,
+        )
+        .with_output_digests(digests);
+        let value = serde_json::to_value(&envelope).expect("serialize");
+        assert_eq!(
+            value["tool_calls_digest"],
+            "f294be8a53bb9c29cd94472721f0857591f34b23fe010882de79b9fb210b1395"
+        );
+        assert!(value["response_digest"].is_string());
+        // Non-reasoning -> the key is omitted entirely, not null.
+        assert!(value.get("reasoning_digest").is_none());
     }
 
     /// A terminal envelope carrying a real request digest serializes it, and it

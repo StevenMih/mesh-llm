@@ -545,6 +545,7 @@ fn plugin_route_status_maps_responded_and_responded_with_usage() {
                 Some(2)
             )
             .unwrap(),
+            output_digests: Default::default(),
         }),
         Some(200)
     );
@@ -585,6 +586,7 @@ fn plugin_route_success_records_one_attempt_and_one_terminal_outcome() {
         super::super::response::RouteAttemptResult::Delivered {
             status_code: 200,
             usage: None,
+            output_digests: Default::default(),
         },
     );
     assert!(matches!(
@@ -819,6 +821,7 @@ fn usage_never_turns_moa_or_pipeline_error_statuses_into_success() {
         terminal_outcome_for_dispatch(proxy::RouteDispatchOutcome::RespondedWithUsage {
             status_code: 400,
             usage,
+            output_digests: Default::default(),
         }),
         TerminalOutcome::RejectedWithStatus {
             status_code: 400,
@@ -829,6 +832,7 @@ fn usage_never_turns_moa_or_pipeline_error_statuses_into_success() {
         terminal_outcome_for_dispatch(proxy::RouteDispatchOutcome::RespondedWithUsage {
             status_code: 502,
             usage,
+            output_digests: Default::default(),
         }),
         TerminalOutcome::FailedWithStatus {
             status_code: 502,
@@ -852,6 +856,7 @@ fn streamed_moa_chat_and_responses_record_compatible_usage_lifecycle() {
         let outcome = proxy::RouteDispatchOutcome::RespondedWithUsage {
             status_code: 200,
             usage,
+            output_digests: Default::default(),
         };
         proxy::record_moa_stream_lifecycle(attachment.route_observer(), adapter, outcome);
         attachment.terminal(terminal_outcome_for_dispatch(outcome));
@@ -922,6 +927,7 @@ fn exchange_usage_from_outcome_extracts_real_counts_and_omits_otherwise() {
             completion_tokens: Some(6),
             total_tokens: Some(48),
         },
+        output_digests: Default::default(),
     };
     let usage = exchange_usage_from_outcome(&with_usage).expect("real usage present");
     assert_eq!(usage.prompt_tokens, 42);
@@ -936,6 +942,7 @@ fn exchange_usage_from_outcome_extracts_real_counts_and_omits_otherwise() {
             completion_tokens: Some(5),
             total_tokens: None,
         },
+        output_digests: Default::default(),
     };
     assert_eq!(
         exchange_usage_from_outcome(&derived)
@@ -955,6 +962,7 @@ fn exchange_usage_from_outcome_extracts_real_counts_and_omits_otherwise() {
             completion_tokens: None,
             total_tokens: None,
         },
+        output_digests: Default::default(),
     };
     assert!(exchange_usage_from_outcome(&empty).is_none());
 }
