@@ -14,6 +14,13 @@
 //! UI recomputes request_digest/response_digest from it in-browser to prove
 //! (or disprove) the disclosed text is what was sealed, rather than trusting
 //! this route's word for it.
+//!
+//! Also serves `<ledger_dir>/accountability_self.json` -- Pane A ("This
+//! node") of the Accountability tab, written by capsule-emit-mesh's
+//! `self_accountability.py build` CLI ([mesh-pane-a-self-accountability-tab]).
+//! Same discipline as the rest of this route: a static read of an artifact
+//! the sidecar already computed and wrote to disk, never a value this route
+//! derives itself.
 //! No auth: this is local-dashboard-only data, gated by the same
 //! trusted-local-caller check as the rest of the management API.
 
@@ -65,6 +72,7 @@ fn resolve_target(ledger_dir: &Path, rel: &str) -> Option<(PathBuf, &'static str
     }
     match rel {
         "capsules.jsonl" => Some((ledger_dir.join("capsules.jsonl"), "application/x-ndjson")),
+        "accountability_self.json" => Some((ledger_dir.join("accountability_self.json"), "application/json")),
         "node-key.pub.pem" => Some((
             ledger_dir.join("..").join("keys").join("node-key.pub.pem"),
             "application/x-pem-file",
@@ -108,6 +116,14 @@ mod tests {
         let (path, content_type) = resolve_target(dir, "capsules.jsonl").unwrap();
         assert_eq!(path, dir.join("capsules.jsonl"));
         assert_eq!(content_type, "application/x-ndjson");
+    }
+
+    #[test]
+    fn resolves_accountability_self() {
+        let dir = Path::new("/tmp/ledger");
+        let (path, content_type) = resolve_target(dir, "accountability_self.json").unwrap();
+        assert_eq!(path, dir.join("accountability_self.json"));
+        assert_eq!(content_type, "application/json");
     }
 
     #[test]

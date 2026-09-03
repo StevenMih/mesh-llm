@@ -3,7 +3,12 @@
 // OWN data source -- the capsule ledger the admission-policy plugin writes to
 // disk -- and never joins into mesh-llm's own log store.
 import { env } from '@/lib/env'
-import type { CapsuleLedger, CapsuleRecord, DisclosurePreimage } from '@/features/capsules/api/types'
+import type {
+  CapsuleLedger,
+  CapsuleRecord,
+  DisclosurePreimage,
+  SelfAccountabilityCard
+} from '@/features/capsules/api/types'
 
 const LEDGER_BASE = `${env.managementApiUrl}/api/capsules/ledger`
 
@@ -66,4 +71,21 @@ export async function fetchDisclosurePreimage(capsuleId: string): Promise<Disclo
   } catch {
     return null
   }
+}
+
+/**
+ * Fetches Pane A ("This node")'s self-accountability card
+ * ([mesh-pane-a-self-accountability-tab]) -- written by capsule-emit-mesh's
+ * `self_accountability.py build` CLI to `<ledger_dir>/accountability_self.json`.
+ * `null` when the sidecar hasn't produced one yet (not every node has run the
+ * CLI) -- distinct from an HTTP error, which the caller should surface, not
+ * silently fold into "no card".
+ */
+export async function fetchSelfAccountabilityCard(): Promise<SelfAccountabilityCard | null> {
+  const response = await fetch(`${LEDGER_BASE}/accountability_self.json`)
+  if (!response.ok) {
+    if (response.status === 404) return null
+    throw new Error(`self-accountability card fetch failed: HTTP ${response.status}`)
+  }
+  return (await response.json()) as SelfAccountabilityCard
 }

@@ -88,8 +88,11 @@ const configurationTabRoute = createRoute({
 const capsulesRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/capsules',
-  head: () => ({ meta: [{ title: 'MeshLLM - Capsules' }] }),
-  component: lazyRouteComponent(() => import('@/features/capsules/pages/CapsulesPage'), 'CapsulesPageContent'),
+  head: () => ({ meta: [{ title: 'MeshLLM - Accountability' }] }),
+  component: lazyRouteComponent(
+    () => import('@/features/capsules/pages/AccountabilityPage'),
+    'AccountabilityPageContent'
+  ),
   errorComponent: FeatureErrorBoundary
 })
 const pluginWebUiRoute = createRoute({

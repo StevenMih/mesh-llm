@@ -87,3 +87,62 @@ export type DisclosurePreimage = {
   response_text?: string | null
   tool_calls_note?: string | null
 }
+
+// Pane A ("This node") of the Accountability tab
+// ([mesh-pane-a-self-accountability-tab]). Written by capsule-emit-mesh's
+// `self_accountability.py build` CLI to `<ledger_dir>/accountability_self.json`
+// and served read-only by the same route as the rest of this ledger dir --
+// this shape mirrors that CLI's output exactly, field for field. A property
+// graded `state: "absent"` always carries a `reason`; none of these fields
+// is, or ever becomes, a score.
+export type GradedAbsent = { state: 'absent'; source: null; capture_method: null; reason: string }
+
+export type SelfAccountabilityCard = {
+  node_id: string
+  sealing: {
+    source: string
+    capture_method: string
+    coverage_summary: string
+    unsealed_count: number
+    last_sealed: string | null
+    failed_sealed: boolean
+    unsealed_rows: Array<JsonRecord & { finding?: string }>
+  }
+  history: {
+    source: string
+    capture_method: string
+    continuous_since: string | null
+    checkpoint_count: number
+    continuity: string
+    unforked: boolean
+    witnessed: boolean
+    witnesses: string[]
+    cadence: JsonRecord
+  }
+  rung: {
+    freshness: { state: string; client_nonce_source: string | null }
+    cross_party: { rung: string; identity_limitation: string | null }
+    runtime_binding: { state: string }
+    weights_digest: GradedAbsent
+    identity: {
+      source: string
+      capture_method: string
+      owner_status: string | null
+      owner_id: string | null
+      identity_limitation: string | null
+    }
+  }
+  shared: {
+    cards_served: GradedAbsent
+    bundles_served: GradedAbsent
+    refusals_issued: GradedAbsent
+  }
+  adjudications: {
+    source: string
+    capture_method: string
+    corroborated: number
+    contradicted: number
+    inconclusive: number
+  }
+  honesty_line: string
+}
