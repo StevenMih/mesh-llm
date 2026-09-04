@@ -29,10 +29,10 @@ fn plugin_route_status(outcome: &proxy::RouteDispatchOutcome) -> Option<u16> {
 /// Gather the maximum inference provenance the host *actually knows* for the
 /// exchange just served — what ran, at what fidelity, on whose hardware — from
 /// state the local node already holds: the served-model descriptor (quant,
-/// architecture, context length, identity hash, revision) and this host's
-/// startup hardware survey (gpu, vram, soc, hostname). Every field is a real
-/// value or omitted; nothing is invented. Returned as a plain data struct so
-/// the wire event stays independent of the node internals.
+/// architecture, context length, identity hash, weights digest, revision) and
+/// this host's startup hardware survey (gpu, vram, soc, hostname). Every field
+/// is a real value or omitted; nothing is invented. Returned as a plain data
+/// struct so the wire event stays independent of the node internals.
 async fn serving_provenance_for_model(node: &mesh::Node, model_name: &str) -> ServingProvenance {
     // The served-model descriptor for exactly this model, if the node has one.
     // We match on the served identity's `model_name`; a miss (peer-served or
@@ -57,6 +57,7 @@ async fn serving_provenance_for_model(node: &mesh::Node, model_name: &str) -> Se
         parameter_size: metadata.as_ref().and_then(|m| m.parameter_size.clone()),
         layer_count: metadata.as_ref().and_then(|m| m.layer_count),
         model_identity_hash: identity.as_ref().and_then(|i| i.identity_hash.clone()),
+        weights_digest: identity.as_ref().and_then(|i| i.weights_digest.clone()),
         model_canonical_ref: identity.as_ref().and_then(|i| i.canonical_ref.clone()),
         model_revision: identity.as_ref().and_then(|i| i.revision.clone()),
         gpu: node.gpu_name.clone(),
