@@ -132,6 +132,25 @@ pub struct PeerAnnouncement {
     /// Positive, short-lived cache evidence. Digests are salted and contain no tokens.
     #[prost(message, optional, tag = "50")]
     pub cache_affinity: ::core::option::Option<CacheAffinityAdvertisement>,
+    /// This node's latest signed checkpoint head, if it runs a checkpointed local log (capsule-emit-mesh or equivalent). Purely additive/advisory: absent means the peer does not checkpoint, or has not yet produced one. Never verified by mesh-llm itself — carried opaquely for a receiving consumer to reconcile against roots it has observed for the same (peer, log_id, mmr_size) from other sources.
+    #[prost(message, optional, tag = "51")]
+    pub checkpoint: ::core::option::Option<PeerCheckpointHead>,
+}
+/// A minimal, self-contained attestation of one checkpoint's head — NOT the full checkpoint record (no prev_size/prev_root/witnesses). `signature` is an Ed25519 signature by the announcing peer's own node key (the same key backing its `endpoint_id`) over the canonical encoding of (log_id, mmr_size, root, timestamp_unix_ms) — never the full checkpoint's own `signing_body`, which the announcing peer's `endpoint_id` alone cannot resolve the other covered fields (v/kind/prev_size/prev_root) for.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct PeerCheckpointHead {
+    #[prost(string, tag = "1")]
+    pub log_id: ::prost::alloc::string::String,
+    #[prost(uint64, tag = "2")]
+    pub mmr_size: u64,
+    /// 32 bytes: root_from_peaks at mmr_size
+    #[prost(bytes = "vec", tag = "3")]
+    pub root: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint64, tag = "4")]
+    pub timestamp_unix_ms: u64,
+    /// 64 bytes: Ed25519 signature
+    #[prost(bytes = "vec", tag = "5")]
+    pub signature: ::prost::alloc::vec::Vec<u8>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct AdvertisedModelThroughput {

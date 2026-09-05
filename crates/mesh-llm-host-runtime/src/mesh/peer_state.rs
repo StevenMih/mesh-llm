@@ -163,6 +163,19 @@ pub struct PeerAnnouncement {
     pub(crate) latency_age_ms: Option<u64>,
     pub(crate) latency_observer_id: Option<EndpointId>,
     pub(crate) inference_admission_state: Option<crate::proto::node::InferenceAdmissionState>,
+    pub(crate) checkpoint: Option<PeerCheckpointHead>,
+}
+
+/// A peer's latest signed checkpoint head — see `PeerCheckpointHead` in
+/// `node.proto` for the wire shape and the signing-scope note. Carried
+/// opaquely: mesh-llm never verifies `signature` itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PeerCheckpointHead {
+    pub log_id: String,
+    pub mmr_size: u64,
+    pub root: Vec<u8>,
+    pub timestamp_unix_ms: u64,
+    pub signature: Vec<u8>,
 }
 
 /// A single direct RTT measurement (e.g. from gossip exchange).

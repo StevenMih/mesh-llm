@@ -835,6 +835,31 @@ pub(crate) fn local_ann_to_proto_ann(
             .cache_affinity
             .as_ref()
             .map(local_cache_affinity_to_proto),
+        checkpoint: ann.checkpoint.as_ref().map(local_checkpoint_to_proto),
+    }
+}
+
+fn local_checkpoint_to_proto(
+    checkpoint: &crate::mesh::PeerCheckpointHead,
+) -> crate::proto::node::PeerCheckpointHead {
+    crate::proto::node::PeerCheckpointHead {
+        log_id: checkpoint.log_id.clone(),
+        mmr_size: checkpoint.mmr_size,
+        root: checkpoint.root.clone(),
+        timestamp_unix_ms: checkpoint.timestamp_unix_ms,
+        signature: checkpoint.signature.clone(),
+    }
+}
+
+fn proto_checkpoint_to_local(
+    checkpoint: &crate::proto::node::PeerCheckpointHead,
+) -> crate::mesh::PeerCheckpointHead {
+    crate::mesh::PeerCheckpointHead {
+        log_id: checkpoint.log_id.clone(),
+        mmr_size: checkpoint.mmr_size,
+        root: checkpoint.root.clone(),
+        timestamp_unix_ms: checkpoint.timestamp_unix_ms,
+        signature: checkpoint.signature.clone(),
     }
 }
 
@@ -1071,6 +1096,7 @@ pub(crate) fn proto_ann_to_local(
             .cache_affinity
             .as_ref()
             .and_then(proto_cache_affinity_to_local),
+        checkpoint: pa.checkpoint.as_ref().map(proto_checkpoint_to_local),
     };
     crate::mesh::backfill_legacy_descriptors(&mut ann);
     ann.advertised_model_throughput = sanitize_model_throughput_hints_for_ann(&ann);

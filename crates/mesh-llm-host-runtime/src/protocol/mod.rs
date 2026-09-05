@@ -3,6 +3,8 @@
 #[cfg(test)]
 use crate::mesh::NodeRole;
 use crate::mesh::PeerAnnouncement;
+#[cfg(test)]
+use crate::mesh::PeerCheckpointHead;
 
 pub(crate) mod config_diagnostic;
 pub(crate) mod convert;

@@ -1202,6 +1202,10 @@ impl Node {
             latency_age_ms: Some(latency.age_ms),
             latency_observer_id: latency.observer_id,
             inference_admission_state: peer.inference_admission_state,
+            // No live-mesh checkpoint state is tracked on `PeerInfo` yet — a
+            // rebroadcast of a peer we already admitted carries no opinion on
+            // its checkpoint head.
+            checkpoint: None,
         }
     }
 
@@ -1265,6 +1269,10 @@ impl Node {
             latency_age_ms: None,
             latency_observer_id: None,
             inference_admission_state: data.inference_admission_state,
+            // No local checkpoint source is wired yet — this node never
+            // advertises its own checkpoint until something (e.g. a
+            // companion checkpointing process) is plumbed in.
+            checkpoint: None,
         }
     }
 
