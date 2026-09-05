@@ -19,6 +19,12 @@ pub(crate) const MAX_HEADER_BYTES: usize = 64 * 1024;
 /// lifecycle parent, so ordinary API clients cannot opt into target-owner
 /// suppression by sending it themselves.
 pub(crate) const RAW_LIFECYCLE_OWNER_HEADER: &str = "x-mesh-llm-raw-lifecycle";
+/// Force remote-mesh dispatch to exactly one peer (fail closed if it doesn't
+/// serve the requested model). See `ingress.rs`'s remote-mesh routing.
+pub(crate) const MESH_TARGET_HEADER: &str = "x-mesh-target";
+/// Remove one or more peers from the remote-mesh candidate set before
+/// selection. Comma-separated within one header value.
+pub(crate) const MESH_EXCLUDE_HEADER: &str = "x-mesh-exclude";
 pub(super) const MAX_BODY_BYTES: usize = 8 * 1024 * 1024;
 const MAX_OBJECT_UPLOAD_BODY_BYTES: usize = 64 * 1024 * 1024;
 const MAX_CHUNKED_WIRE_BYTES: usize = MAX_BODY_BYTES * 6 + 64 * 1024;
@@ -144,6 +150,20 @@ impl BufferedHttpRequest {
                 .or_else(|| parse_json_body_from_http_request(&self.raw));
             self.body_json_attempted = true;
         }
+    }
+
+    /// Raw (unparsed) values of the `x-mesh-target` / `x-mesh-exclude` mesh
+    /// routing headers, read back off the already-buffered raw request.
+    ///
+    /// Every occurrence of each header name is returned verbatim, including
+    /// duplicates — the router (not this parser) decides whether more than
+    /// one `x-mesh-target` value is an error. These headers are opaque to
+    /// this layer: no endpoint-id parsing happens here.
+    pub fn mesh_routing_header_values(&self) -> (Vec<String>, Vec<String>) {
+        (
+            header_values_from_raw(&self.raw, MESH_TARGET_HEADER),
+            header_values_from_raw(&self.raw, MESH_EXCLUDE_HEADER),
+        )
     }
 
     /// The only semantic request media kind trusted by artifact capture.
@@ -760,6 +780,30 @@ fn request_requires_json_transform(path: &str, body: &[u8], plugin_manager_prese
 pub(super) fn parse_json_body_from_http_request(raw: &[u8]) -> Option<serde_json::Value> {
     let header_end = raw.windows(4).position(|window| window == b"\r\n\r\n")? + 4;
     serde_json::from_slice(&raw[header_end..]).ok()
+}
+
+/// Every value of a given header name, read back off an already-rebuilt raw
+/// HTTP request. Only the request-header block is scanned. Order matches the
+/// wire order; duplicates are returned as separate entries.
+fn header_values_from_raw(raw: &[u8], name: &str) -> Vec<String> {
+    let header_end = raw
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .map_or(raw.len(), |pos| pos);
+    let mut headers_buf = [httparse::EMPTY_HEADER; MAX_HEADERS];
+    let mut req = httparse::Request::new(&mut headers_buf);
+    if req
+        .parse(&raw[..header_end.saturating_add(4).min(raw.len())])
+        .is_err()
+    {
+        return Vec::new();
+    }
+    req.headers
+        .iter()
+        .filter(|header| header.name.eq_ignore_ascii_case(name))
+        .filter_map(|header| std::str::from_utf8(header.value).ok())
+        .map(|value| value.trim().to_string())
+        .collect()
 }
 
 /// Inject `"mesh_hooks": true/false` into the JSON body of an HTTP request.
@@ -1880,5 +1924,79 @@ mod tests {
     fn public_model_id_with_huggingface_ref_and_profile() {
         let result = public_model_id("org/repo:Q4_K_M", None, "high-ctx");
         assert_eq!(result, "org/repo:Q4_K_M#high-ctx");
+    }
+
+    fn request_with_raw(raw: &[u8]) -> BufferedHttpRequest {
+        BufferedHttpRequest {
+            raw: raw.to_vec(),
+            method: "POST".to_owned(),
+            path: "/v1/chat/completions".to_owned(),
+            client_path: "/v1/chat/completions".to_owned(),
+            request_id: RequestId::default(),
+            body_json: None,
+            body_json_attempted: false,
+            body_bytes: None,
+            body_len_bytes: 0,
+            completion_tokens: None,
+            stream: None,
+            model_name: None,
+            request_object_request_ids: Vec::new(),
+            response_adapter: ResponseAdapter::None,
+            correlation_id: None,
+        }
+    }
+
+    #[test]
+    fn mesh_routing_header_values_absent_is_empty() {
+        let request = request_with_raw(
+            concat!(
+                "POST /v1/chat/completions HTTP/1.1\r\n",
+                "host: 127.0.0.1\r\n",
+                "\r\n",
+                "{}",
+            )
+            .as_bytes(),
+        );
+        let (target, exclude) = request.mesh_routing_header_values();
+        assert!(target.is_empty());
+        assert!(exclude.is_empty());
+    }
+
+    #[test]
+    fn mesh_routing_header_values_reads_both_headers_verbatim() {
+        let request = request_with_raw(
+            concat!(
+                "POST /v1/chat/completions HTTP/1.1\r\n",
+                "host: 127.0.0.1\r\n",
+                "x-mesh-target: aabbcc\r\n",
+                "x-mesh-exclude: 112233,445566\r\n",
+                "\r\n",
+                "{}",
+            )
+            .as_bytes(),
+        );
+        let (target, exclude) = request.mesh_routing_header_values();
+        assert_eq!(target, vec!["aabbcc".to_string()]);
+        assert_eq!(exclude, vec!["112233,445566".to_string()]);
+    }
+
+    #[test]
+    fn mesh_routing_header_values_surfaces_every_duplicate_x_mesh_target() {
+        // Ambiguity (more than one value) is the router's call, not this
+        // parser's -- it must see every occurrence, not just the first.
+        let request = request_with_raw(
+            concat!(
+                "POST /v1/chat/completions HTTP/1.1\r\n",
+                "host: 127.0.0.1\r\n",
+                "x-mesh-target: aabbcc\r\n",
+                "x-mesh-target: ddeeff\r\n",
+                "\r\n",
+                "{}",
+            )
+            .as_bytes(),
+        );
+        let (target, exclude) = request.mesh_routing_header_values();
+        assert_eq!(target, vec!["aabbcc".to_string(), "ddeeff".to_string()]);
+        assert!(exclude.is_empty());
     }
 }

@@ -906,3 +906,461 @@ fn disconnect_is_dropped_and_cannot_audit_model_access_as_success() {
         proxy::RouteDispatchOutcome::Responded(200)
     ));
 }
+
+/// The host-served path's usage extraction turns a `RespondedWithUsage` outcome
+/// into the real `ExchangeUsage` the terminal envelope carries, and yields
+/// `None` for every non-usage-bearing outcome so no all-zero record is ever
+/// fabricated.
+#[test]
+fn exchange_usage_from_outcome_extracts_real_counts_and_omits_otherwise() {
+    use mesh_llm_events::logging::events::TokenUsage;
+
+    let with_usage = proxy::RouteDispatchOutcome::RespondedWithUsage {
+        status_code: 200,
+        usage: TokenUsage {
+            prompt_tokens: Some(42),
+            completion_tokens: Some(6),
+            total_tokens: Some(48),
+        },
+    };
+    let usage = exchange_usage_from_outcome(&with_usage).expect("real usage present");
+    assert_eq!(usage.prompt_tokens, 42);
+    assert_eq!(usage.completion_tokens, 6);
+    assert_eq!(usage.total_tokens, 48);
+
+    // total derived when the backend omitted it.
+    let derived = proxy::RouteDispatchOutcome::RespondedWithUsage {
+        status_code: 200,
+        usage: TokenUsage {
+            prompt_tokens: Some(10),
+            completion_tokens: Some(5),
+            total_tokens: None,
+        },
+    };
+    assert_eq!(
+        exchange_usage_from_outcome(&derived)
+            .expect("derives total")
+            .total_tokens,
+        15
+    );
+
+    // A status-only response, an error, and a wholly-empty usage object all
+    // yield None — never a fabricated all-zero record.
+    assert!(exchange_usage_from_outcome(&proxy::RouteDispatchOutcome::Responded(200)).is_none());
+    assert!(exchange_usage_from_outcome(&proxy::RouteDispatchOutcome::Failed("x")).is_none());
+    let empty = proxy::RouteDispatchOutcome::RespondedWithUsage {
+        status_code: 200,
+        usage: TokenUsage {
+            prompt_tokens: None,
+            completion_tokens: None,
+            total_tokens: None,
+        },
+    };
+    assert!(exchange_usage_from_outcome(&empty).is_none());
+}
+
+// --- x-mesh-target / x-mesh-exclude header parsing and fail-closed routing ---
+
+fn test_endpoint_id(seed: u8) -> iroh::EndpointId {
+    iroh::EndpointId::from(iroh::SecretKey::from_bytes(&[seed; 32]).public())
+}
+
+/// A minimal admitted, HTTP-routable peer serving exactly `model` — enough to
+/// exercise `hosts_for_model()` without a real gossip round trip.
+fn test_remote_peer(seed: u8, model: &str) -> mesh::PeerInfo {
+    let id = test_endpoint_id(seed);
+    mesh::PeerInfo {
+        id,
+        addr: iroh::EndpointAddr {
+            id,
+            addrs: Default::default(),
+        },
+        mesh_id: None,
+        mesh_policy_hash: None,
+        genesis_policy: None,
+        role: mesh::NodeRole::Host { http_port: 9337 },
+        first_joined_mesh_ts: None,
+        models: vec![model.to_string()],
+        vram_bytes: 0,
+        rtt_ms: None,
+        model_source: None,
+        admitted: true,
+        serving_models: vec![model.to_string()],
+        hosted_models: vec![model.to_string()],
+        hosted_models_known: true,
+        available_models: vec![],
+        requested_models: vec![],
+        explicit_model_interests: vec![],
+        last_seen: std::time::Instant::now(),
+        last_mentioned: std::time::Instant::now(),
+        version: None,
+        gpu_name: None,
+        hostname: None,
+        is_soc: None,
+        gpu_vram: None,
+        gpu_reserved_bytes: None,
+        gpu_mem_bandwidth_gbps: None,
+        gpu_compute_tflops_fp32: None,
+        gpu_compute_tflops_fp16: None,
+        available_model_metadata: vec![],
+        experts_summary: None,
+        available_model_sizes: std::collections::HashMap::new(),
+        served_model_descriptors: vec![],
+        served_model_runtime: vec![],
+        owner_attestation: None,
+        release_attestation_summary: crate::ReleaseAttestationSummary::default(),
+        artifact_transfer_supported: false,
+        stage_protocol_generation_supported: false,
+        stage_status_list_supported: false,
+        advertised_model_throughput: vec![],
+        display_rtt: None,
+        selected_path: None,
+        propagated_latency: None,
+        owner_summary: Default::default(),
+        inference_admission_state: None,
+    }
+}
+
+fn remote_mesh_test_ctx<'a>(
+    node: &'a mesh::Node,
+    targets: &'a election::ModelTargets,
+    affinity: &'a affinity::AffinityRouter,
+) -> IngressRouteContext<'a> {
+    IngressRouteContext {
+        node,
+        targets,
+        affinity,
+        plugin_manager: None,
+    }
+}
+
+#[test]
+fn parse_mesh_target_header_absent_is_a_no_op() {
+    assert_eq!(parse_mesh_target_header(&[]), Ok(None));
+}
+
+#[test]
+fn parse_mesh_target_header_parses_one_valid_value() {
+    let id = test_endpoint_id(0x42);
+    let value = hex::encode(id.as_bytes());
+    assert_eq!(parse_mesh_target_header(&[value]), Ok(Some(id)));
+}
+
+#[test]
+fn parse_mesh_target_header_rejects_malformed_value() {
+    assert!(parse_mesh_target_header(&["not-a-hex-endpoint-id".to_string()]).is_err());
+}
+
+#[test]
+fn parse_mesh_target_header_rejects_multiple_values_as_ambiguous() {
+    let value = hex::encode(test_endpoint_id(0x11).as_bytes());
+    assert!(parse_mesh_target_header(&[value.clone(), value]).is_err());
+}
+
+#[test]
+fn parse_mesh_exclude_header_absent_is_empty() {
+    assert_eq!(parse_mesh_exclude_header(&[]), Ok(vec![]));
+}
+
+#[test]
+fn parse_mesh_exclude_header_splits_comma_separated_list() {
+    let id_a = test_endpoint_id(0x11);
+    let id_b = test_endpoint_id(0x22);
+    let combined = format!(
+        "{},{}",
+        hex::encode(id_a.as_bytes()),
+        hex::encode(id_b.as_bytes())
+    );
+    assert_eq!(parse_mesh_exclude_header(&[combined]), Ok(vec![id_a, id_b]));
+}
+
+#[test]
+fn parse_mesh_exclude_header_rejects_malformed_entry() {
+    assert!(parse_mesh_exclude_header(&["not-a-hex-endpoint-id".to_string()]).is_err());
+}
+
+#[tokio::test]
+async fn resolve_remote_mesh_route_forces_single_candidate_for_serving_target() {
+    let model = "acme/code-model:Q4_K_M";
+    let node = mesh::Node::new_for_tests(mesh::NodeRole::Client)
+        .await
+        .expect("test node should start");
+    let peer = test_remote_peer(0x10, model);
+    let target_id = peer.id;
+    node.insert_test_peer(peer).await;
+    let targets = election::ModelTargets::default();
+    let affinity = affinity::AffinityRouter::new();
+    let ctx = remote_mesh_test_ctx(&node, &targets, &affinity);
+
+    match resolve_remote_mesh_route(&ctx, model, Some(target_id), &[]).await {
+        RemoteMeshRoute::Targets(mesh_targets) => {
+            assert_eq!(
+                mesh_targets.targets.get(model),
+                Some(&vec![election::InferenceTarget::Remote(target_id)]),
+                "x-mesh-target must force exactly one candidate, never a pool"
+            );
+        }
+        _ => panic!("a target that serves the model must route, not fail closed"),
+    }
+}
+
+#[tokio::test]
+async fn resolve_remote_mesh_route_fails_closed_for_a_target_that_does_not_serve_the_model() {
+    let model = "acme/code-model:Q4_K_M";
+    let node = mesh::Node::new_for_tests(mesh::NodeRole::Client)
+        .await
+        .expect("test node should start");
+    node.insert_test_peer(test_remote_peer(0x10, model)).await;
+    let targets = election::ModelTargets::default();
+    let affinity = affinity::AffinityRouter::new();
+    let ctx = remote_mesh_test_ctx(&node, &targets, &affinity);
+
+    // A syntactically valid EndpointId that no peer advertises for this model.
+    let stray_target = test_endpoint_id(0x99);
+    let route = resolve_remote_mesh_route(&ctx, model, Some(stray_target), &[]).await;
+    assert!(
+        matches!(route, RemoteMeshRoute::TargetUnavailable { .. }),
+        "a target that doesn't serve the model must fail closed, never substitute another peer"
+    );
+}
+
+#[tokio::test]
+async fn resolve_remote_mesh_route_exclude_removes_a_peer_from_the_candidate_set() {
+    let model = "acme/code-model:Q4_K_M";
+    let node = mesh::Node::new_for_tests(mesh::NodeRole::Client)
+        .await
+        .expect("test node should start");
+    let peer_a = test_remote_peer(0x10, model);
+    let peer_b = test_remote_peer(0x20, model);
+    let (id_a, id_b) = (peer_a.id, peer_b.id);
+    node.insert_test_peer(peer_a).await;
+    node.insert_test_peer(peer_b).await;
+    let targets = election::ModelTargets::default();
+    let affinity = affinity::AffinityRouter::new();
+    let ctx = remote_mesh_test_ctx(&node, &targets, &affinity);
+
+    match resolve_remote_mesh_route(&ctx, model, None, &[id_a]).await {
+        RemoteMeshRoute::Targets(mesh_targets) => {
+            assert_eq!(
+                mesh_targets.targets.get(model),
+                Some(&vec![election::InferenceTarget::Remote(id_b)]),
+                "the excluded peer must be gone; the other peer must remain"
+            );
+        }
+        other => panic!(
+            "expected the non-excluded peer to remain routable, got a different route: {}",
+            match other {
+                RemoteMeshRoute::Targets(_) => unreachable!(),
+                RemoteMeshRoute::TargetUnavailable { target_hex } => target_hex,
+                RemoteMeshRoute::NoRemoteHost => "NoRemoteHost".to_string(),
+            }
+        ),
+    }
+}
+
+#[tokio::test]
+async fn resolve_remote_mesh_route_excluding_the_named_target_fails_closed() {
+    let model = "acme/code-model:Q4_K_M";
+    let node = mesh::Node::new_for_tests(mesh::NodeRole::Client)
+        .await
+        .expect("test node should start");
+    let peer = test_remote_peer(0x10, model);
+    let target_id = peer.id;
+    node.insert_test_peer(peer).await;
+    let targets = election::ModelTargets::default();
+    let affinity = affinity::AffinityRouter::new();
+    let ctx = remote_mesh_test_ctx(&node, &targets, &affinity);
+
+    // Excluding the very peer named by x-mesh-target is a contradiction; it
+    // must fail closed rather than silently ignore the exclude and route
+    // there anyway.
+    let route = resolve_remote_mesh_route(&ctx, model, Some(target_id), &[target_id]).await;
+    assert!(matches!(route, RemoteMeshRoute::TargetUnavailable { .. }));
+}
+
+#[tokio::test]
+async fn resolve_remote_mesh_route_with_no_headers_and_no_remote_host_falls_through() {
+    let model = "acme/code-model:Q4_K_M";
+    let node = mesh::Node::new_for_tests(mesh::NodeRole::Client)
+        .await
+        .expect("test node should start");
+    let targets = election::ModelTargets::default();
+    let affinity = affinity::AffinityRouter::new();
+    let ctx = remote_mesh_test_ctx(&node, &targets, &affinity);
+
+    let route = resolve_remote_mesh_route(&ctx, model, None, &[]).await;
+    assert!(
+        matches!(route, RemoteMeshRoute::NoRemoteHost),
+        "absent headers with no serving peer must fall through exactly as before"
+    );
+}
+
+#[tokio::test]
+async fn resolve_remote_mesh_route_with_no_headers_pools_every_serving_peer() {
+    let model = "acme/code-model:Q4_K_M";
+    let node = mesh::Node::new_for_tests(mesh::NodeRole::Client)
+        .await
+        .expect("test node should start");
+    let peer_a = test_remote_peer(0x10, model);
+    let peer_b = test_remote_peer(0x20, model);
+    let (id_a, id_b) = (peer_a.id, peer_b.id);
+    node.insert_test_peer(peer_a).await;
+    node.insert_test_peer(peer_b).await;
+    let targets = election::ModelTargets::default();
+    let affinity = affinity::AffinityRouter::new();
+    let ctx = remote_mesh_test_ctx(&node, &targets, &affinity);
+
+    match resolve_remote_mesh_route(&ctx, model, None, &[]).await {
+        RemoteMeshRoute::Targets(mesh_targets) => {
+            let mut pool: Vec<iroh::EndpointId> = mesh_targets
+                .targets
+                .get(model)
+                .expect("model present")
+                .iter()
+                .map(|target| match target {
+                    election::InferenceTarget::Remote(id) => *id,
+                    other => panic!("expected only remote candidates, got {other:?}"),
+                })
+                .collect();
+            pool.sort();
+            let mut expected = vec![id_a, id_b];
+            expected.sort();
+            assert_eq!(
+                pool, expected,
+                "absent headers must route today's full multi-candidate pool"
+            );
+        }
+        _ => panic!("expected the ordinary multi-candidate pool"),
+    }
+}
+
+// --- serving_provenance.weights_digest on the openai.exchange.v1 Terminal event ---
+
+/// End-to-end: a real file on disk (standing in for a served GGUF -- what
+/// matters here is that it is real bytes read off disk, not a canned digest
+/// string) is hashed by the exact production function
+/// (`mesh::weights_digest_for_file`), recorded on a served descriptor, read
+/// back by `serving_provenance_for_model`, and carried onto a real
+/// `openai.exchange.v1` Terminal event. The wire value must equal an
+/// independently computed SHA-256 of the same bytes -- the same check
+/// `sha256sum` on the file would give.
+#[tokio::test]
+async fn terminal_serving_provenance_weights_digest_matches_real_loaded_file_sha256() {
+    use sha2::{Digest, Sha256};
+
+    let dir = std::env::temp_dir().join(format!(
+        "serving-provenance-weights-digest-test-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&dir).expect("mk temp dir");
+    let path = dir.join("model.gguf");
+    std::fs::write(
+        &path,
+        b"GGUF-fake-header-and-weight-bytes-for-test-terminal-wiring",
+    )
+    .expect("write temp gguf");
+
+    // The production hashing path -- the same function `start_runtime_local_model`
+    // calls at load time.
+    let digest = crate::mesh::weights_digest_for_file(&path).expect("digest computed");
+
+    // Independently recompute the SHA-256 of the same on-disk bytes -- exactly
+    // what `sha256sum`/`shasum -a 256` would report.
+    let bytes = std::fs::read(&path).expect("read temp gguf back");
+    let mut hasher = Sha256::new();
+    hasher.update(&bytes);
+    let expected = hex::encode(hasher.finalize());
+    assert_eq!(
+        digest, expected,
+        "production digest must equal an independent sha256 of the file bytes"
+    );
+
+    let node = mesh::Node::new_for_tests(crate::mesh::NodeRole::Worker)
+        .await
+        .expect("test node");
+    let model_name = "local-test-model-real-file";
+    node.upsert_served_model_descriptor(mesh::ServedModelDescriptor {
+        identity: mesh::ServedModelIdentity {
+            model_name: model_name.to_string(),
+            source_kind: mesh::ModelSourceKind::LocalGguf,
+            local_file_name: path
+                .file_name()
+                .and_then(|f| f.to_str())
+                .map(str::to_string),
+            weights_digest: Some(digest.clone()),
+            ..Default::default()
+        },
+        capabilities_known: false,
+        capabilities: crate::models::ModelCapabilities::default(),
+        topology: None,
+        metadata: None,
+    })
+    .await;
+
+    let provenance = serving_provenance_for_model(&node, model_name).await;
+    assert_eq!(
+        provenance.weights_digest.as_deref(),
+        Some(expected.as_str())
+    );
+
+    let envelope = OpenAiExchangeEnvelope::terminal(
+        "exch-real-gguf",
+        OpenAiExchangeDispatchPath::RawProxy,
+        model_name,
+        Some(200),
+        None,
+        None,
+    )
+    .with_serving_provenance(provenance);
+
+    let value = serde_json::to_value(&envelope).expect("serialize");
+    assert_eq!(
+        value["serving_provenance"]["weights_digest"], expected,
+        "Terminal event's serving_provenance.weights_digest must equal sha256sum of the loaded file"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The other half of the honesty contract: a served model whose descriptor
+/// has not resolved a weights digest (unreadable file, or no load-time hash
+/// yet) must OMIT `serving_provenance.weights_digest` from the real Terminal
+/// wire event -- never emit it as `null`.
+#[tokio::test]
+async fn terminal_serving_provenance_omits_weights_digest_when_descriptor_has_none() {
+    let node = mesh::Node::new_for_tests(crate::mesh::NodeRole::Worker)
+        .await
+        .expect("test node");
+    let model_name = "local-test-model-no-digest";
+    node.upsert_served_model_descriptor(mesh::ServedModelDescriptor {
+        identity: mesh::ServedModelIdentity {
+            model_name: model_name.to_string(),
+            source_kind: mesh::ModelSourceKind::LocalGguf,
+            ..Default::default()
+        },
+        capabilities_known: false,
+        capabilities: crate::models::ModelCapabilities::default(),
+        topology: None,
+        metadata: None,
+    })
+    .await;
+
+    let provenance = serving_provenance_for_model(&node, model_name).await;
+    assert!(provenance.weights_digest.is_none());
+
+    let envelope = OpenAiExchangeEnvelope::terminal(
+        "exch-no-digest",
+        OpenAiExchangeDispatchPath::RawProxy,
+        model_name,
+        Some(200),
+        None,
+        None,
+    )
+    .with_serving_provenance(provenance);
+
+    let value = serde_json::to_value(&envelope).expect("serialize");
+    assert!(
+        value["serving_provenance"].get("weights_digest").is_none(),
+        "an unresolved digest must be omitted from the wire, never null"
+    );
+}

@@ -2,8 +2,10 @@ use super::common::{
     ResponseRetryPolicy, RouteAttemptResult, parse_token_usage_from_json_body,
     retryable_quality_result,
 };
+use super::probe::MESH_SERVED_BY_HEADER;
 use super::probe::{
-    ParsedResponseHeaders, ResponseProbe, read_response_chunk, try_parse_response_headers,
+    ParsedResponseHeaders, ResponseProbe, insert_header_before_body, read_response_chunk,
+    try_parse_response_headers,
 };
 use crate::logging::{ArtifactUnavailableReason, OpenAiRouteObserver};
 use anyhow::Result;
@@ -117,6 +119,7 @@ pub(in crate::network::openai::response) async fn relay_success_response<R: Asyn
     probe: ResponseProbe,
     parsed: ParsedResponseHeaders,
     retry_policy: ResponseRetryPolicy,
+    served_by: Option<&str>,
     route_observer: OpenAiRouteObserver<'_>,
 ) -> Result<RouteAttemptResult> {
     if let Some(content_length) = parsed.content_length {
@@ -135,10 +138,23 @@ pub(in crate::network::openai::response) async fn relay_success_response<R: Asyn
                 return Ok(result);
             }
             let usage = parse_token_usage_from_json_body(body);
+            let body_len = body.len();
+            let mut outgoing_end = body_end;
+            if let Some(served_by) = served_by {
+                outgoing_end += insert_header_before_body(
+                    &mut buffered,
+                    parsed.header_end,
+                    MESH_SERVED_BY_HEADER,
+                    served_by,
+                );
+            }
             // Reads may include bytes beyond the declared HTTP body. Only the
             // declared response is client-visible and capturable.
-            tcp_stream.write_all(&buffered[..body_end]).await?;
-            route_observer.capture_response_body(body, parsed.content_type.as_deref());
+            tcp_stream.write_all(&buffered[..outgoing_end]).await?;
+            route_observer.capture_response_body(
+                &buffered[outgoing_end - body_len..outgoing_end],
+                parsed.content_type.as_deref(),
+            );
             let _ = tcp_stream.shutdown().await;
             return Ok(RouteAttemptResult::Delivered {
                 status_code: probe.status_code,
@@ -147,7 +163,16 @@ pub(in crate::network::openai::response) async fn relay_success_response<R: Asyn
         }
     }
 
-    tcp_stream.write_all(&probe.buffered).await?;
+    let mut buffered = probe.buffered;
+    if let Some(served_by) = served_by {
+        insert_header_before_body(
+            &mut buffered,
+            parsed.header_end,
+            MESH_SERVED_BY_HEADER,
+            served_by,
+        );
+    }
+    tcp_stream.write_all(&buffered).await?;
     route_observer.capture_response_unavailable(ArtifactUnavailableReason::ResponseBodyNotBounded);
     if let Err(err) = tokio::io::copy(reader, &mut *tcp_stream).await {
         tracing::debug!("response relay ended after headers were committed: {err}");
@@ -258,6 +283,7 @@ mod tests {
                     content_type: Some("application/json".to_owned()),
                 },
                 ResponseRetryPolicy::next_target_available(false),
+                None,
                 observer,
             )
             .await
@@ -276,6 +302,102 @@ mod tests {
         assert_eq!(captures[0].1, body);
         assert_eq!(captures[0].2.as_deref(), Some("application/json"));
         assert!(client_response.ends_with(body));
+    }
+
+    #[tokio::test]
+    async fn relay_success_echoes_served_by_header_only_when_set() {
+        let body = br#"{"id":"chatcmpl-safe"}"#;
+        let header = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+            body.len()
+        );
+        let parsed = ParsedResponseHeaders {
+            header_end: header.len(),
+            status_code: 200,
+            content_length: Some(body.len()),
+            content_type: Some("application/json".to_owned()),
+        };
+        let probe_for = |header: &str| ResponseProbe {
+            buffered: header.as_bytes().to_vec(),
+            header_end: header.len(),
+            status_code: 200,
+            retryable_context_overflow: false,
+        };
+
+        // `x-mesh-target` was used: the resolved peer must be echoed back.
+        let (mut upstream_writer, mut upstream_reader) = tokio::io::duplex(64 * 1024);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let task_header = header.clone();
+        let task_parsed = ParsedResponseHeaders {
+            header_end: parsed.header_end,
+            status_code: parsed.status_code,
+            content_length: parsed.content_length,
+            content_type: parsed.content_type.clone(),
+        };
+        let task = tokio::spawn(async move {
+            let (mut client, _) = listener.accept().await.unwrap();
+            relay_success_response(
+                &mut client,
+                &mut upstream_reader,
+                probe_for(&task_header),
+                task_parsed,
+                ResponseRetryPolicy::next_target_available(false),
+                Some("ab12cd34"),
+                OpenAiRouteObserver::default(),
+            )
+            .await
+            .unwrap();
+        });
+        upstream_writer.write_all(body).await.unwrap();
+        drop(upstream_writer);
+        let mut socket = tokio::net::TcpStream::connect(address).await.unwrap();
+        let mut with_target_response = Vec::new();
+        socket.read_to_end(&mut with_target_response).await.unwrap();
+        task.await.unwrap();
+        let with_target_text = String::from_utf8_lossy(&with_target_response);
+        assert!(
+            with_target_text.contains("x-mesh-served-by: ab12cd34\r\n"),
+            "x-mesh-target dispatch must echo the resolved peer: {with_target_text}"
+        );
+        assert!(with_target_response.ends_with(body));
+
+        // Absent `x-mesh-target`: today's response, byte-for-byte -- no
+        // `x-mesh-served-by` line added.
+        let (mut upstream_writer, mut upstream_reader) = tokio::io::duplex(64 * 1024);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let task_header = header.clone();
+        let task = tokio::spawn(async move {
+            let (mut client, _) = listener.accept().await.unwrap();
+            relay_success_response(
+                &mut client,
+                &mut upstream_reader,
+                probe_for(&task_header),
+                parsed,
+                ResponseRetryPolicy::next_target_available(false),
+                None,
+                OpenAiRouteObserver::default(),
+            )
+            .await
+            .unwrap();
+        });
+        upstream_writer.write_all(body).await.unwrap();
+        drop(upstream_writer);
+        let mut socket = tokio::net::TcpStream::connect(address).await.unwrap();
+        let mut without_target_response = Vec::new();
+        socket
+            .read_to_end(&mut without_target_response)
+            .await
+            .unwrap();
+        task.await.unwrap();
+        assert!(!String::from_utf8_lossy(&without_target_response).contains("x-mesh-served-by"));
+        let mut expected = header.into_bytes();
+        expected.extend_from_slice(body);
+        assert_eq!(
+            without_target_response, expected,
+            "absent x-mesh-target must relay today's response byte-for-byte"
+        );
     }
 
     #[tokio::test]
@@ -314,6 +436,7 @@ mod tests {
                     content_type: Some("application/json; charset=utf-8".to_owned()),
                 },
                 ResponseRetryPolicy::next_target_available(false),
+                None,
                 observer,
             )
             .await

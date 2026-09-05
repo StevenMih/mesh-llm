@@ -25,6 +25,7 @@ pub(in crate::network::openai) async fn route_local_attempt(
         retry_policy,
         response_adapter,
         route_observer,
+        served_by,
     } = logging;
     let Ok((_instance_request, mut upstream)) = acquire_local_attempt_upstream(node, port).await
     else {
@@ -45,6 +46,7 @@ pub(in crate::network::openai) async fn route_local_attempt(
         request_id,
         retry_policy,
         response_adapter,
+        served_by,
         route_observer,
     )
     .await
@@ -68,6 +70,7 @@ async fn acquire_local_attempt_upstream(
     Ok((instance_request, upstream))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn route_local_attempt_after_forward(
     tcp_stream: &mut TcpStream,
     upstream: &mut TcpStream,
@@ -75,6 +78,7 @@ async fn route_local_attempt_after_forward(
     request_id: RequestId,
     retry_policy: ResponseRetryPolicy,
     response_adapter: ResponseAdapter,
+    served_by: Option<&str>,
     route_observer: OpenAiRouteObserver<'_>,
 ) -> RouteAttemptResult {
     match probe_http_response_local(upstream).await {
@@ -87,6 +91,7 @@ async fn route_local_attempt_after_forward(
                     request_id,
                     disconnect_message: "API proxy (local): downstream client disconnected during relay",
                     commit_message: "API proxy (local) ended after commit",
+                    served_by,
                     route_observer,
                 },
                 retry_policy,
@@ -116,6 +121,7 @@ pub(in crate::network::openai) async fn route_remote_attempt(
         retry_policy,
         response_adapter,
         route_observer,
+        served_by,
     } = logging;
     let (mut quic_send, mut quic_recv) = match node.open_http_tunnel(host_id).await {
         Ok(tunnel) => tunnel,
@@ -142,6 +148,7 @@ pub(in crate::network::openai) async fn route_remote_attempt(
         request_id,
         retry_policy,
         response_adapter,
+        served_by,
         route_observer,
     )
     .await
@@ -182,6 +189,7 @@ async fn forward_buffered_request<W: AsyncWrite + Unpin>(
     upstream.write_all(prefetched).await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn route_remote_attempt_after_forward<R: AsyncRead + Unpin + CancelUpstream>(
     tcp_stream: &mut TcpStream,
     quic_recv: &mut R,
@@ -189,6 +197,7 @@ async fn route_remote_attempt_after_forward<R: AsyncRead + Unpin + CancelUpstrea
     request_id: RequestId,
     retry_policy: ResponseRetryPolicy,
     response_adapter: ResponseAdapter,
+    served_by: Option<&str>,
     route_observer: OpenAiRouteObserver<'_>,
 ) -> RouteAttemptResult {
     match probe_http_response(quic_recv).await {
@@ -201,6 +210,7 @@ async fn route_remote_attempt_after_forward<R: AsyncRead + Unpin + CancelUpstrea
                     request_id,
                     disconnect_message: "API proxy (remote): downstream client disconnected during relay",
                     commit_message: "API proxy (remote) ended after commit",
+                    served_by,
                     route_observer,
                 },
                 retry_policy,
@@ -334,6 +344,7 @@ mod tests {
                 RequestId::new(),
                 ResponseRetryPolicy::next_target_available(false),
                 ResponseAdapter::None,
+                None,
                 OpenAiRouteObserver::default(),
             )
             .await
@@ -398,6 +409,7 @@ mod tests {
                 RequestId::new(),
                 ResponseRetryPolicy::next_target_available(false),
                 ResponseAdapter::None,
+                None,
                 OpenAiRouteObserver::default(),
             )
             .await
