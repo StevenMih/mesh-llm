@@ -1,5 +1,8 @@
 use super::common::{ResponseRetryPolicy, RouteAttemptResult, parse_token_usage_from_json_body};
-use super::probe::{ResponseProbe, response_is_event_stream, try_parse_response_headers};
+use super::probe::{
+    ResponseProbe, append_mesh_served_by_header, response_is_event_stream,
+    try_parse_response_headers,
+};
 use super::relay::{relay_error_response, relay_success_response};
 use crate::logging::{OpenAiRouteObserver, OpenAiStreamArtifactCapture};
 use crate::network::openai::response_adapter;
@@ -67,6 +70,7 @@ pub(in crate::network::openai::response) async fn relay_normalized_chat_completi
     reader: &mut R,
     probe: ResponseProbe,
     retry_policy: ResponseRetryPolicy,
+    served_by: Option<&str>,
     route_observer: OpenAiRouteObserver<'_>,
 ) -> Result<RouteAttemptResult> {
     if retry_policy.context_overflow && probe.retryable_context_overflow {
@@ -87,6 +91,7 @@ pub(in crate::network::openai::response) async fn relay_normalized_chat_completi
             probe,
             parsed,
             retry_policy,
+            served_by,
             route_observer,
         )
         .await;
@@ -95,7 +100,9 @@ pub(in crate::network::openai::response) async fn relay_normalized_chat_completi
     let mut carry = String::from_utf8_lossy(&probe.buffered[parsed.header_end..]).to_string();
     let mut state = ChatStreamNormalizationState::default();
     let mut observed_usage = None;
-    let header = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n";
+    let mut header = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nCache-Control: no-cache\r\n".to_string();
+    append_mesh_served_by_header(&mut header, served_by);
+    header.push_str("Connection: close\r\n\r\n");
     tcp_stream.write_all(header.as_bytes()).await?;
     let mut response_capture = route_observer.begin_stream_response_capture();
     route_observer.stream_started(None);
@@ -176,6 +183,7 @@ pub(in crate::network::openai::response) async fn relay_translated_responses_str
     reader: &mut R,
     probe: ResponseProbe,
     retry_policy: ResponseRetryPolicy,
+    served_by: Option<&str>,
     route_observer: OpenAiRouteObserver<'_>,
 ) -> Result<RouteAttemptResult> {
     fn should_parse_stream_chunk(data: &str, model_missing: bool, usage_missing: bool) -> bool {
@@ -200,7 +208,9 @@ pub(in crate::network::openai::response) async fn relay_translated_responses_str
         .ok_or_else(|| anyhow!("incomplete HTTP response"))?;
     let mut carry = String::from_utf8_lossy(&probe.buffered[parsed.header_end..]).to_string();
     let mut state = ResponsesStreamRelayState::new();
-    let header = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n";
+    let mut header = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nCache-Control: no-cache\r\n".to_string();
+    append_mesh_served_by_header(&mut header, served_by);
+    header.push_str("Connection: close\r\n\r\n");
     tcp_stream.write_all(header.as_bytes()).await?;
     let mut response_capture = route_observer.begin_stream_response_capture();
     route_observer.stream_started(None);
@@ -623,6 +633,7 @@ mod tests {
                 &mut upstream_reader,
                 probe,
                 ResponseRetryPolicy::next_target_available(false),
+                None,
                 OpenAiRouteObserver::default(),
             )
             .await
@@ -708,6 +719,7 @@ mod tests {
                 &mut upstream_reader,
                 probe,
                 ResponseRetryPolicy::next_target_available(false),
+                None,
                 OpenAiRouteObserver::capture_test_observer(RequestId::new(), &observer_capture),
             )
             .await
@@ -779,6 +791,7 @@ mod tests {
                     request_id: RequestId::new(),
                     disconnect_message: "test client disconnected",
                     commit_message: "test stream relay failed",
+                    served_by: None,
                     route_observer: OpenAiRouteObserver::default(),
                 },
                 ResponseRetryPolicy::next_target_available(false),
@@ -827,6 +840,7 @@ mod tests {
                 &mut upstream_reader,
                 probe,
                 ResponseRetryPolicy::next_target_available(false),
+                None,
                 OpenAiRouteObserver::default(),
             )
             .await
