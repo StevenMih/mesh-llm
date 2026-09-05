@@ -1233,3 +1233,134 @@ async fn resolve_remote_mesh_route_with_no_headers_pools_every_serving_peer() {
         _ => panic!("expected the ordinary multi-candidate pool"),
     }
 }
+
+// --- serving_provenance.weights_digest on the openai.exchange.v1 Terminal event ---
+
+/// End-to-end: a real file on disk (standing in for a served GGUF -- what
+/// matters here is that it is real bytes read off disk, not a canned digest
+/// string) is hashed by the exact production function
+/// (`mesh::weights_digest_for_file`), recorded on a served descriptor, read
+/// back by `serving_provenance_for_model`, and carried onto a real
+/// `openai.exchange.v1` Terminal event. The wire value must equal an
+/// independently computed SHA-256 of the same bytes -- the same check
+/// `sha256sum` on the file would give.
+#[tokio::test]
+async fn terminal_serving_provenance_weights_digest_matches_real_loaded_file_sha256() {
+    use sha2::{Digest, Sha256};
+
+    let dir = std::env::temp_dir().join(format!(
+        "serving-provenance-weights-digest-test-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&dir).expect("mk temp dir");
+    let path = dir.join("model.gguf");
+    std::fs::write(
+        &path,
+        b"GGUF-fake-header-and-weight-bytes-for-test-terminal-wiring",
+    )
+    .expect("write temp gguf");
+
+    // The production hashing path -- the same function `start_runtime_local_model`
+    // calls at load time.
+    let digest = crate::mesh::weights_digest_for_file(&path).expect("digest computed");
+
+    // Independently recompute the SHA-256 of the same on-disk bytes -- exactly
+    // what `sha256sum`/`shasum -a 256` would report.
+    let bytes = std::fs::read(&path).expect("read temp gguf back");
+    let mut hasher = Sha256::new();
+    hasher.update(&bytes);
+    let expected = hex::encode(hasher.finalize());
+    assert_eq!(
+        digest, expected,
+        "production digest must equal an independent sha256 of the file bytes"
+    );
+
+    let node = mesh::Node::new_for_tests(crate::mesh::NodeRole::Worker)
+        .await
+        .expect("test node");
+    let model_name = "local-test-model-real-file";
+    node.upsert_served_model_descriptor(mesh::ServedModelDescriptor {
+        identity: mesh::ServedModelIdentity {
+            model_name: model_name.to_string(),
+            source_kind: mesh::ModelSourceKind::LocalGguf,
+            local_file_name: path
+                .file_name()
+                .and_then(|f| f.to_str())
+                .map(str::to_string),
+            weights_digest: Some(digest.clone()),
+            ..Default::default()
+        },
+        capabilities_known: false,
+        capabilities: crate::models::ModelCapabilities::default(),
+        topology: None,
+        metadata: None,
+    })
+    .await;
+
+    let provenance = serving_provenance_for_model(&node, model_name).await;
+    assert_eq!(
+        provenance.weights_digest.as_deref(),
+        Some(expected.as_str())
+    );
+
+    let envelope = OpenAiExchangeEnvelope::terminal(
+        "exch-real-gguf",
+        OpenAiExchangeDispatchPath::RawProxy,
+        model_name,
+        Some(200),
+        None,
+        None,
+    )
+    .with_serving_provenance(provenance);
+
+    let value = serde_json::to_value(&envelope).expect("serialize");
+    assert_eq!(
+        value["serving_provenance"]["weights_digest"], expected,
+        "Terminal event's serving_provenance.weights_digest must equal sha256sum of the loaded file"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The other half of the honesty contract: a served model whose descriptor
+/// has not resolved a weights digest (unreadable file, or no load-time hash
+/// yet) must OMIT `serving_provenance.weights_digest` from the real Terminal
+/// wire event -- never emit it as `null`.
+#[tokio::test]
+async fn terminal_serving_provenance_omits_weights_digest_when_descriptor_has_none() {
+    let node = mesh::Node::new_for_tests(crate::mesh::NodeRole::Worker)
+        .await
+        .expect("test node");
+    let model_name = "local-test-model-no-digest";
+    node.upsert_served_model_descriptor(mesh::ServedModelDescriptor {
+        identity: mesh::ServedModelIdentity {
+            model_name: model_name.to_string(),
+            source_kind: mesh::ModelSourceKind::LocalGguf,
+            ..Default::default()
+        },
+        capabilities_known: false,
+        capabilities: crate::models::ModelCapabilities::default(),
+        topology: None,
+        metadata: None,
+    })
+    .await;
+
+    let provenance = serving_provenance_for_model(&node, model_name).await;
+    assert!(provenance.weights_digest.is_none());
+
+    let envelope = OpenAiExchangeEnvelope::terminal(
+        "exch-no-digest",
+        OpenAiExchangeDispatchPath::RawProxy,
+        model_name,
+        Some(200),
+        None,
+        None,
+    )
+    .with_serving_provenance(provenance);
+
+    let value = serde_json::to_value(&envelope).expect("serialize");
+    assert!(
+        value["serving_provenance"].get("weights_digest").is_none(),
+        "an unresolved digest must be omitted from the wire, never null"
+    );
+}
