@@ -50,6 +50,7 @@ fn test_peer_serving_model(peer_id: iroh::EndpointId, model: &str) -> mesh::Peer
         propagated_latency: None,
         owner_summary: crate::crypto::OwnershipSummary::default(),
         inference_admission_state: None,
+        checkpoint: None,
     }
 }
 

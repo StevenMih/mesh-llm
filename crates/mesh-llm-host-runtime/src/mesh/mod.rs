@@ -154,7 +154,7 @@ pub(crate) use peer_state::{
 )]
 pub use peer_state::{
     DisplayLatency, DisplayLatencySource, MeshCatalogEntry, NodeRole, OwnerRuntimeConfig,
-    PeerAnnouncement, PeerInfo, PropagatedLatencyObservation,
+    PeerAnnouncement, PeerCheckpointHead, PeerInfo, PropagatedLatencyObservation,
 };
 pub(crate) use stage_transport::{
     ConnectionCaptureEvent, HttpCaptureEvent, MeshBiStream, PeerLifecycleCaptureEvent,

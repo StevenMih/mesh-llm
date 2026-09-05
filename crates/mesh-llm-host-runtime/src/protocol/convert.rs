@@ -699,6 +699,15 @@ pub(crate) fn local_ann_to_proto_ann(
             ann.stage_status_list_supported,
         ),
         inference_admission_state: ann.inference_admission_state.map(|state| state as i32),
+        checkpoint: ann.checkpoint.as_ref().map(|checkpoint| {
+            crate::proto::node::PeerCheckpointHead {
+                log_id: checkpoint.log_id.clone(),
+                mmr_size: checkpoint.mmr_size,
+                root: checkpoint.root.clone(),
+                timestamp_unix_ms: checkpoint.timestamp_unix_ms,
+                signature: checkpoint.signature.clone(),
+            }
+        }),
     }
 }
 
@@ -930,6 +939,16 @@ pub(crate) fn proto_ann_to_local(
         inference_admission_state: pa
             .inference_admission_state
             .and_then(|v| crate::proto::node::InferenceAdmissionState::try_from(v).ok()),
+        checkpoint: pa
+            .checkpoint
+            .as_ref()
+            .map(|checkpoint| crate::mesh::PeerCheckpointHead {
+                log_id: checkpoint.log_id.clone(),
+                mmr_size: checkpoint.mmr_size,
+                root: checkpoint.root.clone(),
+                timestamp_unix_ms: checkpoint.timestamp_unix_ms,
+                signature: checkpoint.signature.clone(),
+            }),
     };
     crate::mesh::backfill_legacy_descriptors(&mut ann);
     ann.advertised_model_throughput = sanitize_model_throughput_hints_for_ann(&ann);

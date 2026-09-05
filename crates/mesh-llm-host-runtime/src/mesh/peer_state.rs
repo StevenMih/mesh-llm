@@ -15,6 +15,15 @@ pub(crate) fn peer_info_to_mesh_peer(peer: &PeerInfo) -> crate::plugin::proto::M
         model_source: peer.model_source.clone().unwrap_or_default(),
         hosted_models: peer.hosted_models.clone(),
         hosted_models_known: Some(peer.hosted_models_known),
+        checkpoint: peer.checkpoint.as_ref().map(|checkpoint| {
+            crate::plugin::proto::PeerCheckpointHead {
+                log_id: checkpoint.log_id.clone(),
+                mmr_size: checkpoint.mmr_size,
+                root: checkpoint.root.clone(),
+                timestamp_unix_ms: checkpoint.timestamp_unix_ms,
+                signature: checkpoint.signature.clone(),
+            }
+        }),
     }
 }
 
@@ -113,6 +122,18 @@ pub enum NodeRole {
     Client,
 }
 
+/// A peer's latest signed checkpoint head — see `PeerCheckpointHead` in
+/// `node.proto` for the wire shape and the signing-scope note. Carried
+/// opaquely: mesh-llm never verifies `signature` itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PeerCheckpointHead {
+    pub log_id: String,
+    pub mmr_size: u64,
+    pub root: Vec<u8>,
+    pub timestamp_unix_ms: u64,
+    pub signature: Vec<u8>,
+}
+
 /// Gossip payload — extends EndpointAddr with role metadata.
 /// Internal mesh gossip model. Legacy JSON v0 is adapted at the boundary.
 #[derive(Debug, Clone)]
@@ -160,6 +181,7 @@ pub struct PeerAnnouncement {
     pub(crate) latency_age_ms: Option<u64>,
     pub(crate) latency_observer_id: Option<EndpointId>,
     pub(crate) inference_admission_state: Option<crate::proto::node::InferenceAdmissionState>,
+    pub(crate) checkpoint: Option<PeerCheckpointHead>,
 }
 
 /// A single direct RTT measurement (e.g. from gossip exchange).
@@ -262,6 +284,7 @@ pub struct PeerInfo {
     pub propagated_latency: Option<PropagatedLatencyObservation>,
     pub owner_summary: OwnershipSummary,
     pub inference_admission_state: Option<crate::proto::node::InferenceAdmissionState>,
+    pub checkpoint: Option<PeerCheckpointHead>,
 }
 
 #[derive(Debug)]
@@ -347,6 +370,7 @@ impl PeerInfo {
             propagated_latency: None,
             owner_summary,
             inference_admission_state: ann.inference_admission_state,
+            checkpoint: ann.checkpoint.clone(),
         }
     }
 

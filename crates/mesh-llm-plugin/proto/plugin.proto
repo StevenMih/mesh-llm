@@ -91,6 +91,22 @@ message MeshPeer {
   string model_source = 11;
   repeated string hosted_models = 12;
   optional bool hosted_models_known = 13;
+  // This peer's latest signed checkpoint head, if it advertised one. Opaque
+  // to the host — a plugin subscribed to PEER_UP/PEER_UPDATED that cares
+  // about checkpoint reconciliation reads this directly; mesh-llm itself
+  // never verifies it.
+  optional PeerCheckpointHead checkpoint = 14;
+}
+
+// Mirrors `meshllm.node.v1.PeerCheckpointHead` on the wire gossip protocol —
+// duplicated rather than shared because plugin.proto and node.proto compile
+// as separate crates with no cross-crate proto import.
+message PeerCheckpointHead {
+  string log_id = 1;
+  uint64 mmr_size = 2;
+  bytes root = 3;
+  uint64 timestamp_unix_ms = 4;
+  bytes signature = 5;
 }
 
 message MeshEvent {
