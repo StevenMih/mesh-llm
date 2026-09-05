@@ -112,6 +112,16 @@ pub struct ServingProvenance {
     /// descriptor did not resolve one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model_identity_hash: Option<String>,
+    /// SHA-256 of the served GGUF's file BYTES, from
+    /// `ServedModelIdentity.weights_digest` — computed at load time from the
+    /// file this host actually opened for serving. A different fact from
+    /// `model_identity_hash` (a hash of a reference STRING, or absent for a
+    /// bare local path): this is a hash of the served weight BYTES, and never
+    /// replaces `model_identity_hash`. Omitted when the descriptor has not
+    /// resolved one (unreadable file, or no load-time hash computed yet for
+    /// this model) — never a fabricated digest.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub weights_digest: Option<String>,
     /// Canonical model reference (e.g. `repo@rev/file`), from
     /// `ServedModelIdentity.canonical_ref`.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -620,6 +630,7 @@ mod tests {
             parameter_size: Some("7B".to_string()),
             layer_count: Some(32),
             model_identity_hash: Some("abc123".to_string()),
+            weights_digest: Some("d34d".repeat(16)),
             model_canonical_ref: None,
             model_revision: None,
             gpu: None,
@@ -635,11 +646,52 @@ mod tests {
         assert_eq!(prov["context_length"], 8192);
         assert_eq!(prov["layer_count"], 32);
         assert_eq!(prov["is_soc"], true);
+        // The name-hash and the bytes-hash both ride the block, as distinct
+        // facts -- neither replaces the other.
+        assert_eq!(prov["model_identity_hash"], "abc123");
+        assert_eq!(prov["weights_digest"], "d34d".repeat(16));
         // Unknown facts are ABSENT (omitted), not fabricated as null/empty.
         assert!(prov.get("model_canonical_ref").is_none());
         assert!(prov.get("model_revision").is_none());
         assert!(prov.get("gpu").is_none());
         assert!(prov.get("vram_bytes").is_none());
+    }
+
+    /// A served model whose descriptor has not resolved a weights digest
+    /// (unreadable file, or no load-time hash yet) omits `weights_digest`
+    /// entirely -- honest absence, never a fabricated placeholder -- while
+    /// the rest of the block (including `model_identity_hash`) still rides.
+    #[test]
+    fn serving_provenance_omits_weights_digest_when_not_resolved() {
+        let envelope = OpenAiExchangeEnvelope::terminal(
+            "exch-no-wd",
+            OpenAiExchangeDispatchPath::RawProxy,
+            "hermes-2-pro-mistral-7b",
+            Some(200),
+            None,
+            None,
+        )
+        .with_serving_provenance(ServingProvenance {
+            served_by_node_id: "node-abc".to_string(),
+            hostname: None,
+            quantization: None,
+            architecture: Some("llama".to_string()),
+            context_length: None,
+            parameter_size: None,
+            layer_count: None,
+            model_identity_hash: Some("abc123".to_string()),
+            weights_digest: None,
+            model_canonical_ref: None,
+            model_revision: None,
+            gpu: None,
+            vram_bytes: None,
+            is_soc: None,
+        });
+
+        let value = serde_json::to_value(&envelope).expect("serialize");
+        let prov = &value["serving_provenance"];
+        assert_eq!(prov["model_identity_hash"], "abc123");
+        assert!(prov.get("weights_digest").is_none());
     }
 
     /// The real token usage the host-served path reads off its dispatch outcome
