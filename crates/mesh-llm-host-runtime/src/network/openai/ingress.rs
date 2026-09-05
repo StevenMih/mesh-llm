@@ -7,8 +7,8 @@ use crate::network::openai::automatic;
 use crate::network::openai::transport as proxy;
 use crate::network::router;
 use crate::plugin::openai_exchange::{
-    ExchangeUsage, OpenAiExchangeChannel, OpenAiExchangeDispatchPath, OpenAiExchangeEnvelope,
-    ServingProvenance, request_body_digest,
+    ClientNonceSource, ExchangeUsage, OpenAiExchangeChannel, OpenAiExchangeDispatchPath,
+    OpenAiExchangeEnvelope, ServingProvenance, request_body_digest,
 };
 use mesh_llm_events::audit::{audit_events, emit_audit};
 use mesh_llm_events::{OutputEvent, emit_event};
@@ -645,11 +645,20 @@ async fn route_missing_local_model(
             // already does for its own dispatch below, with `RemoteMesh` in
             // place of `RawProxy`, so a plugin on the ROUTING node can observe
             // this exchange too (previously it observed nothing at all for a
-            // routed exchange). No marker exists on this path yet -- a peer's
-            // `X-Capsule-Id` response header is not read back here -- so
-            // capsule_id/nonce stay absent, same as the plugin-served terminal
-            // event just below.
+            // routed exchange).
             let exchange_id = uuid::Uuid::new_v4().to_string();
+            // [mesh-requester-nonce-addendum] The client-contributed capsule
+            // nonce, forwarded byte-for-byte to the peer (this raw proxy
+            // strips only caller-credential and Connection-nominated
+            // headers -- see `prepare_peer_forwarded_request`). Read
+            // directly off the buffered request rather than minted: a
+            // fallback minted on THIS node would not match whatever the peer
+            // independently resolves, breaking "same nonce both sides" --
+            // absent stays honestly absent, never invented.
+            let forwarded_nonce = request.capsule_client_nonce_header();
+            let nonce_source = forwarded_nonce
+                .as_ref()
+                .map(|_| ClientNonceSource::ClientSupplied);
             if let Some(plugin_manager) = ctx.plugin_manager {
                 plugin_manager
                     .publish(&OpenAiExchangeEnvelope::effective(
@@ -663,6 +672,13 @@ async fn route_missing_local_model(
             // `x-mesh-target` -- absent headers must produce today's
             // response byte-for-byte, with no `x-mesh-served-by` added.
             let served_by_hex = target.map(|id| hex::encode(id.as_bytes()));
+            // [mesh-requester-nonce-addendum] Where `route_model_request`
+            // records the peer's `X-Capsule-Id` response header, when it
+            // reads one back. See `PeerCapsuleIdSink` -- this is the peer's
+            // own UNVERIFIED assertion of its capsule, never elevated to
+            // verified here (that happens in whatever later pulls the
+            // capsule via E15 and checks its digest).
+            let peer_capsule_id_sink = proxy::PeerCapsuleIdSink::new();
             let outcome = proxy::route_model_request(
                 ctx.node.clone(),
                 tcp_stream,
@@ -674,18 +690,19 @@ async fn route_missing_local_model(
                     affinity: ctx.affinity,
                     route_observer,
                     served_by_header: served_by_hex.as_deref(),
+                    peer_capsule_id: Some(&peer_capsule_id_sink),
                 },
             )
             .await;
             if let Some(plugin_manager) = ctx.plugin_manager {
                 plugin_manager
-                    .publish(&OpenAiExchangeEnvelope::terminal(
+                    .publish(&OpenAiExchangeEnvelope::remote_mesh_terminal(
                         exchange_id,
-                        OpenAiExchangeDispatchPath::RemoteMesh,
                         model_name,
                         plugin_route_status(&outcome),
-                        None,
-                        None,
+                        forwarded_nonce,
+                        nonce_source,
+                        peer_capsule_id_sink.take(),
                     ))
                     .await;
             }
@@ -1048,6 +1065,10 @@ async fn route_request(
                 affinity: ctx.affinity,
                 route_observer,
                 served_by_header: None,
+                // Not the `RemoteMesh` dispatch path -- this node is serving
+                // (or election-selecting among candidates that may include
+                // itself) the exchange, not merely routing to a peer.
+                peer_capsule_id: None,
             },
         )
         .await;

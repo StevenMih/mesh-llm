@@ -25,6 +25,15 @@ pub(crate) const MESH_TARGET_HEADER: &str = "x-mesh-target";
 /// Remove one or more peers from the remote-mesh candidate set before
 /// selection. Comma-separated within one header value.
 pub(crate) const MESH_EXCLUDE_HEADER: &str = "x-mesh-exclude";
+/// Client-contributed capsule nonce (matches the wire name
+/// `openai_frontend::lifecycle::CLIENT_NONCE_HEADER` resolves on the typed
+/// frontend, and `capsule-emit-mesh`'s own `CLIENT_NONCE_HEADER`). This raw
+/// proxy neither mints nor re-stamps it -- that resolution belongs to the
+/// axum frontend ingress, not this path -- this is a read-only peek at
+/// whatever value the client already sent. `prepare_peer_forwarded_request`
+/// forwards it to a mesh peer unchanged: it strips only caller-credential
+/// headers and Connection-nominated hop-by-hop headers.
+pub(crate) const CAPSULE_CLIENT_NONCE_HEADER: &str = "x-capsule-client-nonce";
 pub(super) const MAX_BODY_BYTES: usize = 8 * 1024 * 1024;
 const MAX_OBJECT_UPLOAD_BODY_BYTES: usize = 64 * 1024 * 1024;
 const MAX_CHUNKED_WIRE_BYTES: usize = MAX_BODY_BYTES * 6 + 64 * 1024;
@@ -164,6 +173,18 @@ impl BufferedHttpRequest {
             header_values_from_raw(&self.raw, MESH_TARGET_HEADER),
             header_values_from_raw(&self.raw, MESH_EXCLUDE_HEADER),
         )
+    }
+
+    /// The client-supplied capsule nonce, read back off the already-buffered
+    /// raw request. `None` when the client sent no such header -- never
+    /// minted here (see
+    /// `plugin::openai_exchange::OpenAiExchangeEnvelope::remote_mesh_terminal`).
+    /// When duplicated, the first occurrence wins; this raw proxy does not
+    /// reject requests on duplicate nonce headers.
+    pub fn capsule_client_nonce_header(&self) -> Option<String> {
+        header_values_from_raw(&self.raw, CAPSULE_CLIENT_NONCE_HEADER)
+            .into_iter()
+            .next()
     }
 
     /// The only semantic request media kind trusted by artifact capture.
@@ -1998,5 +2019,39 @@ mod tests {
         let (target, exclude) = request.mesh_routing_header_values();
         assert_eq!(target, vec!["aabbcc".to_string(), "ddeeff".to_string()]);
         assert!(exclude.is_empty());
+    }
+
+    /// [mesh-requester-nonce-addendum] Mutant: no `x-capsule-client-nonce`
+    /// header -- absent, never a fallback minted at this layer.
+    #[test]
+    fn capsule_client_nonce_header_absent_is_none() {
+        let request = request_with_raw(
+            concat!(
+                "POST /v1/chat/completions HTTP/1.1\r\n",
+                "host: 127.0.0.1\r\n",
+                "\r\n",
+                "{}",
+            )
+            .as_bytes(),
+        );
+        assert_eq!(request.capsule_client_nonce_header(), None);
+    }
+
+    #[test]
+    fn capsule_client_nonce_header_reads_the_client_supplied_value() {
+        let request = request_with_raw(
+            concat!(
+                "POST /v1/chat/completions HTTP/1.1\r\n",
+                "host: 127.0.0.1\r\n",
+                "x-capsule-client-nonce: 6d7d8d2e-3f4a-4b5c-8d9e-0a1b2c3d4e5f\r\n",
+                "\r\n",
+                "{}",
+            )
+            .as_bytes(),
+        );
+        assert_eq!(
+            request.capsule_client_nonce_header(),
+            Some("6d7d8d2e-3f4a-4b5c-8d9e-0a1b2c3d4e5f".to_string())
+        );
     }
 }
