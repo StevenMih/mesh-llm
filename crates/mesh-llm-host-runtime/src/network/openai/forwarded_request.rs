@@ -198,6 +198,29 @@ mod tests {
         assert_eq!(forwarded, expected);
     }
 
+    /// [mesh-twin-logprobs-passthrough] confirms `logprobs`/`top_logprobs` on a
+    /// chat-completion request body reach the peer byte-for-byte: this path
+    /// forwards `raw[header_end..]` verbatim (never re-parses the JSON body),
+    /// so nothing here can drop or reshape those fields.
+    #[test]
+    fn peer_forwarding_preserves_logprobs_request_fields() {
+        let body = br#"{"model":"test","messages":[],"logprobs":true,"top_logprobs":5}"#;
+        let mut raw = format!(
+            "POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer caller-secret\r\nContent-Length: {}\r\n\r\n",
+            body.len()
+        )
+        .into_bytes();
+        raw.extend_from_slice(body);
+
+        let forwarded = prepare_peer_forwarded_request(&raw).unwrap();
+
+        assert!(
+            forwarded.ends_with(body),
+            "expected the peer-forwarded body to end with the untouched request body, got: {}",
+            String::from_utf8_lossy(&forwarded)
+        );
+    }
+
     #[test]
     fn peer_forwarding_rejects_incomplete_headers() {
         let raw = b"GET /v1/models HTTP/1.1\r\nAuthorization: Bearer caller-secret\r\n";

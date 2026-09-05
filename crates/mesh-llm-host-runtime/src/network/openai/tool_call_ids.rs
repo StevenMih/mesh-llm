@@ -171,6 +171,25 @@ mod tests {
         );
     }
 
+    /// [mesh-twin-logprobs-passthrough] the JSON normalizer only ever
+    /// touches `choices[].message.tool_calls[].id` on a generic
+    /// `serde_json::Value` and re-serializes the whole value -- so a
+    /// `logprobs` object (per-token `top_logprobs`, as returned when the
+    /// request set `logprobs:true, top_logprobs:k`) on a routed peer's
+    /// response must survive this pass through the routing node untouched.
+    #[test]
+    fn chat_completion_json_normalizer_preserves_logprobs() {
+        let body = br#"{"id":"chatcmpl-a","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"logprobs":{"content":[{"token":"hi","logprob":-0.1,"top_logprobs":[{"token":"hi","logprob":-0.1},{"token":"hey","logprob":-2.3}]}]},"finish_reason":"stop"}]}"#;
+        let normalized = normalize_chat_completion_json_body(body).unwrap();
+        let before: serde_json::Value = serde_json::from_slice(body).unwrap();
+        let after: serde_json::Value = serde_json::from_slice(&normalized).unwrap();
+
+        assert_eq!(
+            after["choices"][0]["logprobs"], before["choices"][0]["logprobs"],
+            "logprobs object must survive tool-call-id normalization unchanged"
+        );
+    }
+
     #[test]
     fn chat_completion_json_normalizer_preserves_existing_tool_call_ids() {
         let body = br#"{"id":"chatcmpl-a","object":"chat.completion","choices":[{"message":{"tool_calls":[{"id":"call_existing","type":"function","function":{"name":"read_file","arguments":"{}"}}]}}]}"#;
@@ -233,6 +252,28 @@ mod tests {
         assert_eq!(
             parsed["choices"][1]["message"]["tool_calls"][0]["id"],
             "call_mesh_chatcmpl_a_1_0"
+        );
+    }
+
+    /// [mesh-twin-logprobs-passthrough] SSE counterpart of
+    /// `chat_completion_json_normalizer_preserves_logprobs`: per-chunk
+    /// `choices[].logprobs` (sibling of `delta`, not nested under it) must
+    /// survive `normalize_data`'s reserialize-the-whole-`Value` pass.
+    #[test]
+    fn chat_stream_normalizer_preserves_logprobs_on_delta() {
+        let mut state = ChatStreamNormalizationState {
+            synthetic_seed: Some(42),
+            ..Default::default()
+        };
+        let chunk = r#"{"id":"chatcmpl-a","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"hi"},"logprobs":{"content":[{"token":"hi","logprob":-0.1,"top_logprobs":[{"token":"hi","logprob":-0.1},{"token":"hey","logprob":-2.3}]}]},"finish_reason":null}]}"#;
+        let before: serde_json::Value = serde_json::from_str(chunk).unwrap();
+
+        let normalized = state.normalize_data(chunk);
+        let after: serde_json::Value = serde_json::from_str(&normalized).unwrap();
+
+        assert_eq!(
+            after["choices"][0]["logprobs"], before["choices"][0]["logprobs"],
+            "per-chunk logprobs must survive stream normalization unchanged"
         );
     }
 
