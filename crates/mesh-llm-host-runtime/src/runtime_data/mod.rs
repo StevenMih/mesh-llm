@@ -551,6 +551,7 @@ pub(crate) mod tests {
             propagated_latency: None,
             owner_summary: crate::crypto::OwnershipSummary::default(),
             inference_admission_state: None,
+            checkpoint: None,
         };
         let hardware = collector.build_hardware_view(HardwareViewInput {
             gpu_name: None,
@@ -691,6 +692,7 @@ pub(crate) mod tests {
             propagated_latency: None,
             owner_summary: crate::crypto::OwnershipSummary::default(),
             inference_admission_state: None,
+            checkpoint: None,
         };
         let hardware = collector.build_hardware_view(HardwareViewInput {
             gpu_name: None,

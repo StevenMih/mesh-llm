@@ -129,6 +129,29 @@ pub struct PeerAnnouncement {
     /// Inference admission state advertised by this peer (additive; older nodes ignore)
     #[prost(enumeration = "InferenceAdmissionState", optional, tag = "49")]
     pub inference_admission_state: ::core::option::Option<i32>,
+    /// This node's latest signed checkpoint head, if it runs a checkpointed
+    /// local log. Purely additive/advisory; never verified by mesh-llm itself.
+    #[prost(message, optional, tag = "50")]
+    pub checkpoint: ::core::option::Option<PeerCheckpointHead>,
+}
+/// A minimal, self-contained attestation of one checkpoint's head — NOT the
+/// full checkpoint record (no prev_size/prev_root/witnesses). `signature` is
+/// an Ed25519 signature by the announcing peer's own node key over the
+/// canonical encoding of (log_id, mmr_size, root, timestamp_unix_ms).
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct PeerCheckpointHead {
+    #[prost(string, tag = "1")]
+    pub log_id: ::prost::alloc::string::String,
+    #[prost(uint64, tag = "2")]
+    pub mmr_size: u64,
+    /// 32 bytes: root_from_peaks at mmr_size
+    #[prost(bytes = "vec", tag = "3")]
+    pub root: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint64, tag = "4")]
+    pub timestamp_unix_ms: u64,
+    /// 64 bytes: Ed25519 signature
+    #[prost(bytes = "vec", tag = "5")]
+    pub signature: ::prost::alloc::vec::Vec<u8>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct AdvertisedModelThroughput {

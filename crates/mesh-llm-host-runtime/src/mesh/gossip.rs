@@ -4,9 +4,9 @@
 use super::{
     DEAD_PEER_TTL, DisplayLatencySource, InviteTokenMaterial, MeshOperationalEvent, ModelDemand,
     ModelRuntimeDescriptor, Node, NodeRole, PEER_CONNECT_AND_GOSSIP_TIMEOUT, PEER_STALE_SECS,
-    PeerAnnouncement, PeerInfo, ServedModelDescriptor, SignedNodeOwnership, connect_mesh,
-    elapsed_ms_u64, emit_mesh_info, infer_remote_served_descriptors, parse_invite_token,
-    record_mesh_operational_event,
+    PeerAnnouncement, PeerCheckpointHead, PeerInfo, ServedModelDescriptor, SignedNodeOwnership,
+    connect_mesh, elapsed_ms_u64, emit_mesh_info, infer_remote_served_descriptors,
+    parse_invite_token, record_mesh_operational_event,
 };
 use crate::crypto::{OwnershipSummary, verify_node_ownership};
 use crate::mesh::peer_state::{PropagatedLatencyObservation, policy_accepts_peer};
@@ -236,6 +236,7 @@ pub(crate) struct LocalAnnouncementData {
     gpu_compute_tflops_fp32: Option<String>,
     gpu_compute_tflops_fp16: Option<String>,
     inference_admission_state: Option<crate::proto::node::InferenceAdmissionState>,
+    checkpoint: Option<PeerCheckpointHead>,
 }
 
 pub(crate) struct RebroadcastAnnouncements {
@@ -286,6 +287,7 @@ pub(super) fn peer_meaningfully_changed(old: &PeerInfo, new: &PeerInfo) -> bool 
         || old.gpu_reserved_bytes != new.gpu_reserved_bytes
         || old.propagated_latency != new.propagated_latency
         || old.inference_admission_state != new.inference_admission_state
+        || old.checkpoint != new.checkpoint
 }
 
 pub(crate) fn merge_first_joined_mesh_ts(existing: &mut Option<u64>, incoming: Option<u64>) {
@@ -365,6 +367,7 @@ pub(super) fn apply_transitive_ann(
     if ann.inference_admission_state.is_some() {
         existing.inference_admission_state = ann.inference_admission_state;
     }
+    existing.checkpoint = ann.checkpoint.clone();
     if ann.experts_summary.is_some() {
         existing.experts_summary = ann.experts_summary.clone();
     }
@@ -802,6 +805,7 @@ impl Node {
         existing.stage_status_list_supported = ann.stage_status_list_supported;
         existing.advertised_model_throughput = ann.advertised_model_throughput.clone();
         existing.inference_admission_state = ann.inference_admission_state;
+        existing.checkpoint = ann.checkpoint.clone();
         if ann.version.is_some() {
             existing.version = ann.version.clone();
         }
@@ -1093,6 +1097,11 @@ impl Node {
             )
             .await,
             inference_admission_state: activity_advertisement.admission_state,
+            // No local source is wired yet — this node never advertises its
+            // own checkpoint until something (e.g. a companion checkpointing
+            // process) is plumbed in. Forwarding a REMOTE peer's checkpoint
+            // (gossip relay, `announcement_from_peer`) is unaffected by this.
+            checkpoint: None,
         }
     }
 
@@ -1143,6 +1152,7 @@ impl Node {
             served_model_runtime: peer.served_model_runtime.clone(),
             owner_attestation: peer.owner_attestation.clone(),
             genesis_policy: peer.genesis_policy.clone(),
+            checkpoint: peer.checkpoint.clone(),
             release_attestation: None,
             direct_admission_proof: None,
             artifact_transfer_supported: peer.artifact_transfer_supported,
@@ -1219,6 +1229,7 @@ impl Node {
             latency_age_ms: None,
             latency_observer_id: None,
             inference_admission_state: data.inference_admission_state,
+            checkpoint: data.checkpoint,
         }
     }
 

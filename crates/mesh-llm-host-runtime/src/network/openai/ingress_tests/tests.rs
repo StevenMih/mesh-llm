@@ -1018,6 +1018,7 @@ fn test_remote_peer(seed: u8, model: &str) -> mesh::PeerInfo {
         propagated_latency: None,
         owner_summary: Default::default(),
         inference_admission_state: None,
+        checkpoint: None,
     }
 }
 

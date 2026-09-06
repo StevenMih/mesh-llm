@@ -653,6 +653,7 @@ fn make_test_peer(
         selected_path: None,
         propagated_latency: None,
         inference_admission_state: None,
+        checkpoint: None,
     }
 }
 
