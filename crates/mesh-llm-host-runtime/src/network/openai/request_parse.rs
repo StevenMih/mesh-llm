@@ -167,12 +167,15 @@ impl BufferedHttpRequest {
     /// Every occurrence of each header name is returned verbatim, including
     /// duplicates — the router (not this parser) decides whether more than
     /// one `x-mesh-target` value is an error. These headers are opaque to
-    /// this layer: no endpoint-id parsing happens here.
-    pub fn mesh_routing_header_values(&self) -> (Vec<String>, Vec<String>) {
-        (
-            header_values_from_raw(&self.raw, MESH_TARGET_HEADER),
-            header_values_from_raw(&self.raw, MESH_EXCLUDE_HEADER),
-        )
+    /// this layer: no endpoint-id parsing happens here. A header value with
+    /// non-UTF-8 bytes is rejected outright rather than silently dropped, so
+    /// an attacker can't smuggle a routing decision past invalid bytes.
+    pub fn mesh_routing_header_values(&self) -> Result<(Vec<String>, Vec<String>), String> {
+        let target = header_values_from_raw(&self.raw, MESH_TARGET_HEADER)
+            .map_err(|()| format!("{MESH_TARGET_HEADER} header contains invalid UTF-8"))?;
+        let exclude = header_values_from_raw(&self.raw, MESH_EXCLUDE_HEADER)
+            .map_err(|()| format!("{MESH_EXCLUDE_HEADER} header contains invalid UTF-8"))?;
+        Ok((target, exclude))
     }
 
     /// The client-supplied capsule nonce, read back off the already-buffered
@@ -183,6 +186,7 @@ impl BufferedHttpRequest {
     /// reject requests on duplicate nonce headers.
     pub fn capsule_client_nonce_header(&self) -> Option<String> {
         header_values_from_raw(&self.raw, CAPSULE_CLIENT_NONCE_HEADER)
+            .ok()?
             .into_iter()
             .next()
     }
@@ -805,8 +809,10 @@ pub(super) fn parse_json_body_from_http_request(raw: &[u8]) -> Option<serde_json
 
 /// Every value of a given header name, read back off an already-rebuilt raw
 /// HTTP request. Only the request-header block is scanned. Order matches the
-/// wire order; duplicates are returned as separate entries.
-fn header_values_from_raw(raw: &[u8], name: &str) -> Vec<String> {
+/// wire order; duplicates are returned as separate entries. `Err(())` means
+/// at least one occurrence of `name` had non-UTF-8 bytes -- the caller must
+/// reject the request rather than silently drop that occurrence.
+fn header_values_from_raw(raw: &[u8], name: &str) -> Result<Vec<String>, ()> {
     let header_end = raw
         .windows(4)
         .position(|window| window == b"\r\n\r\n")
@@ -817,13 +823,16 @@ fn header_values_from_raw(raw: &[u8], name: &str) -> Vec<String> {
         .parse(&raw[..header_end.saturating_add(4).min(raw.len())])
         .is_err()
     {
-        return Vec::new();
+        return Ok(Vec::new());
     }
     req.headers
         .iter()
         .filter(|header| header.name.eq_ignore_ascii_case(name))
-        .filter_map(|header| std::str::from_utf8(header.value).ok())
-        .map(|value| value.trim().to_string())
+        .map(|header| {
+            std::str::from_utf8(header.value)
+                .map(|value| value.trim().to_string())
+                .map_err(|_| ())
+        })
         .collect()
 }
 
@@ -1978,7 +1987,7 @@ mod tests {
             )
             .as_bytes(),
         );
-        let (target, exclude) = request.mesh_routing_header_values();
+        let (target, exclude) = request.mesh_routing_header_values().unwrap();
         assert!(target.is_empty());
         assert!(exclude.is_empty());
     }
@@ -1996,7 +2005,7 @@ mod tests {
             )
             .as_bytes(),
         );
-        let (target, exclude) = request.mesh_routing_header_values();
+        let (target, exclude) = request.mesh_routing_header_values().unwrap();
         assert_eq!(target, vec!["aabbcc".to_string()]);
         assert_eq!(exclude, vec!["112233,445566".to_string()]);
     }
@@ -2016,9 +2025,29 @@ mod tests {
             )
             .as_bytes(),
         );
-        let (target, exclude) = request.mesh_routing_header_values();
+        let (target, exclude) = request.mesh_routing_header_values().unwrap();
         assert_eq!(target, vec!["aabbcc".to_string(), "ddeeff".to_string()]);
         assert!(exclude.is_empty());
+    }
+
+    #[test]
+    fn mesh_routing_header_values_rejects_non_utf8_x_mesh_target() {
+        let mut raw =
+            b"POST /v1/chat/completions HTTP/1.1\r\nhost: 127.0.0.1\r\nx-mesh-target: ".to_vec();
+        raw.extend_from_slice(&[0xff, 0xfe]);
+        raw.extend_from_slice(b"\r\n\r\n{}");
+        let request = request_with_raw(&raw);
+        assert!(request.mesh_routing_header_values().is_err());
+    }
+
+    #[test]
+    fn mesh_routing_header_values_rejects_non_utf8_x_mesh_exclude() {
+        let mut raw =
+            b"POST /v1/chat/completions HTTP/1.1\r\nhost: 127.0.0.1\r\nx-mesh-exclude: ".to_vec();
+        raw.extend_from_slice(&[0xff, 0xfe]);
+        raw.extend_from_slice(b"\r\n\r\n{}");
+        let request = request_with_raw(&raw);
+        assert!(request.mesh_routing_header_values().is_err());
     }
 
     /// [mesh-requester-nonce-addendum] Mutant: no `x-capsule-client-nonce`
