@@ -121,24 +121,25 @@ fn local_gguf_descriptor(model_name: &str) -> mesh::ServedModelDescriptor {
 #[test]
 fn test_remote_retry_policy_only_retries_uncommitted_failures() {
     assert!(should_retry_uncommitted_remote_attempt(
-        RouteAttemptResult::RetryableUnavailable
+        &RouteAttemptResult::RetryableUnavailable
     ));
     assert!(should_retry_uncommitted_remote_attempt(
-        RouteAttemptResult::RetryableTimeout
+        &RouteAttemptResult::RetryableTimeout
     ));
     assert!(!should_retry_uncommitted_remote_attempt(
-        RouteAttemptResult::RetryableContextOverflow
+        &RouteAttemptResult::RetryableContextOverflow
     ));
     assert!(!should_retry_uncommitted_remote_attempt(
-        RouteAttemptResult::RetryableResponseQuality(ResponseQualityFailure::EmptyAssistantOutput)
+        &RouteAttemptResult::RetryableResponseQuality(ResponseQualityFailure::EmptyAssistantOutput)
     ));
     assert!(!should_retry_uncommitted_remote_attempt(
-        RouteAttemptResult::ClientDisconnected
+        &RouteAttemptResult::ClientDisconnected
     ));
     assert!(!should_retry_uncommitted_remote_attempt(
-        RouteAttemptResult::Delivered {
+        &RouteAttemptResult::Delivered {
             status_code: 200,
             usage: None,
+            output_digests: Default::default(),
         }
     ));
 }

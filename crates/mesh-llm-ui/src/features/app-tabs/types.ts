@@ -10,7 +10,7 @@ export type Theme = 'auto' | ResolvedTheme
 export type Accent = 'blue' | 'cyan' | 'violet' | 'green' | 'amber' | 'pink'
 export type Density = 'compact' | 'normal' | 'sparse'
 export type PanelStyle = 'solid' | 'soft'
-export type AppTab = 'network' | 'reserves' | 'logs' | 'chat' | 'configuration'
+export type AppTab = 'network' | 'reserves' | 'logs' | 'chat' | 'configuration' | 'capsules'
 
 export type StatusBadgeTone = 'good' | 'warn' | 'bad' | 'muted' | 'accent'
 export type StatusMetric = {

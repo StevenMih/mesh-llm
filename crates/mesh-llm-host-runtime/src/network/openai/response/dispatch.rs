@@ -168,6 +168,7 @@ pub(in crate::network::openai::response) async fn relay_attempted_response<R: As
             RouteAttemptResult::Delivered {
                 status_code,
                 usage: None,
+                output_digests: Default::default(),
             }
         }
     }

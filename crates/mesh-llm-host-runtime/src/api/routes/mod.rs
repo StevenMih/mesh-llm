@@ -1,3 +1,4 @@
+mod capsules;
 mod chat;
 mod control_apply_diagnostics;
 mod diagnostics;
@@ -40,6 +41,10 @@ pub(super) const DISPATCH_REQUEST: DispatchRequestFn =
             match (method, path_only) {
                 (method, route_path) if logs::is_route(route_path) => {
                     logs::handle(stream, method, path, body, raw_request).await?;
+                    Ok(true)
+                }
+                ("GET", route_path) if capsules::is_route(route_path) => {
+                    capsules::handle(stream, route_path).await?;
                     Ok(true)
                 }
                 ("GET", "/api/discover") => {

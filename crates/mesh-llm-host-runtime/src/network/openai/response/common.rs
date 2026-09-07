@@ -50,11 +50,19 @@ impl PeerCapsuleIdSink {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::network::openai) enum RouteAttemptResult {
     Delivered {
         status_code: u16,
         usage: Option<TokenUsage>,
+        /// Digests over the REAL served response body (response-body /
+        /// tool_calls / reasoning), captured at the JSON-relay delivery point
+        /// where the whole body is still in hand. [disclosure-default-on]
+        /// also OPTIONALLY carries the exact response TEXT, which is why this
+        /// enum is `Clone` rather than the old `Copy` (a `String` cannot be
+        /// `Copy`). Default (all-`None`) for a streamed / non-JSON delivery
+        /// that never buffered a full body to digest.
+        output_digests: crate::plugin::openai_exchange::ExchangeOutputDigests,
     },
     RetryableTimeout,
     RetryableUnavailable,
@@ -319,6 +327,7 @@ mod tests {
             route_attempt_result_label(&RouteAttemptResult::Delivered {
                 status_code: 200,
                 usage: None,
+                output_digests: Default::default(),
             }),
             "delivered"
         );
@@ -352,6 +361,7 @@ mod tests {
             target_health_outcome_for_attempt(&RouteAttemptResult::Delivered {
                 status_code: 200,
                 usage: None,
+                output_digests: Default::default(),
             }),
             TargetHealthOutcome::Success
         );
@@ -359,6 +369,7 @@ mod tests {
             target_health_outcome_for_attempt(&RouteAttemptResult::Delivered {
                 status_code: 503,
                 usage: None,
+                output_digests: Default::default(),
             }),
             TargetHealthOutcome::Unavailable
         );
@@ -366,6 +377,7 @@ mod tests {
             target_health_outcome_for_attempt(&RouteAttemptResult::Delivered {
                 status_code: 400,
                 usage: None,
+                output_digests: Default::default(),
             }),
             TargetHealthOutcome::Rejected
         );

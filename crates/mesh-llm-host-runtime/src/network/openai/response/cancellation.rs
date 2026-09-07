@@ -121,6 +121,7 @@ mod tests {
             RouteAttemptResult::Delivered {
                 status_code: 200,
                 usage: None,
+                output_digests: Default::default(),
             },
             RouteAttemptResult::RetryableTimeout,
             RouteAttemptResult::RetryableUnavailable,
@@ -133,7 +134,7 @@ mod tests {
             let mut upstream = CancelRecorder::default();
 
             let passed_through =
-                cancel_upstream_if_client_disconnected(result, &mut upstream).await;
+                cancel_upstream_if_client_disconnected(result.clone(), &mut upstream).await;
 
             assert_eq!(upstream.cancels, 0, "{result:?} should not cancel");
             assert_eq!(passed_through, result);
