@@ -11,9 +11,10 @@ import { useQuery } from '@tanstack/react-query'
 import { TabPanel } from '@/components/ui/TabPanel'
 import { fetchSelfAccountabilityCard } from '@/features/capsules/api/client'
 import { SelfAccountabilityCard } from '@/features/capsules/components/SelfAccountabilityCard'
+import { SidecarPanesSection } from '@/features/capsules/components/SidecarPanesSection'
 import { CapsulesPageContent } from '@/features/capsules/pages/CapsulesPage'
 
-type AccountabilityPane = 'self' | 'peers' | 'exchange'
+type AccountabilityPane = 'self' | 'peers' | 'exchange' | 'sidecar-panes'
 
 function ThisNodePane() {
   const cardQuery = useQuery({
@@ -75,7 +76,13 @@ export function AccountabilityPageContent() {
         tabs={[
           { value: 'self', label: 'This node', content: <ThisNodePane /> },
           { value: 'peers', label: 'Peers', content: <PeersPane /> },
-          { value: 'exchange', label: 'This exchange', content: <CapsulesPageContent /> }
+          { value: 'exchange', label: 'This exchange', content: <CapsulesPageContent /> },
+          // [mesh-live-tab-pane-proxy] L1: the sidecar-proxied views (Q2
+          // ruling) live in their own tab, not folded into the three above
+          // -- those panes still read this app's own ledger route; this one
+          // calls the capsule-emit-mesh sidecar directly and stays off
+          // until a sidecar URL is configured.
+          { value: 'sidecar-panes', label: 'Panes', content: <SidecarPanesSection /> }
         ]}
       />
     </section>
