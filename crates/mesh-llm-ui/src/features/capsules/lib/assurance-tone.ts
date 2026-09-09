@@ -20,10 +20,8 @@ const CHIP_TONE: Record<string, StatusPillTone> = {
 
 const LEGACY_TONE: Record<string, StatusPillTone> = {
   absent: 'neutral',
-  unilateral_fallback: 'neutral',
   unattested: 'neutral',
   pending: 'neutral',
-  'present-unverified': 'warn',
   acknowledged_receipt: 'warn',
   self_measured: 'warn',
   os_measured: 'warn',

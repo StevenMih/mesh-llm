@@ -160,7 +160,7 @@ function PaneASection({ baseUrl, nodePubKeyPem }: { baseUrl: string; nodePubKeyP
 function PaneBRowView({ row }: { row: PaneBRow }) {
   const cells: Array<[string, PaneState]> = [
     ['node', row.node],
-    ['rung', row.rung],
+    ['trust tier', row.rung],
     ['history (theirs)', row.history],
     ['served (theirs)', row.served],
     ['verdicts', row.verdicts]

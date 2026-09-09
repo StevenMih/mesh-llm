@@ -11,10 +11,80 @@ import {
   friendlyModelName,
   plainGenParamsLine,
   plainModelLine,
+  plainTokenSplit,
   pocBlock,
   servingProvenance
 } from '@/features/capsules/lib/serving-provenance'
-import { buildVerdict, labelCounterparty } from '@/features/capsules/lib/verdict'
+// buildVerdict and labelCounterparty inlined here after verdict.ts removal (L2 retire)
+import type { ServingProvenance, VerdictLine } from '@/features/capsules/api/types'
+
+type VerdictInputs = {
+  idMatch: boolean | null
+  signatureOk: boolean | null
+  hasWitnessCheckpoint: boolean
+  counterparty: string
+}
+
+function labelCounterparty(record: CapsuleRecord): string {
+  const poc = pocBlock(record)
+  const crossParty = poc.cross_party as Record<string, unknown> | undefined
+  const initiatorRef = crossParty?.initiator_ref
+  if (!crossParty || typeof initiatorRef !== 'string' || !initiatorRef) return 'unknown'
+  return `initiator:${initiatorRef.slice(0, 12)}`
+}
+
+function buildVerdict(sp: ServingProvenance, inputs: VerdictInputs): VerdictLine[] {
+  const name = friendlyModelName(sp)
+  const gpu = sp.gpu
+  let hw = gpu ? ` on ${gpu}` : ''
+  if (sp.isSoc && gpu) hw = ` on ${gpu} (Apple silicon)`
+  const split = plainTokenSplit(sp)
+
+  let line1: VerdictLine
+  if (!sp.model) {
+    line1 = { mark: 'warn', text: "No serving-provenance in this record — can't say what ran." }
+  } else if (inputs.idMatch === false) {
+    line1 = {
+      mark: 'warn',
+      text: `Attests it ran on ${name}${hw} (self-reported) — but this record's content does NOT recompute to its own capsule_id here. Treat it as altered.`
+    }
+  } else {
+    line1 = {
+      mark: 'ok',
+      text: `Attests it ran on ${name}${hw} (self-reported)${split ? `, ${split}` : ''} — recompute in-browser that this record is signed+unaltered.`
+    }
+  }
+
+  let line2: VerdictLine
+  if (inputs.signatureOk === true) {
+    line2 = {
+      mark: inputs.hasWitnessCheckpoint ? 'ok' : 'warn',
+      text: inputs.hasWitnessCheckpoint
+        ? 'Signed by the provider (verified here) and anchored to a public witness, so it can’t be quietly changed.'
+        : 'Provider-signed — the signature verifies here against the node’s public key — but the witness receipt isn’t in this bundle, so anchoring isn’t shown in this view.'
+    }
+  } else if (inputs.signatureOk === false) {
+    line2 = {
+      mark: 'warn',
+      text: 'Signature does NOT verify against the node’s public key here — treat this record as unauthenticated.'
+    }
+  } else {
+    line2 = {
+      mark: 'warn',
+      text: 'No signed statement / node public key found in this bundle, so the provider signature can’t be checked here.'
+    }
+  }
+
+  const line3: VerdictLine =
+    inputs.counterparty && inputs.counterparty !== 'unknown'
+      ? { mark: 'ok', text: `Who asked is attested (${inputs.counterparty}).` }
+      : {
+          mark: 'warn',
+          text: "Open gap: who asked is self-attested (not independently verified) — and this node’s track record isn’t carried in a single record."
+        }
+
+  return [line1, line2, line3]
+}
 
 type CapsuleCardProps = {
   record: CapsuleRecord

@@ -21,6 +21,34 @@ import { toneForState } from '@/features/capsules/lib/assurance-tone'
 import { useRecomputedIdentity } from '@/features/capsules/lib/recompute-identity'
 
 // ---------------------------------------------------------------------------
+// Diagnostic helper — three distinct error states for sidecar connection
+// ---------------------------------------------------------------------------
+
+const LOOPBACK = new Set(['localhost', '127.0.0.1', '::1', '[::1]'])
+
+/** Returns a user-visible diagnostic string for a failed sidecar fetch.
+ *  Distinguishes CORS loopback-alias mismatch from a plain connection refusal. */
+function diagnoseFetchError(_error: unknown, baseUrl: string): string {
+  try {
+    const sidecarUrl = new URL(baseUrl)
+    const sidecarHost = sidecarUrl.hostname
+    const sidecarPort = sidecarUrl.port || (sidecarUrl.protocol === 'https:' ? '443' : '80')
+    const pageHost = window.location.hostname
+    const pagePort = window.location.port || (window.location.protocol === 'https:' ? '443' : '80')
+
+    if (LOOPBACK.has(sidecarHost) && LOOPBACK.has(pageHost) && sidecarHost !== pageHost) {
+      return (
+        `Reached the sidecar but the browser blocked the response — origin mismatch: ` +
+        `this page is ${pageHost}:${pagePort}, the sidecar allows ${sidecarHost}:${sidecarPort}`
+      )
+    }
+  } catch {
+    // URL parse failed — fall through to generic message
+  }
+  return `No sidecar detected at ${baseUrl}`
+}
+
+// ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
@@ -82,7 +110,7 @@ function SidecarUrlField() {
         type="text"
         value={draft}
         onChange={(event) => setDraft(event.target.value)}
-        placeholder="http://127.0.0.1:8765"
+        placeholder="http://127.0.0.1:8089"
         className="min-w-[220px] flex-1 rounded-md border border-border/70 bg-card px-2 py-1 text-sm text-foreground"
       />
       <button
@@ -408,9 +436,7 @@ function BalanceSection({
   if (query.isLoading) return <p className="text-sm text-muted-foreground">Loading…</p>
   if (query.isError) {
     return (
-      <p className="text-sm text-amber-500">
-        Could not reach data source ({query.error instanceof Error ? query.error.message : 'unknown error'}).
-      </p>
+      <p className="text-sm text-amber-500">{diagnoseFetchError(query.error, baseUrl)}</p>
     )
   }
   if (!query.data || query.data.rows.length === 0) {
@@ -441,9 +467,7 @@ function PeersSection({ baseUrl }: { baseUrl: string }) {
   if (query.isLoading) return <p className="text-sm text-muted-foreground">Loading…</p>
   if (query.isError) {
     return (
-      <p className="text-sm text-amber-500">
-        Could not reach data source ({query.error instanceof Error ? query.error.message : 'unknown error'}).
-      </p>
+      <p className="text-sm text-amber-500">{diagnoseFetchError(query.error, baseUrl)}</p>
     )
   }
   if (!query.data || query.data.peer_count === 0) {
@@ -462,7 +486,7 @@ function PeersSection({ baseUrl }: { baseUrl: string }) {
 function PeerRowCard({ row }: { row: PaneBRow }) {
   const cells: Array<[string, PaneState]> = [
     ['node', row.node],
-    ['rung', row.rung],
+    ['trust tier', row.rung],
     ['history', row.history],
     ['served', row.served],
     ['verdicts', row.verdicts]
@@ -507,9 +531,7 @@ function ExchangesSection({
   if (query.isLoading) return <p className="text-sm text-muted-foreground">Loading…</p>
   if (query.isError) {
     return (
-      <p className="text-sm text-amber-500">
-        Could not reach data source ({query.error instanceof Error ? query.error.message : 'unknown error'}).
-      </p>
+      <p className="text-sm text-amber-500">{diagnoseFetchError(query.error, baseUrl)}</p>
     )
   }
   if (!query.data || query.data.row_count === 0) {
@@ -552,9 +574,7 @@ function IntegritySection({ baseUrl }: { baseUrl: string }) {
   if (query.isLoading) return <p className="text-sm text-muted-foreground">Loading…</p>
   if (query.isError) {
     return (
-      <p className="text-sm text-amber-500">
-        Could not reach data source ({query.error instanceof Error ? query.error.message : 'unknown error'}).
-      </p>
+      <p className="text-sm text-amber-500">{diagnoseFetchError(query.error, baseUrl)}</p>
     )
   }
 
@@ -628,7 +648,7 @@ export function LedgerPageContent() {
         <div className="mb-4">
           <h1 className="type-display mt-1 text-foreground">Ledger</h1>
           <p className="type-body mt-2 max-w-[68ch] text-fg-dim">
-            Everything here is recomputed from sealed records. Nothing is a score.
+            Everything here is recomputed from sealed records. All values are structural facts, not assessments.
           </p>
           <SidecarUrlField />
         </div>
