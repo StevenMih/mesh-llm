@@ -1,13 +1,16 @@
-// Tests for LedgerPageContent — the four-section Ledger tab (L2 build,
-// [mesh-ledger-earned-pass-and-native-panes] Part B native-panes rebuild).
+// Tests for LedgerPageContent — the three-section Ledger tab (Part 1 of
+// [mesh-ledger-phase3-tables-and-modal]: Balance retired as a standalone
+// tab, folded into a header strip on Exchanges).
 //
 // Test goals:
-//   1. Four section tabs present (Balance/Peers/Exchanges/Integrity), with no
-//      configuration step required to see them populate
+//   1. Three section tabs present (Peers/Exchanges/Integrity), Peers is the
+//      default, with no configuration step required to see them populate
 //   2. The premise line is rendered verbatim
 //   3. No leaked internal IDs or tool names in the empty state, and no
 //      sidecar URL box anywhere
 //   4. Exchanges header shows two counts, never a ratio
+//   5. The Balance header strip on Exchanges never crashes on an absent
+//      served-summary and never fabricates a number
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -63,11 +66,13 @@ describe('LedgerPageContent', () => {
     vi.clearAllMocks()
   })
 
-  it('shows four section tabs', () => {
+  it('shows three section tabs, Peers first and default', () => {
     render(<LedgerPageContent />, { wrapper: makeWrapper() })
 
-    expect(screen.getByRole('tab', { name: /balance/i })).toBeInTheDocument()
-    expect(screen.getByRole('tab', { name: /peers/i })).toBeInTheDocument()
+    expect(screen.queryByRole('tab', { name: /balance/i })).not.toBeInTheDocument()
+    const peersTab = screen.getByRole('tab', { name: /peers/i })
+    expect(peersTab).toBeInTheDocument()
+    expect(peersTab).toHaveAttribute('data-state', 'active')
     expect(screen.getByRole('tab', { name: /exchanges/i })).toBeInTheDocument()
     expect(screen.getByRole('tab', { name: /integrity/i })).toBeInTheDocument()
   })
@@ -143,9 +148,17 @@ describe('LedgerPageContent', () => {
   })
 
   it('Exchanges header shows two counts not a ratio', async () => {
-    // Set up mock with 3 rows, 1 of which is bilateral (not unilateral)
+    // Set up mock with 3 rows, 1 of which is bilateral (not unilateral).
+    // `mockResolvedValue` (persistent, not `...Once`): Peers is now the
+    // default/first-mounted tab and ALSO queries pane-c (for its own
+    // exchange-timeline join, sharing this cache key by design) -- an
+    // initial Peers mount consumes a one-time override before this test
+    // ever switches to the Exchanges tab, and switching tabs mounts a new
+    // pane-c observer that refetches (staleTime 0). A persistent value
+    // matches real usage too: hitting the endpoint twice returns the same
+    // data both times.
     const { fetchPaneCList } = await import('@/features/capsules/api/sidecarClient')
-    vi.mocked(fetchPaneCList).mockResolvedValueOnce({
+    vi.mocked(fetchPaneCList).mockResolvedValue({
       rows: [
         {
           exchange_key: 'exc-1',
@@ -203,5 +216,20 @@ describe('LedgerPageContent', () => {
     const bodyText = document.body.textContent ?? ''
     expect(bodyText).not.toMatch(/1\/3/)
     expect(bodyText).not.toMatch(/33%/)
+  })
+
+  it('Exchanges shows the balance header strip above the records, honest absence when unwitnessed', async () => {
+    const user = userEvent.setup()
+    render(<LedgerPageContent />, { wrapper: makeWrapper() })
+    await user.click(screen.getByRole('tab', { name: /exchanges/i }))
+
+    // fetchPaneA's default mock (card: null) — never a crash, never a
+    // fabricated number, an honest absence message instead. The coverage-
+    // statement branches themselves (witnessed / not-reconciled / failed)
+    // are unit-tested directly against the pure `balanceCoverage` function
+    // in balance-view.test.ts — fetchPaneA is shared by three query sites
+    // on this page, so asserting a specific override's exact caller here
+    // would be an order-dependent test, not a real wiring check.
+    expect(await screen.findByText('No served-summary data available yet.')).toBeInTheDocument()
   })
 })

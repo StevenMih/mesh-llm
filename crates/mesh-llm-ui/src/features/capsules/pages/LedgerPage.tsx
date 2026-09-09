@@ -18,12 +18,14 @@ import { TooltipProvider } from '@/components/ui/tooltip'
 import { TabPanel } from '@/components/ui/TabPanel'
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '@/components/ui/accordion'
 import { fetchCapsuleLedger } from '@/features/capsules/api/client'
-import type { CapsuleRecord } from '@/features/capsules/api/types'
+import type { CapsuleRecord, JsonRecord } from '@/features/capsules/api/types'
 import { PaneFetchError, fetchPaneA, fetchPaneB, fetchPaneCList } from '@/features/capsules/api/sidecarClient'
-import type { PaneARow, PaneCRow, PaneState } from '@/features/capsules/api/sidecarTypes'
+import type { PaneCRow, PaneState } from '@/features/capsules/api/sidecarTypes'
+import { balanceCoverage } from '@/features/capsules/lib/balance-view'
 import { toneForState } from '@/features/capsules/lib/assurance-tone'
 import { useRecomputedIdentity } from '@/features/capsules/lib/recompute-identity'
 import { PeerCard } from '@/features/capsules/components/PeerCard'
+import { HARNESS_PANE_A_PAYLOAD, HARNESS_PANE_C_PAYLOAD } from '@/features/capsules/lib/exchange-fixtures'
 import {
   HARNESS_PANE_B_PAYLOAD,
   PEER_TAB_HARNESS_EXCHANGE_SOURCES,
@@ -53,7 +55,7 @@ function describePaneError(error: unknown): string {
 // Constants
 // ---------------------------------------------------------------------------
 
-type LedgerTab = 'balance' | 'peers' | 'exchanges' | 'integrity'
+type LedgerTab = 'peers' | 'exchanges' | 'integrity'
 
 // The nine properties from the spec §2 — verbatim order
 const NINE_PROPERTY_LABELS: Record<string, string> = {
@@ -483,33 +485,6 @@ function LedgerCard({
 }
 
 // ---------------------------------------------------------------------------
-// PaneA row adapter — wraps the per-row recomputed identity hook
-// ---------------------------------------------------------------------------
-
-function PaneARowCard({ row, nodePubKeyPem }: { row: PaneARow; nodePubKeyPem: string | null }) {
-  const identity = useRecomputedIdentity(row.record, nodePubKeyPem)
-  const model = row.model_claimed ?? undefined
-
-  // L3.1 — card headline for Balance rows
-  const headline = model
-    ? `Routed to ${model}; the node signed this answer. Sealed — digest only.`
-    : `Sealed record from this node. Sealed — digest only.`
-
-  return (
-    <LedgerCard
-      exchangeId={row.capsule_id}
-      fullCapsuleId={row.capsule_id}
-      timestamp={row.timestamp}
-      modelInfo={model}
-      chipStates={row.rungs}
-      recomputedIdMatch={identity.idMatch}
-      recomputedSignatureOk={identity.signatureOk}
-      headline={headline}
-    />
-  )
-}
-
-// ---------------------------------------------------------------------------
 // PaneC row adapter
 // ---------------------------------------------------------------------------
 
@@ -557,34 +532,33 @@ function PaneCRowCard({
 }
 
 // ---------------------------------------------------------------------------
-// Balance section (pane-a)
+// Balance header strip (pane-a's card.served_summary) — sits above the
+// Exchanges records table. Retired the standalone Balance tab entirely;
+// this is the quantity answer, records are the list below it.
 // ---------------------------------------------------------------------------
 
-function BalanceSection({ nodePubKeyPem }: { nodePubKeyPem: string | null }) {
-  const query = useQuery({
-    queryKey: ['ledger', 'pane-a'],
-    queryFn: () => fetchPaneA(),
-    refetchInterval: 15_000,
-    retry: false
-  })
+function ExchangesBalanceHeader({ card }: { card: JsonRecord | null | undefined }) {
+  const coverage = balanceCoverage(card)
 
-  if (query.isLoading) return <p className="text-sm text-muted-foreground">Loading…</p>
-  if (query.isError) {
-    return <p className="text-sm text-amber-500">{describePaneError(query.error)}</p>
+  if (coverage.kind === 'absent') {
+    return (
+      <div className="rounded border border-border-soft bg-panel-strong/40 px-3 py-2 text-xs text-fg-dim">
+        {coverage.headline}
+      </div>
+    )
   }
-  if (!query.data || query.data.rows.length === 0) {
-    return <p className="text-sm text-muted-foreground">No records on this node's ledger yet.</p>
+  if (coverage.kind === 'failed') {
+    return (
+      <div className="rounded border border-border-soft bg-panel-strong/40 px-3 py-2 text-xs text-amber-500">
+        {coverage.headline}
+      </div>
+    )
   }
-
   return (
-    <div className="flex flex-col gap-2">
-      {/* L3.1 — Balance section headline */}
-      <p className="text-sm text-fg-dim">
-        Records sealed by this node. Each one is recomputed locally when you open this page.
-      </p>
-      {query.data.rows.map((row) => (
-        <PaneARowCard key={row.capsule_id} row={row} nodePubKeyPem={nodePubKeyPem} />
-      ))}
+    <div className="flex flex-col gap-1 rounded border border-border-soft bg-panel-strong/40 px-3 py-2">
+      <p className="text-sm font-medium text-foreground">Served: {coverage.servedText}</p>
+      <p className="text-xs text-fg-dim">{coverage.consumedText}</p>
+      <p className="text-xs text-fg-faint">{coverage.statement}</p>
     </div>
   )
 }
@@ -669,26 +643,59 @@ function ExchangesSection({
   nodePubKeyPem: string | null
   requesterStartedDate?: string | null
 }) {
+  const { mode } = useDataMode()
+  const harnessMode = mode === 'harness'
+  // Distinct queryKey from the top-level/Integrity pane-a query (no `mode`
+  // suffix there) — this one's queryFn branches on harness mode, and a
+  // shared key with a non-branching queryFn would race for cache ownership.
+  const balanceQuery = useQuery({
+    queryKey: ['ledger', 'pane-a', 'balance', mode],
+    queryFn: () => (harnessMode ? Promise.resolve(HARNESS_PANE_A_PAYLOAD) : fetchPaneA()),
+    refetchInterval: 15_000,
+    retry: false
+  })
+  // Same queryKey as PeersSection's own pane-c query (no `mode` suffix) --
+  // that one calls the identical `fetchPaneCList()` in live mode and is
+  // simply `enabled: false` in harness mode, so both share ONE cache entry
+  // / one real fetch, same discipline PeersSection's own comment documents.
   const query = useQuery({
     queryKey: ['ledger', 'pane-c'],
-    queryFn: () => fetchPaneCList(),
+    queryFn: () => (harnessMode ? Promise.resolve(HARNESS_PANE_C_PAYLOAD) : fetchPaneCList()),
     refetchInterval: 15_000,
     retry: false
   })
 
-  if (query.isLoading) return <p className="text-sm text-muted-foreground">Loading…</p>
+  const balanceHeader = <ExchangesBalanceHeader card={balanceQuery.data?.card ?? null} />
+
+  if (query.isLoading) {
+    return (
+      <div className="flex flex-col gap-2">
+        {balanceHeader}
+        <p className="text-sm text-muted-foreground">Loading…</p>
+      </div>
+    )
+  }
   if (query.isError) {
-    return <p className="text-sm text-amber-500">{describePaneError(query.error)}</p>
+    return (
+      <div className="flex flex-col gap-2">
+        {balanceHeader}
+        <p className="text-sm text-amber-500">{describePaneError(query.error)}</p>
+      </div>
+    )
   }
 
   // L3.7 — Requester empty state
   if (!query.data || query.data.row_count === 0) {
-    if (requesterStartedDate) {
-      return (
-        <p className="text-sm text-muted-foreground">Your node started keeping its half on {requesterStartedDate}.</p>
-      )
-    }
-    return <p className="text-sm text-muted-foreground">No exchanges recorded yet.</p>
+    return (
+      <div className="flex flex-col gap-2">
+        {balanceHeader}
+        {requesterStartedDate ? (
+          <p className="text-sm text-muted-foreground">Your node started keeping its half on {requesterStartedDate}.</p>
+        ) : (
+          <p className="text-sm text-muted-foreground">No exchanges recorded yet.</p>
+        )}
+      </div>
+    )
   }
 
   // L3.8 — Two counts — never a ratio
@@ -697,6 +704,7 @@ function ExchangesSection({
 
   return (
     <div className="flex flex-col gap-2">
+      {balanceHeader}
       {/* L3.1 — Exchanges section headline */}
       <p className="text-sm text-fg-dim">
         Each exchange is a pair of sealed records — yours and theirs. Both sides keep a copy.
@@ -794,8 +802,8 @@ export function LedgerPageContent() {
     refetchInterval: 15_000
   })
 
-  // Shares its cache with BalanceSection/IntegritySection's own pane-a query
-  // (same queryKey) -- used here only to drive the header's connectivity badge.
+  // Shares its cache with IntegritySection's own pane-a query (same
+  // queryKey) -- used here only to drive the header's connectivity badge.
   const paneAStatusQuery = useQuery({
     queryKey: ['ledger', 'pane-a'],
     queryFn: () => fetchPaneA(),
@@ -838,15 +846,10 @@ export function LedgerPageContent() {
         <Card className="overflow-hidden rounded-[var(--radius-lg)] border-border bg-panel p-4 shadow-none">
           <TabPanel<LedgerTab>
             ariaLabel="Ledger sections"
-            defaultValue="balance"
+            defaultValue="peers"
             stretchTabs={false}
             contentClassName="px-0 pt-4"
             tabs={[
-              {
-                value: 'balance',
-                label: 'Balance',
-                content: <BalanceSection nodePubKeyPem={nodePubKeyPem} />
-              },
               {
                 value: 'peers',
                 label: 'Peers',
