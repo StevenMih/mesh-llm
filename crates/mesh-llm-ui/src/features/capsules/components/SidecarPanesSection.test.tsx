@@ -8,7 +8,7 @@
 //
 // This test MUST fail against the pre-fix code (two useState instances) and
 // MUST pass after the fix (module-level store).
-import { act, fireEvent, render, screen } from '@testing-library/react'
+import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
