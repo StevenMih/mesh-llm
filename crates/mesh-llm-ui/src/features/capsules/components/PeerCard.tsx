@@ -1,15 +1,25 @@
-// [mesh-ledger-peers-tab] Phase 1 — one inline card per peer, catalog-card
-// grammar (mirrors the Network Model-catalog's `ModelRow`: left icon,
-// bold mono title, meta row, right-side status/alarm chips). Honesty
-// backbone: with-you counts and their-chain text are never summed, the
-// adjudication line always carries a denominator, and the alarm chip is
-// the only element guaranteed visible when the card is collapsed.
-import { Users } from 'lucide-react'
+// [mesh-ledger-peers-tab] — one card per peer, catalog-card grammar
+// (mirrors the Network Model-catalog's `ModelRow`: left icon, bold mono
+// title, meta row, right-side status/alarm chips). Phase 1: the inline
+// row. Phase 2: click to expand into the one-timeline view + per-exchange
+// drill-down. Honesty backbone: with-you counts and their-chain text are
+// never summed, the adjudication line always carries a denominator, and
+// the alarm chip is the only element guaranteed visible when collapsed.
+import { useMemo, useState } from 'react'
+import { ChevronDown, ChevronUp, Users } from 'lucide-react'
 import { useNavigate } from '@tanstack/react-router'
 import { AccentIconFrame } from '@/components/ui/AccentIconFrame'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import { StatusBadge } from '@/components/ui/StatusBadge'
+import type { CapsuleRecord } from '@/features/capsules/api/types'
 import type { PaneBRow } from '@/features/capsules/api/sidecarTypes'
+import { PeerExchangeInspector } from '@/features/capsules/components/PeerExchangeInspector'
+import { PeerTimeline } from '@/features/capsules/components/PeerTimeline'
+import {
+  buildTimelinePoints,
+  type PeerExchangeSource,
+  type PeerTimelinePoint
+} from '@/features/capsules/lib/peer-exchange-timeline'
 import type { PeerMeshStatus } from '@/features/capsules/lib/peer-mesh-status'
 import {
   adjudicationSummary,
@@ -25,6 +35,8 @@ export type PeerCardProps = {
   row: PaneBRow
   meshStatus: PeerMeshStatus | null
   resolveTimestamp?: (capsuleId: string) => string | null
+  exchangeSources?: readonly PeerExchangeSource[]
+  recordsById?: ReadonlyMap<string, CapsuleRecord>
 }
 
 function meshMetaLine(meshStatus: PeerMeshStatus | null): string | null {
@@ -37,13 +49,29 @@ function meshMetaLine(meshStatus: PeerMeshStatus | null): string | null {
   return parts.length > 0 ? parts.join(' · ') : null
 }
 
-export function PeerCard({ row, meshStatus, resolveTimestamp }: PeerCardProps) {
+const EMPTY_SOURCES: readonly PeerExchangeSource[] = []
+const EMPTY_RECORDS: ReadonlyMap<string, CapsuleRecord> = new Map()
+
+export function PeerCard({
+  row,
+  meshStatus,
+  resolveTimestamp,
+  exchangeSources = EMPTY_SOURCES,
+  recordsById = EMPTY_RECORDS
+}: PeerCardProps) {
   const navigate = useNavigate()
+  const [expanded, setExpanded] = useState(false)
+  const [selectedPoint, setSelectedPoint] = useState<PeerTimelinePoint | null>(null)
+
   const displayId = peerDisplayId(row)
   const counts = withYouCounts(row)
   const adjudication = adjudicationSummary(row)
   const chain = theirChainSummary(row)
   const alarm = alarmSignal(row, resolveTimestamp)
+  const points = useMemo(
+    () => buildTimelinePoints(row, exchangeSources, recordsById),
+    [row, exchangeSources, recordsById]
+  )
 
   const online = meshStatus?.online ?? false
   const metaLine = meshMetaLine(meshStatus)
@@ -69,9 +97,8 @@ export function PeerCard({ row, meshStatus, resolveTimestamp }: PeerCardProps) {
           <StatusBadge dot size="caption" tone={meshStatus ? (online ? 'good' : 'muted') : 'muted'}>
             {meshStatus ? (online ? 'online' : 'offline') : 'status unknown'}
           </StatusBadge>
-          {/* Always rendered when present, even though the card has no
-             collapsed/expanded state distinction yet (that lands in
-             Phase 2) — a bad peer must never be able to hide. */}
+          {/* Always rendered, collapsed or expanded — a bad peer must
+             never be able to hide. */}
           {alarm.present ? (
             <StatusBadge size="caption" tone={alarm.tone}>
               ⚠ {alarm.text}
@@ -83,7 +110,7 @@ export function PeerCard({ row, meshStatus, resolveTimestamp }: PeerCardProps) {
         <p>{withYouCountsText(counts)}</p>
         <p>{adjudicationSummaryText(adjudication)}</p>
         <p className="text-fg-faint">{chain.text}</p>
-        <div className="pt-1">
+        <div className="flex items-center gap-2 pt-1">
           <button
             className="rounded border border-border/60 px-2 py-0.5 text-xs text-fg-dim hover:bg-card disabled:cursor-not-allowed disabled:opacity-40"
             disabled={!canRouteToChat}
@@ -95,8 +122,23 @@ export function PeerCard({ row, meshStatus, resolveTimestamp }: PeerCardProps) {
           >
             Route here
           </button>
+          <button
+            aria-expanded={expanded}
+            className="inline-flex items-center gap-1 rounded border border-border/60 px-2 py-0.5 text-xs text-fg-dim hover:bg-card"
+            onClick={() => setExpanded((v) => !v)}
+            type="button"
+          >
+            {expanded ? (
+              <ChevronUp aria-hidden="true" className="size-3" />
+            ) : (
+              <ChevronDown aria-hidden="true" className="size-3" />
+            )}
+            {expanded ? 'Collapse' : 'Expand'}
+          </button>
         </div>
+        {expanded ? <PeerTimeline onSelectPoint={setSelectedPoint} points={points} row={row} /> : null}
       </CardContent>
+      <PeerExchangeInspector onClose={() => setSelectedPoint(null)} point={selectedPoint} />
     </Card>
   )
 }

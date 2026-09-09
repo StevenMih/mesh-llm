@@ -26,9 +26,12 @@ import { useRecomputedIdentity } from '@/features/capsules/lib/recompute-identit
 import { PeerCard } from '@/features/capsules/components/PeerCard'
 import {
   HARNESS_PANE_B_PAYLOAD,
+  PEER_TAB_HARNESS_EXCHANGE_SOURCES,
+  PEER_TAB_HARNESS_LEDGER_RECORDS,
   PEER_TAB_HARNESS_MESH_MODELS,
   PEER_TAB_HARNESS_MESH_PEERS
 } from '@/features/capsules/lib/peer-fixtures'
+import { livePeerExchangeSources } from '@/features/capsules/lib/peer-exchange-timeline'
 import { usePeerMeshStatusIndex } from '@/features/capsules/lib/peer-mesh-status'
 import { peerDisplayId, peerSortKey, sortPeerRows } from '@/features/capsules/lib/peer-row-view'
 import { useDataMode } from '@/lib/data-mode'
@@ -599,9 +602,20 @@ function PeersSection({ recordsById }: { recordsById: Map<string, CapsuleRecord>
     refetchInterval: 15_000,
     retry: false
   })
+  // Shares its cache with ExchangesSection's own pane-c query (same
+  // queryKey) -- the per-exchange timeline (Phase 2) joins this peer's
+  // exchange_ids against the same list, never a second fetch.
+  const paneCQuery = useQuery({
+    queryKey: ['ledger', 'pane-c'],
+    queryFn: () => fetchPaneCList(),
+    refetchInterval: 15_000,
+    retry: false,
+    enabled: !harnessMode
+  })
   const meshStatus = usePeerMeshStatusIndex(PEER_TAB_HARNESS_MESH_PEERS, PEER_TAB_HARNESS_MESH_MODELS)
+  const effectiveRecordsById = harnessMode ? PEER_TAB_HARNESS_LEDGER_RECORDS : recordsById
 
-  const resolveTimestamp = (capsuleId: string): string | null => recordsById.get(capsuleId)?.timestamp ?? null
+  const resolveTimestamp = (capsuleId: string): string | null => effectiveRecordsById.get(capsuleId)?.timestamp ?? null
 
   if (query.isLoading) return <p className="text-sm text-muted-foreground">Loading…</p>
   if (query.isError) {
@@ -622,14 +636,22 @@ function PeersSection({ recordsById }: { recordsById: Map<string, CapsuleRecord>
       <p className="text-sm text-fg-dim">
         Nodes this node has exchanged with. What you sent, what they sent back, and whether it matched.
       </p>
-      {sortedRows.map((row) => (
-        <PeerCard
-          key={row.peer_id ?? peerDisplayId(row)}
-          meshStatus={meshStatus.statusFor(peerDisplayId(row))}
-          resolveTimestamp={resolveTimestamp}
-          row={row}
-        />
-      ))}
+      {sortedRows.map((row) => {
+        const peerId = peerDisplayId(row)
+        const exchangeSources = harnessMode
+          ? (PEER_TAB_HARNESS_EXCHANGE_SOURCES[peerId] ?? [])
+          : livePeerExchangeSources(row, paneCQuery.data?.rows ?? [])
+        return (
+          <PeerCard
+            exchangeSources={exchangeSources}
+            key={row.peer_id ?? peerId}
+            meshStatus={meshStatus.statusFor(peerId)}
+            recordsById={effectiveRecordsById}
+            resolveTimestamp={resolveTimestamp}
+            row={row}
+          />
+        )
+      })}
     </div>
   )
 }

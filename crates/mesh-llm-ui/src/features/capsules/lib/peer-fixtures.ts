@@ -5,8 +5,10 @@
 // adjudication AND a failed chain-continuity check). Field shapes mirror
 // `peer_accountability_tab.build_peer_row` on capsule-emit-mesh main
 // verbatim -- see `sidecarTypes.ts`'s Pane B cell types.
+import type { CapsuleRecord } from '@/features/capsules/api/types'
 import type { ModelSummary, Peer } from '@/features/app-tabs/types'
 import type { PaneBJson, PaneBRow } from '@/features/capsules/api/sidecarTypes'
+import type { PeerExchangeSource } from '@/features/capsules/lib/peer-exchange-timeline'
 
 const CLEAN_PEER_ID = 'node:aa11bb22cc33dd44'
 const ALARMED_PEER_ID = 'node:ff99ee88dd77cc66'
@@ -126,8 +128,11 @@ const ALARMED_PEER_ROW: PaneBRow = {
     missing: 0,
     details: [
       { exchange_id: 'exch-alarm-07', state: 'failed' },
+      // 'b' prefix -- distinct from the single called-out 'exch-alarm-07'
+      // above, never colliding with it (a bare 00-08 range would repeat
+      // '07' at i=7).
       ...Array.from({ length: 9 }, (_, i) => ({
-        exchange_id: `exch-alarm-${String(i).padStart(2, '0')}`,
+        exchange_id: `exch-alarm-b${String(i).padStart(2, '0')}`,
         state: 'verified'
       }))
     ]
@@ -146,8 +151,11 @@ const ALARMED_PEER_ROW: PaneBRow = {
   expand: {
     pair_ledger: [
       { exchange_id: 'exch-alarm-07', state: 'failed' },
+      // 'b' prefix -- distinct from the single called-out 'exch-alarm-07'
+      // above, never colliding with it (a bare 00-08 range would repeat
+      // '07' at i=7).
       ...Array.from({ length: 9 }, (_, i) => ({
-        exchange_id: `exch-alarm-${String(i).padStart(2, '0')}`,
+        exchange_id: `exch-alarm-b${String(i).padStart(2, '0')}`,
         state: 'verified'
       }))
     ],
@@ -212,3 +220,111 @@ export const PEER_TAB_HARNESS_MESH_MODELS: ModelSummary[] = [
     ctxMaxK: 256
   }
 ]
+
+// ---------------------------------------------------------------------------
+// Phase 2 -- per-exchange timeline fixtures. Sourced from the SAME
+// exchange_ids the Phase 1 `pair.details`/`expand.pair_ledger` arrays
+// above already name (never a separate invented set), with a mine-side
+// capsule_id per exchange and two ledger records carrying a real
+// `model_attestation.compute_attestation.adjudication` block -- one
+// corroborated (clean peer), one contradicted, the latter's capsule_id
+// matching `ALARMED_PEER_ROW.verdicts.adjudication_capsule_id` exactly so
+// the inline alarm chip and the timeline drill-down cite the same record.
+// Every other exchange has no matching ledger record on purpose: the
+// acceptance check requires seeing a genuine NOT_CHECKED (no-verdict)
+// case, not just the adjudicated ones.
+// ---------------------------------------------------------------------------
+
+function evenlySpacedTimestamps(startIso: string, endIso: string, count: number): string[] {
+  const start = new Date(startIso).getTime()
+  const end = new Date(endIso).getTime()
+  if (count <= 1) return [startIso]
+  const stepMs = (end - start) / (count - 1)
+  return Array.from({ length: count }, (_, i) => new Date(start + stepMs * i).toISOString())
+}
+
+function mineCapsuleIdFor(exchangeId: string): string {
+  return `mine_${exchangeId}`
+}
+
+function theirsCapsuleIdFor(exchangeId: string): string {
+  return `theirs_${exchangeId}`
+}
+
+function buildExchangeSources(
+  exchangeIds: readonly string[],
+  timestamps: readonly string[],
+  servedIndices: ReadonlySet<number>
+): PeerExchangeSource[] {
+  return exchangeIds.map((exchangeId, index) => ({
+    exchangeId,
+    timestamp: timestamps[index] ?? null,
+    direction: servedIndices.has(index) ? 'served' : 'requested',
+    mineCapsuleId: mineCapsuleIdFor(exchangeId),
+    theirsCapsuleId: theirsCapsuleIdFor(exchangeId)
+  }))
+}
+
+const CLEAN_EXCHANGE_IDS = Array.from({ length: 16 }, (_, i) => `exch-clean-${String(i).padStart(2, '0')}`)
+const ALARMED_EXCHANGE_IDS = [
+  'exch-alarm-07',
+  ...Array.from({ length: 9 }, (_, i) => `exch-alarm-b${String(i).padStart(2, '0')}`)
+]
+
+export const PEER_TAB_HARNESS_EXCHANGE_SOURCES: Record<string, PeerExchangeSource[]> = {
+  [CLEAN_PEER_ID]: buildExchangeSources(
+    CLEAN_EXCHANGE_IDS,
+    evenlySpacedTimestamps('2026-08-20T09:12:00Z', '2026-09-08T16:58:05Z', CLEAN_EXCHANGE_IDS.length),
+    new Set([3, 6, 9, 12, 15]) // exch-clean-00 (index 0) stays "requested" -- it carries the corroborated verdict
+  ),
+  [ALARMED_PEER_ID]: buildExchangeSources(
+    ALARMED_EXCHANGE_IDS,
+    evenlySpacedTimestamps('2026-08-25T11:40:00Z', '2026-09-08T08:03:00Z', ALARMED_EXCHANGE_IDS.length),
+    new Set([1, 4, 7]) // exch-alarm-07 (index 0) stays "requested" -- it carries the contradicted verdict
+  )
+}
+
+const CLEAN_ADJUDICATED_EXCHANGE_ID = 'exch-clean-00'
+const ALARMED_ADJUDICATED_EXCHANGE_ID = 'exch-alarm-07'
+
+export const PEER_TAB_HARNESS_LEDGER_RECORDS: Map<string, CapsuleRecord> = new Map([
+  [
+    'cap-clean-adjudication-0001',
+    {
+      capsule_id: 'cap-clean-adjudication-0001',
+      timestamp: PEER_TAB_HARNESS_EXCHANGE_SOURCES[CLEAN_PEER_ID][0]?.timestamp ?? undefined,
+      model_attestation: {
+        compute_attestation: {
+          adjudication: {
+            verdict: 'corroborated',
+            margin: '0.96',
+            margin_tau: '0.9',
+            half_a_capsule_id: mineCapsuleIdFor(CLEAN_ADJUDICATED_EXCHANGE_ID),
+            half_b_capsule_id: `twin_${CLEAN_ADJUDICATED_EXCHANGE_ID}`,
+            referee_id: 'local-twin'
+          }
+        }
+      }
+    }
+  ],
+  [
+    'cap-alarmed-adjudication-0007',
+    {
+      capsule_id: 'cap-alarmed-adjudication-0007',
+      timestamp: PEER_TAB_HARNESS_EXCHANGE_SOURCES[ALARMED_PEER_ID][0]?.timestamp ?? undefined,
+      model_attestation: {
+        compute_attestation: {
+          adjudication: {
+            verdict: 'contradicted',
+            margin: '0.41',
+            margin_tau: '0.9',
+            half_a_capsule_id: mineCapsuleIdFor(ALARMED_ADJUDICATED_EXCHANGE_ID),
+            half_b_capsule_id: `twin_${ALARMED_ADJUDICATED_EXCHANGE_ID}`,
+            referee_capsule_id: 'cap-alarmed-referee-0007',
+            referee_id: 'mesh-referee-eu-2'
+          }
+        }
+      }
+    }
+  ]
+])

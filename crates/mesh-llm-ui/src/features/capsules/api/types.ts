@@ -15,6 +15,18 @@ export type CapsuleRecord = JsonRecord & {
     model_id?: string
     compute_attestation?: {
       'x-mesh-poc-v1'?: JsonRecord
+      // `twin_adjudicator.seal_adjudication_capsule`'s own dict shape --
+      // present only on a sealed adjudication capsule, never on the two
+      // exchange halves it cites.
+      adjudication?: {
+        verdict?: string
+        margin?: string
+        margin_tau?: string
+        half_a_capsule_id?: string
+        half_b_capsule_id?: string
+        referee_capsule_id?: string
+        referee_id?: string
+      }
     }
   }
   effect?: {
@@ -87,4 +99,3 @@ export type DisclosurePreimage = {
   response_text?: string | null
   tool_calls_note?: string | null
 }
-
