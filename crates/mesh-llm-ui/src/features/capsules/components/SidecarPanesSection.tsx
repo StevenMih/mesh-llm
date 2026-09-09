@@ -13,6 +13,7 @@ import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { StatusPill, type StatusPillTone } from '@/components/ui/status-pill'
+import { TooltipProvider } from '@/components/ui/tooltip'
 import { fetchCapsuleLedger } from '@/features/capsules/api/client'
 import type { CapsuleRecord } from '@/features/capsules/api/types'
 import { fetchPaneA, fetchPaneB, fetchPaneCList } from '@/features/capsules/api/sidecarClient'
@@ -327,32 +328,37 @@ export function SidecarPanesSection() {
   }, [ledgerQuery.data])
 
   return (
-    <section className="mx-auto max-w-3xl">
-      <div className="mb-4">
-        <div className="type-label text-fg-faint">Accountability</div>
-        <h1 className="type-display mt-1 text-foreground">Panes</h1>
-        <p className="type-body mt-2 max-w-[68ch] text-fg-dim">
-          Reads the capsule-emit-mesh sidecar's own accountability routes directly — never through this app's own
-          backend. Set the sidecar's URL to enable; leave it blank to keep this section off.
-        </p>
-        <SidecarUrlField />
-      </div>
-
-      {baseUrl === null ? (
-        <p className="text-sm text-muted-foreground">
-          No sidecar URL configured — the Panes views stay off until one is set above.
-        </p>
-      ) : (
-        <div className="flex flex-col gap-4">
-          <PaneASection baseUrl={baseUrl} nodePubKeyPem={ledgerQuery.data?.nodePubKeyPem ?? null} />
-          <PaneBSection baseUrl={baseUrl} />
-          <PaneCSection
-            baseUrl={baseUrl}
-            recordsById={recordsById}
-            nodePubKeyPem={ledgerQuery.data?.nodePubKeyPem ?? null}
-          />
+    // TooltipProvider is required by the StatusPill chip tooltips rendered
+    // inside the pane sections. There is no global provider in the app shell,
+    // so we scope one here (same pattern as DisabledControlFrame).
+    <TooltipProvider delayDuration={250} skipDelayDuration={120}>
+      <section className="mx-auto max-w-3xl">
+        <div className="mb-4">
+          <div className="type-label text-fg-faint">Accountability</div>
+          <h1 className="type-display mt-1 text-foreground">Panes</h1>
+          <p className="type-body mt-2 max-w-[68ch] text-fg-dim">
+            Reads the capsule-emit-mesh sidecar's own accountability routes directly — never through this app's own
+            backend. Set the sidecar's URL to enable; leave it blank to keep this section off.
+          </p>
+          <SidecarUrlField />
         </div>
-      )}
-    </section>
+
+        {baseUrl === null ? (
+          <p className="text-sm text-muted-foreground">
+            No sidecar URL configured — the Panes views stay off until one is set above.
+          </p>
+        ) : (
+          <div className="flex flex-col gap-4">
+            <PaneASection baseUrl={baseUrl} nodePubKeyPem={ledgerQuery.data?.nodePubKeyPem ?? null} />
+            <PaneBSection baseUrl={baseUrl} />
+            <PaneCSection
+              baseUrl={baseUrl}
+              recordsById={recordsById}
+              nodePubKeyPem={ledgerQuery.data?.nodePubKeyPem ?? null}
+            />
+          </div>
+        )}
+      </section>
+    </TooltipProvider>
   )
 }
