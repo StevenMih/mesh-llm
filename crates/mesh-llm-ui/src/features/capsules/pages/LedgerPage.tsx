@@ -486,7 +486,7 @@ function PeersSection({ baseUrl }: { baseUrl: string }) {
 function PeerRowCard({ row }: { row: PaneBRow }) {
   const cells: Array<[string, PaneState]> = [
     ['node', row.node],
-    ['trust tier', row.rung],
+    ['cross-party', row.rung],
     ['history', row.history],
     ['served', row.served],
     ['verdicts', row.verdicts]
@@ -648,7 +648,7 @@ export function LedgerPageContent() {
         <div className="mb-4">
           <h1 className="type-display mt-1 text-foreground">Ledger</h1>
           <p className="type-body mt-2 max-w-[68ch] text-fg-dim">
-            Everything here is recomputed from sealed records. All values are structural facts, not assessments.
+            Everything here is recomputed from sealed records. Nothing is a score.
           </p>
           <SidecarUrlField />
         </div>

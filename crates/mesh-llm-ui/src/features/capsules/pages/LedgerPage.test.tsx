@@ -79,7 +79,7 @@ describe('LedgerPageContent', () => {
     render(<LedgerPageContent />, { wrapper: makeWrapper() })
 
     expect(
-      screen.getByText('Everything here is recomputed from sealed records. All values are structural facts, not assessments.')
+      screen.getByText('Everything here is recomputed from sealed records. Nothing is a score.')
     ).toBeInTheDocument()
   })
 

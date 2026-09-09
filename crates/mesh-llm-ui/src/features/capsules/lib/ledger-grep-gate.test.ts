@@ -43,6 +43,19 @@ const FORBIDDEN_WORDS = [
 ] as const
 
 // ---------------------------------------------------------------------------
+// Permitted phrases — exact substrings that are EXEMPT from the word check.
+// These are design-thesis phrases that deliberately use a forbidden word in
+// order to negate it (e.g. "Nothing is a score." uses "score" to deny
+// scoring). Strip them from the prose string before scanning so the gate
+// still catches any OTHER use of the word.
+// ---------------------------------------------------------------------------
+
+const PERMITTED_PHRASES = [
+  // §0 design thesis — uses "score" to negate scoring; must stay verbatim.
+  'Nothing is a score.',
+] as const
+
+// ---------------------------------------------------------------------------
 // File walker — only .tsx files (JSX lives here)
 // ---------------------------------------------------------------------------
 
@@ -129,8 +142,16 @@ describe('ledger grep gate — retired vocabulary must not reach rendered UI', (
       const proseStrings = extractProseStrings(stripped)
 
       for (const str of proseStrings) {
+        // Strip permitted phrases before scanning so that design-thesis
+        // phrases (which use a forbidden word to negate it) are exempt
+        // while any OTHER use of the word is still caught.
+        let scanStr = str
+        for (const phrase of PERMITTED_PHRASES) {
+          scanStr = scanStr.split(phrase).join(' '.repeat(phrase.length))
+        }
+
         for (const term of FORBIDDEN_EXACT) {
-          if (str.includes(term)) {
+          if (scanStr.includes(term)) {
             violations.push(
               `${filePath.replace(CAPSULES_SRC, '').replace(/^\//, '')}: ` +
               `"${term}" found in "${str.slice(0, 100)}"`
@@ -139,7 +160,7 @@ describe('ledger grep gate — retired vocabulary must not reach rendered UI', (
         }
         for (const term of FORBIDDEN_WORDS) {
           const wordBoundary = new RegExp(`\\b${term}\\b`, 'i')
-          if (wordBoundary.test(str)) {
+          if (wordBoundary.test(scanStr)) {
             violations.push(
               `${filePath.replace(CAPSULES_SRC, '').replace(/^\//, '')}: ` +
               `word "${term}" found in "${str.slice(0, 100)}"`
@@ -154,5 +175,27 @@ describe('ledger grep gate — retired vocabulary must not reach rendered UI', (
         `Forbidden vocabulary found in user-visible prose strings:\n${violations.join('\n')}`
       )
     }
+  })
+
+  it('gate still catches a genuine rating use (negative case)', () => {
+    // Confirm the permitted-phrase exemption is surgical: the thesis phrase
+    // is exempt but a different "score" usage is still caught.
+    const genuineViolation = 'Node quality score: 9.2'
+    const permitted = 'Nothing is a score.'
+
+    // Thesis phrase: after stripping permitted phrases, the word "score"
+    // disappears — the test string should be clean.
+    let scanPermitted = permitted
+    for (const phrase of PERMITTED_PHRASES) {
+      scanPermitted = scanPermitted.split(phrase).join(' '.repeat(phrase.length))
+    }
+    expect(/\bscore\b/i.test(scanPermitted)).toBe(false)
+
+    // Genuine violation: "score" survives stripping (no permitted phrase matches).
+    let scanViolation = genuineViolation
+    for (const phrase of PERMITTED_PHRASES) {
+      scanViolation = scanViolation.split(phrase).join(' '.repeat(phrase.length))
+    }
+    expect(/\bscore\b/i.test(scanViolation)).toBe(true)
   })
 })
