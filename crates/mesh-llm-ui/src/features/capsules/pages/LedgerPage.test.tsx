@@ -107,11 +107,29 @@ describe('LedgerPageContent', () => {
       rows: [
         {
           peer_id: 'peer-1',
-          node: { state: 'PASS', text: null },
-          rung: { state: 'NOT_CHECKED', text: null },
-          history: { state: 'NOT_PRESENT', text: null },
-          served: { state: 'NOT_PRESENT', text: null },
-          verdicts: { state: 'NOT_PRESENT', text: null }
+          node: { state: 'present', text: 'peer-1', peer_id: 'peer-1', member_kind: 'member', exchange_count: 1 },
+          rung: {
+            state: 'present',
+            text: 'full_bilateral',
+            rung: 'full_bilateral',
+            distinct_rungs: ['full_bilateral']
+          },
+          role: {
+            state: 'present',
+            text: 'you_to_them · 1',
+            role: 'you_to_them',
+            you_to_them_count: 1,
+            them_to_you_count: 0,
+            exchange_count: 1
+          },
+          history: { state: 'NOT_CHECKED', text: null },
+          served: { state: 'NOT_CHECKED', text: null },
+          pair: { state: 'absent', text: null, verified: 0, failed: 0, missing: 0, details: [] },
+          verdicts: { state: 'NOT_CHECKED', text: null, tally: { corroborated: 0, contradicted: 0, inconclusive: 0 } },
+          asked: { state: 'absent', text: null, count: 0 },
+          exchange_count: 1,
+          first_seen: null,
+          last_seen: null
         }
       ],
       peer_count: 1

@@ -33,16 +33,117 @@ export type PaneAJson = {
 }
 
 // ---------------------------------------------------------------------------
-// Pane B ("Peers") -- peer_accountability_tab.build_peers_payload
+// Pane B ("Peers") -- peer_accountability_tab.build_peers_payload. Field
+// names below are read verbatim from `peer_accountability_tab.py` (build_
+// peer_row / the *_cell functions) on capsule-emit-mesh main -- do not
+// invent columns that function doesn't emit. Loose/optional per this file's
+// own discipline: an unrecognised field degrades to `undefined`, not a
+// parse failure.
 // ---------------------------------------------------------------------------
 
+/** `node_cell`. */
+export type PaneBNodeCell = PaneState & {
+  peer_id?: string | null
+  member_kind?: string | null
+  exchange_count?: number
+}
+
+/** `rung_cell`. `rung`/`distinct_rungs` are the raw ladder values
+ *  (`unilateral_fallback` | `acknowledged_receipt` | `full_bilateral`) --
+ *  never render the word "rung" itself (ledger grep gate). */
+export type PaneBRungCell = PaneState & {
+  rung?: string
+  distinct_rungs?: string[]
+}
+
+/** `role_and_count_cell`. Direction-of-exchange fact, never a trust signal. */
+export type PaneBRoleCell = PaneState & {
+  role?: 'both' | 'you_to_them' | 'them_to_you' | 'unknown'
+  you_to_them_count?: number
+  them_to_you_count?: number
+  exchange_count?: number
+}
+
+/** `peer_history_cell` ("History (theirs)"). Honestly NOT_CHECKED by
+ *  default (no peer-fetch carrier wired on most sidecars yet) --
+ *  `history_summary` only appears when `peer_fetch_result.status ===
+ *  'verified'`. `mine_for_reference` is THIS node's own chain, carried
+ *  along for reference only -- never presented as though it were the
+ *  peer's. */
+export type PaneBHistoryCell = PaneState & {
+  fetch_source?: string
+  history_summary?: {
+    verified_bundles?: number | string
+    checkpoint_count?: number | string
+    [key: string]: unknown
+  }
+  mine_for_reference?: {
+    history?: PaneState & { history_depth?: number; checkpoint_count?: number; cadence?: Record<string, unknown> }
+    continuity?: PaneState & { unforked?: boolean }
+    witnessed?: PaneState & { witnesses?: string[] }
+    [key: string]: unknown
+  } | null
+}
+
+/** `served_cell` ("Served (theirs)"). Same peer-fetch-gap discipline as
+ *  `history`. */
+export type PaneBServedCell = PaneState & {
+  source?: string
+  served_summary?: {
+    n_served?: number | string
+    n_completed?: number | string
+    n_failed?: number | string
+    [key: string]: unknown
+  }
+  mine_for_reference?: unknown
+}
+
+/** `pair_cell` ("Pair (me<->them)") -- digest reconciliation, real. The
+ *  only cell that can say "missing" (a lone half with nothing to reconcile
+ *  against). */
+export type PaneBPairCell = PaneState & {
+  verified?: number
+  failed?: number
+  missing?: number
+  details?: Array<{ exchange_id: string; state: string }>
+}
+
+/** `verdicts_cell`. `tally` is real only for adjudications THIS node
+ *  itself sealed -- "held by others" half is a separate pending reason.
+ *  Never render `tally` without also stating the denominator it came
+ *  from (`exchange_count`). */
+export type PaneBVerdictsCell = PaneState & {
+  tally?: { corroborated: number; contradicted: number; inconclusive: number }
+  adjudication_capsule_id?: string
+  references_tally?: { corroborated: number; contradicted: number; inconclusive: number }
+  references_asked?: number
+  references_answered?: number
+}
+
+/** `asked_cell` -- evidence requests THIS node sent to this peer. Absent
+ *  by default (no send-log carrier yet on most sidecars). */
+export type PaneBAskedCell = PaneState & {
+  count?: number
+  send_log?: unknown[]
+}
+
 export type PaneBRow = {
-  peer_id: string
-  node: PaneState
-  rung: PaneState
-  history: PaneState
-  served: PaneState
-  verdicts: PaneState
+  peer_id: string | null
+  node: PaneBNodeCell
+  rung: PaneBRungCell
+  role: PaneBRoleCell
+  history: PaneBHistoryCell
+  served: PaneBServedCell
+  pair: PaneBPairCell
+  verdicts: PaneBVerdictsCell
+  asked: PaneBAskedCell
+  exchange_count: number
+  first_seen: string | null
+  last_seen: string | null
+  expand?: {
+    pair_ledger?: Array<{ exchange_id: string; state: string }>
+    their_card?: PaneState
+  }
   [key: string]: unknown
 }
 

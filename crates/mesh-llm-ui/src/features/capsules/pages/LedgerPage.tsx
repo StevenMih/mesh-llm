@@ -20,9 +20,18 @@ import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '@/
 import { fetchCapsuleLedger } from '@/features/capsules/api/client'
 import type { CapsuleRecord } from '@/features/capsules/api/types'
 import { PaneFetchError, fetchPaneA, fetchPaneB, fetchPaneCList } from '@/features/capsules/api/sidecarClient'
-import type { PaneARow, PaneBRow, PaneCRow, PaneState } from '@/features/capsules/api/sidecarTypes'
+import type { PaneARow, PaneCRow, PaneState } from '@/features/capsules/api/sidecarTypes'
 import { toneForState } from '@/features/capsules/lib/assurance-tone'
 import { useRecomputedIdentity } from '@/features/capsules/lib/recompute-identity'
+import { PeerCard } from '@/features/capsules/components/PeerCard'
+import {
+  HARNESS_PANE_B_PAYLOAD,
+  PEER_TAB_HARNESS_MESH_MODELS,
+  PEER_TAB_HARNESS_MESH_PEERS
+} from '@/features/capsules/lib/peer-fixtures'
+import { usePeerMeshStatusIndex } from '@/features/capsules/lib/peer-mesh-status'
+import { peerDisplayId, peerSortKey, sortPeerRows } from '@/features/capsules/lib/peer-row-view'
+import { useDataMode } from '@/lib/data-mode'
 
 // ---------------------------------------------------------------------------
 // Error helper — honest fetch-failure messages, never "set the URL"
@@ -69,16 +78,6 @@ function boolToTone(value: boolean | null) {
 
 function boolToState(value: boolean | null): string {
   return value === null ? 'NOT_CHECKED' : value ? 'PASS' : 'FAIL'
-}
-
-function StateChip({ label, cell }: { label: string; cell: PaneState }) {
-  return (
-    <StatusPill
-      label={`${label}: ${cell.state}`}
-      tone={toneForState(cell.state)}
-      tooltip={typeof cell.text === 'string' ? cell.text : undefined}
-    />
-  )
 }
 
 // ---------------------------------------------------------------------------
@@ -591,13 +590,18 @@ function BalanceSection({ nodePubKeyPem }: { nodePubKeyPem: string | null }) {
 // Peers section (pane-b)
 // ---------------------------------------------------------------------------
 
-function PeersSection() {
+function PeersSection({ recordsById }: { recordsById: Map<string, CapsuleRecord> }) {
+  const { mode } = useDataMode()
+  const harnessMode = mode === 'harness'
   const query = useQuery({
-    queryKey: ['ledger', 'pane-b'],
-    queryFn: () => fetchPaneB(),
+    queryKey: ['ledger', 'pane-b', mode],
+    queryFn: () => (harnessMode ? Promise.resolve(HARNESS_PANE_B_PAYLOAD) : fetchPaneB()),
     refetchInterval: 15_000,
     retry: false
   })
+  const meshStatus = usePeerMeshStatusIndex(PEER_TAB_HARNESS_MESH_PEERS, PEER_TAB_HARNESS_MESH_MODELS)
+
+  const resolveTimestamp = (capsuleId: string): string | null => recordsById.get(capsuleId)?.timestamp ?? null
 
   if (query.isLoading) return <p className="text-sm text-muted-foreground">Loading…</p>
   if (query.isError) {
@@ -607,41 +611,26 @@ function PeersSection() {
     return <p className="text-sm text-muted-foreground">No peer exchanges recorded yet.</p>
   }
 
+  // Closest-first (latency asc); any row carrying an alarm floats to top.
+  const sortedRows = sortPeerRows(query.data.rows, (row) =>
+    peerSortKey(row, meshStatus.statusFor(peerDisplayId(row))?.latencyMs ?? null)
+  )
+
   return (
     <div className="flex flex-col gap-2">
       {/* L3.1 — Peers section headline */}
       <p className="text-sm text-fg-dim">
         Nodes this node has exchanged with. What you sent, what they sent back, and whether it matched.
       </p>
-      {query.data.rows.map((row) => (
-        <PeerRowCard key={row.peer_id} row={row} />
+      {sortedRows.map((row) => (
+        <PeerCard
+          key={row.peer_id ?? peerDisplayId(row)}
+          meshStatus={meshStatus.statusFor(peerDisplayId(row))}
+          resolveTimestamp={resolveTimestamp}
+          row={row}
+        />
       ))}
     </div>
-  )
-}
-
-function PeerRowCard({ row }: { row: PaneBRow }) {
-  const cells: Array<[string, PaneState]> = [
-    ['node', row.node],
-    ['cross-party', row.rung],
-    ['history', row.history],
-    ['served', row.served],
-    ['verdicts', row.verdicts]
-  ]
-
-  return (
-    <Card className="mb-2">
-      <CardHeader className="pb-2">
-        <CardTitle className="text-sm font-mono text-fg-dim">{row.peer_id}</CardTitle>
-      </CardHeader>
-      <CardContent className="pt-0">
-        <div className="flex flex-wrap gap-1.5">
-          {cells.map(([label, cell]) => (
-            <StateChip key={label} label={label} cell={cell} />
-          ))}
-        </div>
-      </CardContent>
-    </Card>
   )
 }
 
@@ -842,7 +831,7 @@ export function LedgerPageContent() {
                 content: (
                   <div>
                     <p className="mb-3 text-sm text-fg-dim">What have the nodes you have dealt with shown you?</p>
-                    <PeersSection />
+                    <PeersSection recordsById={recordsById} />
                   </div>
                 )
               },
