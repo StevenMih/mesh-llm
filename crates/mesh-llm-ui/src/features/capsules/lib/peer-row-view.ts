@@ -4,6 +4,7 @@
 // corroborated, with-you and their-chain never summed) are unit-testable
 // without mounting a component.
 import type { PaneBRow } from '@/features/capsules/api/sidecarTypes'
+import type { PeerMeshStatus } from '@/features/capsules/lib/peer-mesh-status'
 
 export const STATE_NOT_CHECKED = 'NOT_CHECKED'
 export const STATE_CONTRADICTED = 'contradicted'
@@ -13,6 +14,19 @@ export const STATE_VERIFIED = 'verified'
 
 export function peerDisplayId(row: PaneBRow): string {
   return row.peer_id ?? row.node?.peer_id ?? 'unknown peer'
+}
+
+/** Shared by the collapsed row (`PeerCard`) and the modal's Overview tab
+ *  (`PeerInspector`) so the two never drift into different wording for the
+ *  same mesh-status facts. */
+export function meshMetaLine(meshStatus: PeerMeshStatus | null): string | null {
+  if (!meshStatus) return null
+  const parts = [
+    meshStatus.modelName,
+    meshStatus.quant,
+    meshStatus.contextLengthK != null ? `${meshStatus.contextLengthK}k ctx` : null
+  ].filter((part): part is string => Boolean(part))
+  return parts.length > 0 ? parts.join(' · ') : null
 }
 
 // ---------------------------------------------------------------------------
