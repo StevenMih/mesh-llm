@@ -446,7 +446,7 @@ function AdvertisedVsServed({ reconciliation }: { reconciliation: ReturnType<typ
       : 'no served facts to reconcile'
   return (
     <p className="text-xs text-muted-foreground">
-      Advertised vs. served: <span className="font-medium">{overall}</span> — {why}, so this is recorded but there is no
+      Advertised vs. served: not checked — {why}, so this is recorded but there is no
       kept-or-broken promise to check (not a pass).
     </p>
   )
