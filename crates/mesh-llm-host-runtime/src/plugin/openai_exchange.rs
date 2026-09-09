@@ -56,6 +56,81 @@ pub enum ClientNonceSource {
     SidecarGeneratedFallback,
 }
 
+/// What the host actually knows, at serve time, about *what ran, at what
+/// fidelity, on whose hardware* for one exchange — the proof-of-inference
+/// provenance a downstream capsule attests over (advances #1233's digest
+/// advertisement). Every field is either a real value the host holds for the
+/// served model/node, or omitted (serialized only `if Some`) when the host
+/// genuinely does not know it for this exchange — never a fabricated string.
+///
+/// Sourced entirely from state the local [`mesh::Node`] already holds for the
+/// served model and this host's hardware survey (see the raw-proxy dispatch
+/// callsite in `network/openai/ingress.rs`): model metadata comes from the
+/// served-model descriptor (`ServedModelMetadata`: `quant`, `architecture`,
+/// `native_context_length`, `identity_hash`, revision/repository), and
+/// hardware comes from the node's startup hardware survey (`gpu_name`,
+/// `hostname`, `is_soc`, `vram_bytes`). No raw prompt or response text is
+/// carried — provenance only.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ServingProvenance {
+    /// The node that actually served the inference — this host's own mesh
+    /// endpoint id. On a plugin-served (raw-proxy) exchange this is the node
+    /// whose plugin endpoint produced the response.
+    pub served_by_node_id: String,
+    /// Serving host name, when the hardware survey resolved one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hostname: Option<String>,
+    /// Model quantization format as the served-model descriptor reports it
+    /// (e.g. `"Q4_K_M"`), from `ServedModelMetadata.quant`. Omitted when the
+    /// descriptor carries no quant (unquantized weights, or metadata absent).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quantization: Option<String>,
+    /// Model architecture / family (e.g. `"llama"`), from
+    /// `ServedModelMetadata.architecture`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub architecture: Option<String>,
+    /// Native context length (n_ctx) the served weights advertise, from
+    /// `ServedModelMetadata.native_context_length`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_length: Option<u32>,
+    /// Human-readable parameter size (e.g. `"7B"`), from
+    /// `ServedModelMetadata.parameter_size`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parameter_size: Option<String>,
+    /// Transformer layer count, from `ServedModelMetadata.layer_count`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub layer_count: Option<u32>,
+    /// Content-addressed identity hash of the served model artifact, from
+    /// `ServedModelIdentity.identity_hash` — a digest of the actual model
+    /// identity (not a hash of the model *name* string). Omitted when the
+    /// descriptor did not resolve one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_identity_hash: Option<String>,
+    /// Canonical model reference (e.g. `repo@rev/file`), from
+    /// `ServedModelIdentity.canonical_ref`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_canonical_ref: Option<String>,
+    /// Source revision (git commit / tag) of the served model, from
+    /// `ServedModelIdentity.revision`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_revision: Option<String>,
+    /// GPU display name from this host's startup hardware survey
+    /// (`Node.gpu_name`). Omitted on CPU-only hosts or where no accelerator
+    /// was enumerated.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gpu: Option<String>,
+    /// Accelerator-resident VRAM capacity in bytes advertised by this host
+    /// (`Node.vram_bytes`). `0` means none was reported, so it is omitted.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vram_bytes: Option<u64>,
+    /// Whether the serving host is a unified-memory SoC (Apple Silicon and
+    /// similar), from the hardware survey (`Node.is_soc`) — the honest
+    /// device signal this host has (it does not carry a separate cpu/cuda/
+    /// metal enum on the served-model path).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_soc: Option<bool>,
+}
+
 /// The wire shape both dispatch paths publish on [`OPENAI_EXCHANGE_CHANNEL`].
 /// Deliberately independent of `openai_frontend`'s typed request/response —
 /// the raw-proxy path never has one — so one shape covers both paths without
@@ -86,6 +161,12 @@ pub struct OpenAiExchangeEnvelope {
     /// exactly when `nonce` is `None` (no marker minted).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub nonce_source: Option<ClientNonceSource>,
+    /// What ran, at what fidelity, on whose hardware — see [`ServingProvenance`].
+    /// Present on a `Terminal` envelope for a served exchange; `None` on
+    /// effective-request envelopes and on terminal envelopes where nothing was
+    /// served (a denial/error before dispatch).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub serving_provenance: Option<ServingProvenance>,
 }
 
 impl OpenAiExchangeEnvelope {
@@ -103,6 +184,7 @@ impl OpenAiExchangeEnvelope {
             capsule_id: None,
             nonce: None,
             nonce_source: None,
+            serving_provenance: None,
         }
     }
 
@@ -123,7 +205,19 @@ impl OpenAiExchangeEnvelope {
             capsule_id: marker.as_ref().map(|marker| marker.capsule_id.clone()),
             nonce: marker.as_ref().map(|marker| marker.nonce.clone()),
             nonce_source,
+            serving_provenance: None,
         }
+    }
+
+    /// Attach the serving provenance the host resolved for this exchange. A
+    /// small builder rather than a wider constructor so the two existing
+    /// callsites that already pass six positional args aren't churned, and so
+    /// the raw-proxy path can add provenance in one readable line after it has
+    /// gathered it from the node.
+    #[must_use]
+    pub fn with_serving_provenance(mut self, provenance: ServingProvenance) -> Self {
+        self.serving_provenance = Some(provenance);
+        self
     }
 }
 
@@ -283,6 +377,64 @@ mod tests {
     use openai_frontend::{ChatCompletionOutcome, HookedOpenAiBackend, OpenAiBackend, Usage};
 
     use super::*;
+
+    /// A terminal envelope with serving provenance serializes the known fields
+    /// and OMITS the unknown ones (never a fabricated `null` or empty string) —
+    /// this is the honesty contract a downstream capsule relies on: a field
+    /// that is present is a real host fact, a field that is absent is genuinely
+    /// unknown, not zeroed.
+    #[test]
+    fn terminal_carries_serving_provenance_and_omits_unknown_fields() {
+        let envelope = OpenAiExchangeEnvelope::terminal(
+            "exch-1",
+            OpenAiExchangeDispatchPath::RawProxy,
+            "hermes-2-pro-mistral-7b",
+            Some(200),
+            None,
+            None,
+        )
+        .with_serving_provenance(ServingProvenance {
+            served_by_node_id: "node-abc".to_string(),
+            hostname: Some("host-1".to_string()),
+            quantization: Some("Q4_K_M".to_string()),
+            architecture: Some("llama".to_string()),
+            context_length: Some(8192),
+            parameter_size: Some("7B".to_string()),
+            layer_count: Some(32),
+            model_identity_hash: Some("abc123".to_string()),
+            model_canonical_ref: None,
+            model_revision: None,
+            gpu: None,
+            vram_bytes: None,
+            is_soc: Some(true),
+        });
+
+        let value = serde_json::to_value(&envelope).expect("serialize");
+        let prov = &value["serving_provenance"];
+        assert_eq!(prov["served_by_node_id"], "node-abc");
+        assert_eq!(prov["quantization"], "Q4_K_M");
+        assert_eq!(prov["architecture"], "llama");
+        assert_eq!(prov["context_length"], 8192);
+        assert_eq!(prov["layer_count"], 32);
+        assert_eq!(prov["is_soc"], true);
+        // Unknown facts are ABSENT (omitted), not fabricated as null/empty.
+        assert!(prov.get("model_canonical_ref").is_none());
+        assert!(prov.get("model_revision").is_none());
+        assert!(prov.get("gpu").is_none());
+        assert!(prov.get("vram_bytes").is_none());
+    }
+
+    /// An effective-request envelope carries NO serving provenance (the field
+    /// is omitted entirely), so the block is a terminal-only, served-exchange
+    /// fact — never claimed before the exchange actually ran.
+    #[test]
+    fn effective_envelope_has_no_serving_provenance() {
+        let envelope =
+            OpenAiExchangeEnvelope::effective("exch-1", OpenAiExchangeDispatchPath::RawProxy, "m");
+        assert!(envelope.serving_provenance.is_none());
+        let value = serde_json::to_value(&envelope).expect("serialize");
+        assert!(value.get("serving_provenance").is_none());
+    }
 
     #[derive(Default)]
     struct RecordingChannel {
