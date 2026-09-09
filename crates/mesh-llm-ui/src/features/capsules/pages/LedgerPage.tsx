@@ -1,51 +1,40 @@
-// [mesh-live-tab-pane-proxy] L3/L4: Ledger tab — four sections
-// (Balance / Peers / Exchanges / Integrity) replacing the prior four
-// sub-tabs. Data comes from /accountability/pane-a|b|c on the sidecar;
-// honest absent states where data is unavailable.
+// [mesh-live-tab-pane-proxy] L3/L4, [mesh-ledger-earned-pass-and-native-panes]
+// Part B: Ledger tab — four sections (Balance / Peers / Exchanges /
+// Integrity) replacing the prior four sub-tabs. Data comes from this host's
+// own `/api/capsules/panes/*` route, which forwards server-side to the
+// capsule-emit-mesh sidecar -- the user never configures anything; honest
+// absent states where data is unavailable.
 //
 // Security boundary: NO user-visible strings may name internal tooling,
 // internal item IDs, or any branded service name. Comments are exempt.
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
+import { ShieldCheck } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { InfoBanner } from '@/components/ui/InfoBanner'
+import { StatusBadge } from '@/components/ui/StatusBadge'
 import { StatusPill } from '@/components/ui/status-pill'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { TabPanel } from '@/components/ui/TabPanel'
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '@/components/ui/accordion'
 import { fetchCapsuleLedger } from '@/features/capsules/api/client'
 import type { CapsuleRecord } from '@/features/capsules/api/types'
-import { fetchPaneA, fetchPaneB, fetchPaneCList } from '@/features/capsules/api/sidecarClient'
-import { useSidecarBaseUrl } from '@/features/capsules/api/sidecarConfig'
+import { PaneFetchError, fetchPaneA, fetchPaneB, fetchPaneCList } from '@/features/capsules/api/sidecarClient'
 import type { PaneARow, PaneBRow, PaneCRow, PaneState } from '@/features/capsules/api/sidecarTypes'
 import { toneForState } from '@/features/capsules/lib/assurance-tone'
 import { useRecomputedIdentity } from '@/features/capsules/lib/recompute-identity'
 
 // ---------------------------------------------------------------------------
-// Diagnostic helper — three distinct error states for sidecar connection
+// Error helper — honest fetch-failure messages, never "set the URL"
 // ---------------------------------------------------------------------------
 
-const LOOPBACK = new Set(['localhost', '127.0.0.1', '::1', '[::1]'])
-
-/** Returns a user-visible diagnostic string for a failed sidecar fetch.
- *  Distinguishes CORS loopback-alias mismatch from a plain connection refusal. */
-function diagnoseFetchError(_error: unknown, baseUrl: string): string {
-  try {
-    const sidecarUrl = new URL(baseUrl)
-    const sidecarHost = sidecarUrl.hostname
-    const sidecarPort = sidecarUrl.port || (sidecarUrl.protocol === 'https:' ? '443' : '80')
-    const pageHost = window.location.hostname
-    const pagePort = window.location.port || (window.location.protocol === 'https:' ? '443' : '80')
-
-    if (LOOPBACK.has(sidecarHost) && LOOPBACK.has(pageHost) && sidecarHost !== pageHost) {
-      return (
-        `Reached the sidecar but the browser blocked the response — origin mismatch: ` +
-        `this page is ${pageHost}:${pagePort}, the sidecar allows ${sidecarHost}:${sidecarPort}`
-      )
-    }
-  } catch {
-    // URL parse failed — fall through to generic message
+/** Returns a user-visible diagnostic string for a failed pane fetch. Never
+ *  blames the user for missing configuration -- there is none to set. */
+function describePaneError(error: unknown): string {
+  if (error instanceof PaneFetchError && error.status === 503) {
+    return "The host's capsule service isn't running."
   }
-  return `No sidecar detected at ${baseUrl}`
+  return "Couldn't load accountability data from this host right now."
 }
 
 // ---------------------------------------------------------------------------
@@ -89,103 +78,6 @@ function StateChip({ label, cell }: { label: string; cell: PaneState }) {
       tone={toneForState(cell.state)}
       tooltip={typeof cell.text === 'string' ? cell.text : undefined}
     />
-  )
-}
-
-// ---------------------------------------------------------------------------
-// L3.4 — SidecarUrlField with auto-probe of http://127.0.0.1:8089
-// ---------------------------------------------------------------------------
-
-const DEFAULT_PROBE_URL = 'http://127.0.0.1:8089'
-
-function SidecarUrlField() {
-  const { baseUrl, setBaseUrl, clearBaseUrl } = useSidecarBaseUrl()
-  const [draft, setDraft] = useState(baseUrl ?? '')
-  // L3.4: probe state — 'idle' before first probe, 'detected' if reachable (awaiting user confirm), 'not-detected' if not
-  const [probeStatus, setProbeStatus] = useState<'idle' | 'detected' | 'not-detected'>('idle')
-  const probedRef = useRef(false)
-
-  // Auto-probe on mount when no URL is configured.
-  // Uses mode:'cors' so connection failures (ECONNREFUSED) propagate as rejections.
-  // Does NOT auto-set baseUrl — user must confirm by clicking "Use this URL".
-  useEffect(() => {
-    if (baseUrl !== null || probedRef.current) return
-    probedRef.current = true
-    const controller = new AbortController()
-    const timeoutId = setTimeout(() => controller.abort(), 2000)
-    fetch(DEFAULT_PROBE_URL + '/health', { signal: controller.signal })
-      .then((res) => {
-        if (res.ok || res.status > 0) {
-          setProbeStatus('detected')
-          setDraft(DEFAULT_PROBE_URL)
-        } else {
-          setProbeStatus('not-detected')
-        }
-      })
-      .catch(() => {
-        setProbeStatus('not-detected')
-      })
-      .finally(() => {
-        clearTimeout(timeoutId)
-      })
-  }, [baseUrl])
-
-  // If already configured and connected, show compact "connected" view
-  if (baseUrl) {
-    return (
-      <div className="flex flex-wrap items-center gap-2 py-1">
-        <span className="text-xs text-fg-dim">
-          Connected to sidecar at {baseUrl}
-        </span>
-        <button
-          type="button"
-          onClick={() => {
-            setDraft('')
-            clearBaseUrl()
-            setProbeStatus('idle')
-            probedRef.current = false
-          }}
-          className="rounded-md border border-border/70 px-2 py-1 text-xs font-medium text-fg-dim hover:bg-card"
-        >
-          Clear
-        </button>
-      </div>
-    )
-  }
-
-  // Default: full field always visible (probe status shown as annotation above the field)
-  // The Save button is always accessible — probe status is informational only.
-  return (
-    <div className="flex flex-col gap-1 py-1">
-      {probeStatus === 'detected' ? (
-        <p className="text-xs text-fg-dim">
-          Detected at {DEFAULT_PROBE_URL} — save to connect.
-        </p>
-      ) : probeStatus === 'not-detected' ? (
-        <p className="text-xs text-fg-faint">Not detected — set the URL</p>
-      ) : null}
-      <div className="flex flex-wrap items-center gap-2">
-        <label htmlFor="ledger-sidecar-base-url" className="type-label text-fg-faint">
-          Sidecar URL
-        </label>
-        <input
-          id="ledger-sidecar-base-url"
-          type="text"
-          value={draft}
-          onChange={(event) => setDraft(event.target.value)}
-          placeholder="http://127.0.0.1:8089"
-          className="min-w-[220px] flex-1 rounded-md border border-border/70 bg-card px-2 py-1 text-sm text-foreground"
-        />
-        <button
-          type="button"
-          onClick={() => setBaseUrl(draft)}
-          disabled={draft.trim().length === 0}
-          className="rounded-md border border-border/70 px-2 py-1 text-xs font-medium text-foreground hover:bg-card disabled:opacity-50"
-        >
-          Save
-        </button>
-      </div>
-    </div>
   )
 }
 
@@ -317,16 +209,30 @@ function LedgerCard({
   ownerStatus
 }: LedgerCardProps) {
   const [showDeclareDialog, setShowDeclareDialog] = useState(false)
-  const failedProps = Object.entries(chipStates).filter(([, cell]) => cell?.state === 'FAIL').map(([key]) => key)
+  const failedProps = Object.entries(chipStates)
+    .filter(([, cell]) => cell?.state === 'FAIL')
+    .map(([key]) => key)
 
   // Build the ordered nine-property chip list
   const orderedChips = Object.keys(NINE_PROPERTY_LABELS).map((propKey) => {
     const label = NINE_PROPERTY_LABELS[propKey] ?? propKey.replace(/_/g, ' ')
     if (propKey === 'content_binding') {
-      return { propKey, label, tone: boolToTone(recomputedIdMatch), state: boolToState(recomputedIdMatch), recomputed: true }
+      return {
+        propKey,
+        label,
+        tone: boolToTone(recomputedIdMatch),
+        state: boolToState(recomputedIdMatch),
+        recomputed: true
+      }
     }
     if (propKey === 'producer_signature') {
-      return { propKey, label, tone: boolToTone(recomputedSignatureOk), state: boolToState(recomputedSignatureOk), recomputed: true }
+      return {
+        propKey,
+        label,
+        tone: boolToTone(recomputedSignatureOk),
+        state: boolToState(recomputedSignatureOk),
+        recomputed: true
+      }
     }
     // L4.1 — identity/authority chip: always NOT_PRESENT for authority sub-fact
     if (propKey === 'identity_authority') {
@@ -379,9 +285,7 @@ function LedgerCard({
     <Card className="mb-3">
       <CardHeader className="pb-2">
         {/* L3.2 — Card title: model · short-id · timestamp */}
-        <CardTitle className="text-sm font-mono text-fg-dim">
-          {cardTitle}
-        </CardTitle>
+        <CardTitle className="text-sm font-mono text-fg-dim">{cardTitle}</CardTitle>
         {fullCapsuleId && fullCapsuleId !== exchangeId ? (
           <p className="text-xs text-fg-faint font-mono">{fullCapsuleId.slice(0, 24)}…</p>
         ) : null}
@@ -389,24 +293,18 @@ function LedgerCard({
 
       <CardContent className="flex flex-col gap-3 pt-0">
         {/* L3.1 — Headline */}
-        {headline ? (
-          <p className="text-xs text-fg-dim">{headline}</p>
-        ) : null}
+        {headline ? <p className="text-xs text-fg-dim">{headline}</p> : null}
 
         {/* L3.6 — Unanswered exchange state (never in FAIL, never red) */}
         {unanswered ? (
           <p className="text-xs text-fg-dim">
-            {unansweredDate
-              ? `Asked ${unansweredDate}, no reply.`
-              : 'Asked, no reply.'}{' '}
-            Seen online since: {seenOnlineSince ?? 'no.'}
+            {unansweredDate ? `Asked ${unansweredDate}, no reply.` : 'Asked, no reply.'} Seen online since:{' '}
+            {seenOnlineSince ?? 'no.'}
           </p>
         ) : null}
 
         {/* L4.1 — Owner identity */}
-        {ownerText ? (
-          <p className="text-xs text-fg-dim">{ownerText}</p>
-        ) : null}
+        {ownerText ? <p className="text-xs text-fg-dim">{ownerText}</p> : null}
 
         {/* 2. Promise line */}
         {promiseState ? (
@@ -463,18 +361,11 @@ function LedgerCard({
                 </li>
                 <li>recomputed in-browser</li>
                 <li>
-                  id matches:{' '}
-                  <StatusPill
-                    label={boolToState(recomputedIdMatch)}
-                    tone={boolToTone(recomputedIdMatch)}
-                  />
+                  id matches: <StatusPill label={boolToState(recomputedIdMatch)} tone={boolToTone(recomputedIdMatch)} />
                 </li>
                 <li>
                   COSE_Sign1 vs pubkey:{' '}
-                  <StatusPill
-                    label={boolToState(recomputedSignatureOk)}
-                    tone={boolToTone(recomputedSignatureOk)}
-                  />
+                  <StatusPill label={boolToState(recomputedSignatureOk)} tone={boolToTone(recomputedSignatureOk)} />
                 </li>
                 <li>model ref: {modelInfo ?? '—'}</li>
                 <li>
@@ -490,25 +381,32 @@ function LedgerCard({
                 <li>
                   <span className="font-mono">identity binding:</span>{' '}
                   <StatusPill
-                    label={ownerStatus?.binding === 'bound' ? 'PASS' : ownerStatus?.binding === 'invalid' ? 'FAIL' : 'NOT_PRESENT'}
-                    tone={toneForState(ownerStatus?.binding === 'bound' ? 'PASS' : ownerStatus?.binding === 'invalid' ? 'FAIL' : 'NOT_PRESENT')}
+                    label={
+                      ownerStatus?.binding === 'bound'
+                        ? 'PASS'
+                        : ownerStatus?.binding === 'invalid'
+                          ? 'FAIL'
+                          : 'NOT_PRESENT'
+                    }
+                    tone={toneForState(
+                      ownerStatus?.binding === 'bound'
+                        ? 'PASS'
+                        : ownerStatus?.binding === 'invalid'
+                          ? 'FAIL'
+                          : 'NOT_PRESENT'
+                    )}
                   />
-                  {ownerStatus?.binding === 'bound' && ownerStatus.expiry
-                    ? <span className="ml-1 text-fg-faint">self-asserted, valid to {ownerStatus.expiry}</span>
-                    : null}
+                  {ownerStatus?.binding === 'bound' && ownerStatus.expiry ? (
+                    <span className="ml-1 text-fg-faint">self-asserted, valid to {ownerStatus.expiry}</span>
+                  ) : null}
                 </li>
                 {/* L4.3 — authority always NOT_PRESENT */}
                 <li>
                   <span className="font-mono">identity authority:</span>{' '}
-                  <StatusPill
-                    label="NOT_PRESENT"
-                    tone={toneForState('NOT_PRESENT')}
-                  />
+                  <StatusPill label="NOT_PRESENT" tone={toneForState('NOT_PRESENT')} />
                   <span className="ml-1 text-fg-faint">not bound to a person</span>
                 </li>
-                <li>
-                  recomputed and verified in your browser, not asserted by this page
-                </li>
+                <li>recomputed and verified in your browser, not asserted by this page</li>
               </ol>
               {/* Each chip from the nine-property strip as a row */}
               <div className="mt-2 flex flex-col gap-1">
@@ -518,9 +416,7 @@ function LedgerCard({
                   </div>
                 ))}
               </div>
-              <p className="mt-2 text-xs text-fg-faint">
-                corroborated 0 · contradicted 0 · inconclusive 0
-              </p>
+              <p className="mt-2 text-xs text-fg-faint">corroborated 0 · contradicted 0 · inconclusive 0</p>
             </AccordionContent>
           </AccordionItem>
         </Accordion>
@@ -662,25 +558,17 @@ function PaneCRowCard({
 // Balance section (pane-a)
 // ---------------------------------------------------------------------------
 
-function BalanceSection({
-  baseUrl,
-  nodePubKeyPem
-}: {
-  baseUrl: string
-  nodePubKeyPem: string | null
-}) {
+function BalanceSection({ nodePubKeyPem }: { nodePubKeyPem: string | null }) {
   const query = useQuery({
-    queryKey: ['ledger', 'pane-a', baseUrl],
-    queryFn: () => fetchPaneA(baseUrl),
+    queryKey: ['ledger', 'pane-a'],
+    queryFn: () => fetchPaneA(),
     refetchInterval: 15_000,
     retry: false
   })
 
   if (query.isLoading) return <p className="text-sm text-muted-foreground">Loading…</p>
   if (query.isError) {
-    return (
-      <p className="text-sm text-amber-500">{diagnoseFetchError(query.error, baseUrl)}</p>
-    )
+    return <p className="text-sm text-amber-500">{describePaneError(query.error)}</p>
   }
   if (!query.data || query.data.rows.length === 0) {
     return <p className="text-sm text-muted-foreground">No records on this node's ledger yet.</p>
@@ -703,19 +591,17 @@ function BalanceSection({
 // Peers section (pane-b)
 // ---------------------------------------------------------------------------
 
-function PeersSection({ baseUrl }: { baseUrl: string }) {
+function PeersSection() {
   const query = useQuery({
-    queryKey: ['ledger', 'pane-b', baseUrl],
-    queryFn: () => fetchPaneB(baseUrl),
+    queryKey: ['ledger', 'pane-b'],
+    queryFn: () => fetchPaneB(),
     refetchInterval: 15_000,
     retry: false
   })
 
   if (query.isLoading) return <p className="text-sm text-muted-foreground">Loading…</p>
   if (query.isError) {
-    return (
-      <p className="text-sm text-amber-500">{diagnoseFetchError(query.error, baseUrl)}</p>
-    )
+    return <p className="text-sm text-amber-500">{describePaneError(query.error)}</p>
   }
   if (!query.data || query.data.peer_count === 0) {
     return <p className="text-sm text-muted-foreground">No peer exchanges recorded yet.</p>
@@ -764,37 +650,31 @@ function PeerRowCard({ row }: { row: PaneBRow }) {
 // ---------------------------------------------------------------------------
 
 function ExchangesSection({
-  baseUrl,
   recordsById,
   nodePubKeyPem,
   requesterStartedDate
 }: {
-  baseUrl: string
   recordsById: Map<string, CapsuleRecord>
   nodePubKeyPem: string | null
   requesterStartedDate?: string | null
 }) {
   const query = useQuery({
-    queryKey: ['ledger', 'pane-c', baseUrl],
-    queryFn: () => fetchPaneCList(baseUrl),
+    queryKey: ['ledger', 'pane-c'],
+    queryFn: () => fetchPaneCList(),
     refetchInterval: 15_000,
     retry: false
   })
 
   if (query.isLoading) return <p className="text-sm text-muted-foreground">Loading…</p>
   if (query.isError) {
-    return (
-      <p className="text-sm text-amber-500">{diagnoseFetchError(query.error, baseUrl)}</p>
-    )
+    return <p className="text-sm text-amber-500">{describePaneError(query.error)}</p>
   }
 
   // L3.7 — Requester empty state
   if (!query.data || query.data.row_count === 0) {
     if (requesterStartedDate) {
       return (
-        <p className="text-sm text-muted-foreground">
-          Your node started keeping its half on {requesterStartedDate}.
-        </p>
+        <p className="text-sm text-muted-foreground">Your node started keeping its half on {requesterStartedDate}.</p>
       )
     }
     return <p className="text-sm text-muted-foreground">No exchanges recorded yet.</p>
@@ -815,12 +695,7 @@ function ExchangesSection({
         {total} exchange{total === 1 ? '' : 's'} · {confirmed} confirmed by the other side
       </p>
       {query.data.rows.map((row) => (
-        <PaneCRowCard
-          key={row.exchange_key}
-          row={row}
-          recordsById={recordsById}
-          nodePubKeyPem={nodePubKeyPem}
-        />
+        <PaneCRowCard key={row.exchange_key} row={row} recordsById={recordsById} nodePubKeyPem={nodePubKeyPem} />
       ))}
     </div>
   )
@@ -830,19 +705,17 @@ function ExchangesSection({
 // Integrity section (pane-a card field)
 // ---------------------------------------------------------------------------
 
-function IntegritySection({ baseUrl }: { baseUrl: string }) {
+function IntegritySection() {
   const query = useQuery({
-    queryKey: ['ledger', 'pane-a', baseUrl],
-    queryFn: () => fetchPaneA(baseUrl),
+    queryKey: ['ledger', 'pane-a'],
+    queryFn: () => fetchPaneA(),
     refetchInterval: 15_000,
     retry: false
   })
 
   if (query.isLoading) return <p className="text-sm text-muted-foreground">Loading…</p>
   if (query.isError) {
-    return (
-      <p className="text-sm text-amber-500">{diagnoseFetchError(query.error, baseUrl)}</p>
-    )
+    return <p className="text-sm text-amber-500">{describePaneError(query.error)}</p>
   }
 
   const card = query.data?.card
@@ -853,8 +726,7 @@ function IntegritySection({ baseUrl }: { baseUrl: string }) {
   }
 
   // Extract from the card if present
-  const checkpointCount =
-    typeof card?.checkpoint_count === 'number' ? card.checkpoint_count : null
+  const checkpointCount = typeof card?.checkpoint_count === 'number' ? card.checkpoint_count : null
   const continuity = typeof card?.continuity === 'string' ? card.continuity : null
   const witnesses: unknown[] = Array.isArray(card?.witnesses) ? (card.witnesses as unknown[]) : []
   const witnessCount = witnesses.length
@@ -885,11 +757,11 @@ function IntegritySection({ baseUrl }: { baseUrl: string }) {
             Continuity: <span className="font-medium text-foreground">{continuity}</span>
           </p>
         ) : null}
-        {checkpointCount !== null ? (
-          <p>Checkpoints: {checkpointCount}</p>
-        ) : null}
+        {checkpointCount !== null ? <p>Checkpoints: {checkpointCount}</p> : null}
         {witnessCount > 0 ? (
-          <p>Registered at {witnessCount} witness{witnessCount === 1 ? '' : 'es'}</p>
+          <p>
+            Registered at {witnessCount} witness{witnessCount === 1 ? '' : 'es'}
+          </p>
         ) : null}
         {!continuity && checkpointCount === null && witnessCount === 0 ? (
           <p className="text-muted-foreground">No integrity fields available in the current data.</p>
@@ -904,14 +776,20 @@ function IntegritySection({ baseUrl }: { baseUrl: string }) {
 // ---------------------------------------------------------------------------
 
 export function LedgerPageContent() {
-  const { baseUrl } = useSidecarBaseUrl()
-
   // Fetch the local ledger once for all sections that need in-browser recompute
   const ledgerQuery = useQuery({
     queryKey: ['capsules', 'ledger'],
     queryFn: fetchCapsuleLedger,
-    enabled: baseUrl !== null,
     refetchInterval: 15_000
+  })
+
+  // Shares its cache with BalanceSection/IntegritySection's own pane-a query
+  // (same queryKey) -- used here only to drive the header's connectivity badge.
+  const paneAStatusQuery = useQuery({
+    queryKey: ['ledger', 'pane-a'],
+    queryFn: () => fetchPaneA(),
+    refetchInterval: 15_000,
+    retry: false
   })
 
   const recordsById = useMemo(() => {
@@ -923,86 +801,65 @@ export function LedgerPageContent() {
   }, [ledgerQuery.data])
 
   const nodePubKeyPem = ledgerQuery.data?.nodePubKeyPem ?? null
+  const sidecarConnected = paneAStatusQuery.isSuccess
 
   return (
     <TooltipProvider delayDuration={250} skipDelayDuration={120}>
-      <section className="mx-auto max-w-3xl">
-        <div className="mb-4">
-          <h1 className="type-display mt-1 text-foreground">Ledger</h1>
-          <p className="type-body mt-2 max-w-[68ch] text-fg-dim">
-            Everything here is recomputed from sealed records. Nothing is a score.
-          </p>
-          <SidecarUrlField />
-        </div>
-
-        <TabPanel<LedgerTab>
-          ariaLabel="Ledger sections"
-          defaultValue="balance"
-          stretchTabs={false}
-          contentClassName="px-0 pt-4"
-          tabs={[
-            {
-              value: 'balance',
-              label: 'Balance',
-              content:
-                baseUrl === null ? (
-                  <div className="flex flex-col gap-3">
-                    <p className="text-sm text-muted-foreground">
-                      Configure a sidecar URL to view balance data.
-                    </p>
-                  </div>
-                ) : (
-                  <BalanceSection baseUrl={baseUrl} nodePubKeyPem={nodePubKeyPem} />
-                )
-            },
-            {
-              value: 'peers',
-              label: 'Peers',
-              content:
-                baseUrl === null ? (
-                  <p className="text-sm text-muted-foreground">
-                    Configure a sidecar URL to view peer data.
-                  </p>
-                ) : (
-                  <div>
-                    <p className="mb-3 text-sm text-fg-dim">
-                      What have the nodes you have dealt with shown you?
-                    </p>
-                    <PeersSection baseUrl={baseUrl} />
-                  </div>
-                )
-            },
-            {
-              value: 'exchanges',
-              label: 'Exchanges',
-              content:
-                baseUrl === null ? (
-                  <p className="text-sm text-muted-foreground">
-                    Configure a sidecar URL to view exchange data.
-                  </p>
-                ) : (
-                  <ExchangesSection
-                    baseUrl={baseUrl}
-                    recordsById={recordsById}
-                    nodePubKeyPem={nodePubKeyPem}
-                  />
-                )
-            },
-            {
-              value: 'integrity',
-              label: 'Integrity',
-              content:
-                baseUrl === null ? (
-                  <p className="text-sm text-muted-foreground">
-                    Configure a sidecar URL to view integrity data.
-                  </p>
-                ) : (
-                  <IntegritySection baseUrl={baseUrl} />
-                )
-            }
-          ]}
+      <div className="mx-auto flex w-full max-w-[1440px] flex-col gap-[calc(var(--shell-normal)*2)]">
+        <InfoBanner
+          description="Everything here is recomputed from sealed records. Nothing is a score."
+          leadingIcon={<ShieldCheck aria-hidden="true" className="size-4" />}
+          status={
+            <div className="flex flex-wrap items-center gap-2">
+              <StatusBadge dot size="caption" tone={sidecarConnected ? 'good' : 'muted'}>
+                {sidecarConnected ? 'Live' : 'Local'}
+              </StatusBadge>
+              <StatusBadge tone="muted" size="caption">
+                Local only
+              </StatusBadge>
+            </div>
+          }
+          title="Ledger"
+          titleId="ledger-title"
+          titleLevel="h1"
         />
-      </section>
+
+        <Card className="overflow-hidden rounded-[var(--radius-lg)] border-border bg-panel p-4 shadow-none">
+          <TabPanel<LedgerTab>
+            ariaLabel="Ledger sections"
+            defaultValue="balance"
+            stretchTabs={false}
+            contentClassName="px-0 pt-4"
+            tabs={[
+              {
+                value: 'balance',
+                label: 'Balance',
+                content: <BalanceSection nodePubKeyPem={nodePubKeyPem} />
+              },
+              {
+                value: 'peers',
+                label: 'Peers',
+                content: (
+                  <div>
+                    <p className="mb-3 text-sm text-fg-dim">What have the nodes you have dealt with shown you?</p>
+                    <PeersSection />
+                  </div>
+                )
+              },
+              {
+                value: 'exchanges',
+                label: 'Exchanges',
+                content: <ExchangesSection recordsById={recordsById} nodePubKeyPem={nodePubKeyPem} />
+              },
+              {
+                value: 'integrity',
+                label: 'Integrity',
+                content: <IntegritySection />
+              }
+            ]}
+          />
+        </Card>
+      </div>
     </TooltipProvider>
   )
 }

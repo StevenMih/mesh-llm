@@ -1,39 +1,52 @@
-// Fetches capsule-emit-mesh's own sidecar HTTP surface directly
-// ([mesh-live-tab-pane-proxy] Q2 ruling) -- NOT a mesh-llm host route.
-// `crates/mesh-llm-host-runtime`'s `api/routes/capsules.rs` stays static
-// `ledger/`-serving; these three routes exist only in the Python sidecar
-// (`accountability_pane_routes.py`) because only it can run the
-// derivations (rung grading, peer grouping, the nine-property assurance
-// map) these payloads carry. Every call is same-origin-optional: the
-// sidecar's own CORS allowlist (`--pane-dashboard-origin`) is what actually
-// gates a real cross-origin browser fetch; this client just points `fetch`
-// at whatever base URL the user configured (`sidecarConfig.ts`).
+// Fetches the capsule-emit-mesh sidecar's accountability pane data through
+// the mesh-llm host's own `/api/capsules/panes/*` route
+// (`crates/mesh-llm-host-runtime/src/api/routes/capsule_panes.rs`), which
+// forwards server-side to the sidecar
+// ([mesh-ledger-earned-pass-and-native-panes] Part B -- supersedes
+// [mesh-live-tab-pane-proxy] Q2's original "call the sidecar directly from
+// the browser" ruling). The host is the only party that needs to know the
+// sidecar's location; this client never takes a base URL, and a
+// server-to-server forward has no CORS to fail.
+import { env } from '@/lib/env'
 import type { PaneAJson, PaneBJson, PaneCDrilldownJson, PaneCListJson } from '@/features/capsules/api/sidecarTypes'
+
+const PANES_BASE = `${env.managementApiUrl}/api/capsules/panes`
+
+/** Thrown by `getJson` on a non-2xx response, carrying the HTTP status so
+ *  callers can tell "the host's capsule service isn't running" (503) apart
+ *  from any other failure. */
+export class PaneFetchError extends Error {
+  status: number
+  constructor(status: number, url: string) {
+    super(`pane fetch failed: HTTP ${status} (${url})`)
+    this.status = status
+  }
+}
 
 async function getJson<T>(url: string): Promise<T> {
   const response = await fetch(url)
   if (!response.ok) {
-    throw new Error(`sidecar pane fetch failed: HTTP ${response.status} (${url})`)
+    throw new PaneFetchError(response.status, url)
   }
   return (await response.json()) as T
 }
 
-export function fetchPaneA(baseUrl: string): Promise<PaneAJson> {
-  return getJson<PaneAJson>(`${baseUrl}/accountability/pane-a`)
+export function fetchPaneA(): Promise<PaneAJson> {
+  return getJson<PaneAJson>(`${PANES_BASE}/pane-a`)
 }
 
-export function fetchPaneB(baseUrl: string): Promise<PaneBJson> {
-  return getJson<PaneBJson>(`${baseUrl}/accountability/pane-b`)
+export function fetchPaneB(): Promise<PaneBJson> {
+  return getJson<PaneBJson>(`${PANES_BASE}/pane-b`)
 }
 
-export function fetchPaneCList(baseUrl: string, opts?: { limit?: number; afterSeq?: number }): Promise<PaneCListJson> {
+export function fetchPaneCList(opts?: { limit?: number; afterSeq?: number }): Promise<PaneCListJson> {
   const params = new URLSearchParams()
   if (opts?.limit != null) params.set('limit', String(opts.limit))
   if (opts?.afterSeq != null) params.set('after_seq', String(opts.afterSeq))
   const query = params.toString()
-  return getJson<PaneCListJson>(`${baseUrl}/accountability/pane-c${query ? `?${query}` : ''}`)
+  return getJson<PaneCListJson>(`${PANES_BASE}/pane-c${query ? `?${query}` : ''}`)
 }
 
-export function fetchPaneCDrilldown(baseUrl: string, exchangeId: string): Promise<PaneCDrilldownJson> {
-  return getJson<PaneCDrilldownJson>(`${baseUrl}/accountability/pane-c?exchange_id=${encodeURIComponent(exchangeId)}`)
+export function fetchPaneCDrilldown(exchangeId: string): Promise<PaneCDrilldownJson> {
+  return getJson<PaneCDrilldownJson>(`${PANES_BASE}/pane-c?exchange_id=${encodeURIComponent(exchangeId)}`)
 }

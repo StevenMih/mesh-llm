@@ -1,16 +1,18 @@
-// Tests for LedgerPageContent — the four-section Ledger tab (L2 build).
+// Tests for LedgerPageContent — the four-section Ledger tab (L2 build,
+// [mesh-ledger-earned-pass-and-native-panes] Part B native-panes rebuild).
 //
 // Test goals:
-//   1. Four section tabs present (Balance/Peers/Exchanges/Integrity)
+//   1. Four section tabs present (Balance/Peers/Exchanges/Integrity), with no
+//      configuration step required to see them populate
 //   2. The premise line is rendered verbatim
-//   3. No leaked internal IDs or tool names in the empty state (no sidecar URL)
+//   3. No leaked internal IDs or tool names in the empty state, and no
+//      sidecar URL box anywhere
 //   4. Exchanges header shows two counts, never a ratio
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { LedgerPageContent } from '@/features/capsules/pages/LedgerPage'
-import { _resetSidecarStoreForTest } from '@/features/capsules/api/sidecarConfig'
 
 // ---------------------------------------------------------------------------
 // Mock all network fetchers — tests must never hit the real network.
@@ -57,11 +59,6 @@ function makeWrapper() {
 // ---------------------------------------------------------------------------
 
 describe('LedgerPageContent', () => {
-  beforeEach(() => {
-    _resetSidecarStoreForTest()
-    window.localStorage.clear()
-  })
-
   afterEach(() => {
     vi.clearAllMocks()
   })
@@ -84,14 +81,47 @@ describe('LedgerPageContent', () => {
   })
 
   it('shows no leaked IDs in empty state', () => {
-    // No sidecar URL set — every section should show an honest absent state,
-    // with none of the forbidden internal strings.
     render(<LedgerPageContent />, { wrapper: makeWrapper() })
 
     const bodyText = document.body.textContent ?? ''
     expect(bodyText).not.toMatch(/\[mesh-/)
     expect(bodyText).not.toMatch(/self_accountability\.py/)
     expect(bodyText).not.toMatch(/not built yet/i)
+  })
+
+  it('never renders a sidecar URL box — sections are native, no configuration step', () => {
+    render(<LedgerPageContent />, { wrapper: makeWrapper() })
+
+    expect(screen.queryByRole('textbox', { name: /sidecar url/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^save$/i })).not.toBeInTheDocument()
+    const bodyText = document.body.textContent ?? ''
+    expect(bodyText).not.toMatch(/sidecar url/i)
+    expect(bodyText).not.toMatch(/configure a sidecar/i)
+    expect(bodyText).not.toMatch(/set the url/i)
+    expect(bodyText).not.toMatch(/localhost:8089|127\.0\.0\.1:8089/)
+  })
+
+  it('populates a section immediately with no prior configuration', async () => {
+    const { fetchPaneB } = await import('@/features/capsules/api/sidecarClient')
+    vi.mocked(fetchPaneB).mockResolvedValueOnce({
+      rows: [
+        {
+          peer_id: 'peer-1',
+          node: { state: 'PASS', text: null },
+          rung: { state: 'NOT_CHECKED', text: null },
+          history: { state: 'NOT_PRESENT', text: null },
+          served: { state: 'NOT_PRESENT', text: null },
+          verdicts: { state: 'NOT_PRESENT', text: null }
+        }
+      ],
+      peer_count: 1
+    })
+
+    const user = userEvent.setup()
+    render(<LedgerPageContent />, { wrapper: makeWrapper() })
+    await user.click(screen.getByRole('tab', { name: /peers/i }))
+
+    expect(await screen.findByText('peer-1')).toBeInTheDocument()
   })
 
   it('Exchanges header shows two counts not a ratio', async () => {
@@ -142,12 +172,6 @@ describe('LedgerPageContent', () => {
 
     const user = userEvent.setup()
     render(<LedgerPageContent />, { wrapper: makeWrapper() })
-
-    // Configure a sidecar URL so sections become active
-    const input = screen.getByRole('textbox', { name: /sidecar url/i })
-    await user.clear(input)
-    await user.type(input, 'http://127.0.0.1:8765')
-    await user.click(screen.getByRole('button', { name: /save/i }))
 
     // Navigate to Exchanges tab
     await user.click(screen.getByRole('tab', { name: /exchanges/i }))
