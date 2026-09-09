@@ -41,6 +41,49 @@ describe('buildExchangeLedgerRows', () => {
     expect(row.checksText).not.toMatch(/\d\/\d/)
   })
 
+  it('ADVERSARIAL: a NOT_CHECKED or NOT_PRESENT property is never named as a Checks exception — only a real FAIL is', () => {
+    const [row] = buildExchangeLedgerRows(
+      [
+        paneCRow({
+          // has_issue is false here on purpose: an honest NOT_CHECKED/
+          // NOT_PRESENT property is never, by itself, an "issue" (the
+          // backend's own has_issue rule this view trusts), so Checks
+          // must never surface one as though it were a failing check.
+          has_issue: false,
+          properties: {
+            content_binding: { state: 'PASS' },
+            checkpoint_signature: { state: 'NOT_CHECKED' },
+            identity_authority: { state: 'NOT_PRESENT' }
+          }
+        })
+      ],
+      new Map()
+    )
+    expect(row.checksText).toBe('—')
+  })
+
+  it('ADVERSARIAL: never corroborates a no-verdict case — a false has_issue with a stray FAIL-looking property still reports only real FAILs', () => {
+    // Even if `has_issue` were true for an unrelated reason, checksTextFor
+    // only ever names properties whose OWN state is the literal string
+    // 'FAIL' -- NOT_CHECKED/NOT_PRESENT never qualify, so this can't drift
+    // into treating "unknown" as "bad" (nor the inverse).
+    const [row] = buildExchangeLedgerRows(
+      [
+        paneCRow({
+          has_issue: true,
+          properties: {
+            content_binding: { state: 'NOT_CHECKED' },
+            checkpoint_signature: { state: 'FAIL' },
+            capture_coverage: { state: 'NOT_PRESENT' }
+          }
+        })
+      ],
+      new Map()
+    )
+    expect(row.checksText).toBe('checkpoint signature')
+    expect(row.checksText).not.toMatch(/content binding|capture coverage/)
+  })
+
   it('falls back to naming the pair-reconciliation check when has_issue is true but no named property failed', () => {
     const [row] = buildExchangeLedgerRows(
       [paneCRow({ has_issue: true, properties: { content_binding: { state: 'PASS' } } })],
