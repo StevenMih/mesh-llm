@@ -1,11 +1,11 @@
-// [mesh-live-tab-pane-proxy] L2: Ledger tab v1 — four sections
+// [mesh-live-tab-pane-proxy] L3/L4: Ledger tab — four sections
 // (Balance / Peers / Exchanges / Integrity) replacing the prior four
 // sub-tabs. Data comes from /accountability/pane-a|b|c on the sidecar;
 // honest absent states where data is unavailable.
 //
 // Security boundary: NO user-visible strings may name internal tooling,
 // internal item IDs, or any branded service name. Comments are exempt.
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { StatusPill } from '@/components/ui/status-pill'
@@ -93,62 +93,178 @@ function StateChip({ label, cell }: { label: string; cell: PaneState }) {
 }
 
 // ---------------------------------------------------------------------------
-// SidecarUrlField — verbatim copy from SidecarPanesSection.tsx
+// L3.4 — SidecarUrlField with auto-probe of http://127.0.0.1:8089
 // ---------------------------------------------------------------------------
+
+const DEFAULT_PROBE_URL = 'http://127.0.0.1:8089'
 
 function SidecarUrlField() {
   const { baseUrl, setBaseUrl, clearBaseUrl } = useSidecarBaseUrl()
   const [draft, setDraft] = useState(baseUrl ?? '')
+  // L3.4: probe state — 'idle' before first probe, 'detected' if reachable (awaiting user confirm), 'not-detected' if not
+  const [probeStatus, setProbeStatus] = useState<'idle' | 'detected' | 'not-detected'>('idle')
+  const probedRef = useRef(false)
 
-  return (
-    <div className="flex flex-wrap items-center gap-2 py-1">
-      <label htmlFor="ledger-sidecar-base-url" className="type-label text-fg-faint">
-        Sidecar URL
-      </label>
-      <input
-        id="ledger-sidecar-base-url"
-        type="text"
-        value={draft}
-        onChange={(event) => setDraft(event.target.value)}
-        placeholder="http://127.0.0.1:8089"
-        className="min-w-[220px] flex-1 rounded-md border border-border/70 bg-card px-2 py-1 text-sm text-foreground"
-      />
-      <button
-        type="button"
-        onClick={() => setBaseUrl(draft)}
-        disabled={draft.trim().length === 0}
-        className="rounded-md border border-border/70 px-2 py-1 text-xs font-medium text-foreground hover:bg-card disabled:opacity-50"
-      >
-        Save
-      </button>
-      {baseUrl ? (
+  // Auto-probe on mount when no URL is configured.
+  // Uses mode:'cors' so connection failures (ECONNREFUSED) propagate as rejections.
+  // Does NOT auto-set baseUrl — user must confirm by clicking "Use this URL".
+  useEffect(() => {
+    if (baseUrl !== null || probedRef.current) return
+    probedRef.current = true
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), 2000)
+    fetch(DEFAULT_PROBE_URL + '/health', { signal: controller.signal })
+      .then((res) => {
+        if (res.ok || res.status > 0) {
+          setProbeStatus('detected')
+          setDraft(DEFAULT_PROBE_URL)
+        } else {
+          setProbeStatus('not-detected')
+        }
+      })
+      .catch(() => {
+        setProbeStatus('not-detected')
+      })
+      .finally(() => {
+        clearTimeout(timeoutId)
+      })
+  }, [baseUrl])
+
+  // If already configured and connected, show compact "connected" view
+  if (baseUrl) {
+    return (
+      <div className="flex flex-wrap items-center gap-2 py-1">
+        <span className="text-xs text-fg-dim">
+          Connected to sidecar at {baseUrl}
+        </span>
         <button
           type="button"
           onClick={() => {
             setDraft('')
             clearBaseUrl()
+            setProbeStatus('idle')
+            probedRef.current = false
           }}
           className="rounded-md border border-border/70 px-2 py-1 text-xs font-medium text-fg-dim hover:bg-card"
         >
           Clear
         </button>
+      </div>
+    )
+  }
+
+  // Default: full field always visible (probe status shown as annotation above the field)
+  // The Save button is always accessible — probe status is informational only.
+  return (
+    <div className="flex flex-col gap-1 py-1">
+      {probeStatus === 'detected' ? (
+        <p className="text-xs text-fg-dim">
+          Detected at {DEFAULT_PROBE_URL} — save to connect.
+        </p>
+      ) : probeStatus === 'not-detected' ? (
+        <p className="text-xs text-fg-faint">Not detected — set the URL</p>
       ) : null}
+      <div className="flex flex-wrap items-center gap-2">
+        <label htmlFor="ledger-sidecar-base-url" className="type-label text-fg-faint">
+          Sidecar URL
+        </label>
+        <input
+          id="ledger-sidecar-base-url"
+          type="text"
+          value={draft}
+          onChange={(event) => setDraft(event.target.value)}
+          placeholder="http://127.0.0.1:8089"
+          className="min-w-[220px] flex-1 rounded-md border border-border/70 bg-card px-2 py-1 text-sm text-foreground"
+        />
+        <button
+          type="button"
+          onClick={() => setBaseUrl(draft)}
+          disabled={draft.trim().length === 0}
+          className="rounded-md border border-border/70 px-2 py-1 text-xs font-medium text-foreground hover:bg-card disabled:opacity-50"
+        >
+          Save
+        </button>
+      </div>
     </div>
   )
 }
 
 // ---------------------------------------------------------------------------
+// L3.5 — Declare the break dialog
+// ---------------------------------------------------------------------------
+
+type DeclareBreakDialogProps = {
+  onConfirm: (cause: string) => void
+  onCancel: () => void
+}
+
+function DeclareBreakDialog({ onConfirm, onCancel }: DeclareBreakDialogProps) {
+  const [cause, setCause] = useState('unknown')
+
+  return (
+    <div className="mt-2 rounded border border-border/60 bg-card p-3 text-xs text-fg-dim">
+      <p className="mb-2 font-medium text-foreground">Declaring this break has two consequences:</p>
+      <ol className="mb-3 ml-3 flex list-decimal flex-col gap-1">
+        <li>This exchange will be marked as broken in your local record.</li>
+        <li>Other nodes you exchange with will be able to see that you declared a break here.</li>
+      </ol>
+      <div className="mb-3 flex items-center gap-2">
+        <label htmlFor="declare-cause" className="shrink-0">
+          Cause:
+        </label>
+        <select
+          id="declare-cause"
+          value={cause}
+          onChange={(e) => setCause(e.target.value)}
+          className="rounded border border-border/70 bg-card px-1 py-0.5 text-xs text-foreground"
+        >
+          <option value="restored_from_backup">Restored from backup</option>
+          <option value="reinstalled">Reinstalled</option>
+          <option value="unknown">Unknown</option>
+        </select>
+      </div>
+      <div className="flex gap-2">
+        <button
+          type="button"
+          onClick={() => onConfirm(cause)}
+          className="rounded border border-border/60 px-2 py-0.5 text-xs text-foreground hover:bg-card"
+        >
+          Confirm
+        </button>
+        <button
+          type="button"
+          onClick={onCancel}
+          className="rounded border border-border/60 px-2 py-0.5 text-xs text-fg-dim hover:bg-card"
+        >
+          Cancel
+        </button>
+      </div>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// L4 — Owner identity types
+// ---------------------------------------------------------------------------
+
+type OwnerStatus = {
+  binding: 'absent' | 'bound' | 'invalid'
+  expiry?: string | null
+  owner_id?: string | null
+}
+
+// ---------------------------------------------------------------------------
 // LedgerCard — single card component for every section
 //
-// Anatomy:
-//   1. Chip strip (nine properties, five states)
+// Anatomy (L3.3 updated order):
+//   1. Headline (L3.1)
 //   2. Promise line
 //   3. Recorded facts / advertised vs served
 //   4. Retained status
 //   5. Disclosure link
-//   6. "Show the security checks" expander (verbatim checklist)
+//   6. "Show the security checks" expander (chips in trigger + verbatim checklist)
 //   7. Adjudications
-//   8. Actions (§5 vocabulary for FAIL states)
+//   8. Actions (§5 vocabulary for FAIL states, L3.5)
 // ---------------------------------------------------------------------------
 
 type LedgerCardProps = {
@@ -171,6 +287,14 @@ type LedgerCardProps = {
   adjudicationCount?: number
   // For the security checklist expander
   fullCapsuleId?: string | null
+  // L3.1 — headline text for this card
+  headline?: string | null
+  // L3.6 — unanswered exchange state
+  unanswered?: boolean
+  unansweredDate?: string | null
+  seenOnlineSince?: string | null
+  // L4.1 — owner identity
+  ownerStatus?: OwnerStatus | null
 }
 
 function LedgerCard({
@@ -185,8 +309,14 @@ function LedgerCard({
   retainedTheirs,
   disclosureLabel,
   adjudicationCount,
-  fullCapsuleId
+  fullCapsuleId,
+  headline,
+  unanswered,
+  unansweredDate,
+  seenOnlineSince,
+  ownerStatus
 }: LedgerCardProps) {
+  const [showDeclareDialog, setShowDeclareDialog] = useState(false)
   const failedProps = Object.entries(chipStates).filter(([, cell]) => cell?.state === 'FAIL').map(([key]) => key)
 
   // Build the ordered nine-property chip list
@@ -198,41 +328,85 @@ function LedgerCard({
     if (propKey === 'producer_signature') {
       return { propKey, label, tone: boolToTone(recomputedSignatureOk), state: boolToState(recomputedSignatureOk), recomputed: true }
     }
+    // L4.1 — identity/authority chip: always NOT_PRESENT for authority sub-fact
+    if (propKey === 'identity_authority') {
+      const cell = chipStates[propKey]
+      // The binding fact determines the chip state; authority is always NOT_PRESENT
+      let state = 'NOT_PRESENT'
+      if (ownerStatus) {
+        state = ownerStatus.binding === 'bound' ? 'PASS' : ownerStatus.binding === 'invalid' ? 'FAIL' : 'NOT_PRESENT'
+      } else if (cell?.state) {
+        state = cell.state
+      }
+      return { propKey, label, tone: toneForState(state), state, recomputed: false }
+    }
     const cell = chipStates[propKey]
     const state = cell?.state ?? 'NOT_CHECKED'
     return { propKey, label, tone: toneForState(state), state, recomputed: false }
   })
 
+  // L3.2 — Card title: model · short-exchange-id · timestamp
+  function formatTimestamp(ts: string | null): string | null {
+    if (!ts) return null
+    // Extract time portion if it's an ISO timestamp
+    const match = ts.match(/T(\d{2}:\d{2}:\d{2})Z?/)
+    if (match) return `${match[1]}Z`
+    return ts
+  }
+
+  const shortId = exchangeId.slice(0, 8)
+  const timeDisplay = formatTimestamp(timestamp)
+  const cardTitle = modelInfo
+    ? [modelInfo, shortId, timeDisplay].filter(Boolean).join(' · ')
+    : [shortId, timeDisplay].filter(Boolean).join(' · ')
+
+  // L4.1 — owner identity text
+  function ownerLine(): string | null {
+    if (!ownerStatus) return null
+    if (ownerStatus.binding === 'bound') {
+      const expiryText = ownerStatus.expiry ? `valid to ${ownerStatus.expiry}` : 'self-asserted'
+      return `Owner: bound (self-asserted, ${expiryText}) — not bound to a person.`
+    }
+    if (ownerStatus.binding === 'invalid') {
+      return 'Owner: binding invalid — not bound to a person.'
+    }
+    return 'Owner: not present — not bound to a person.'
+  }
+
+  const ownerText = ownerLine()
+
   return (
     <Card className="mb-3">
       <CardHeader className="pb-2">
+        {/* L3.2 — Card title: model · short-id · timestamp */}
         <CardTitle className="text-sm font-mono text-fg-dim">
-          {fullCapsuleId ? `${fullCapsuleId.slice(0, 20)}…` : exchangeId}
+          {cardTitle}
         </CardTitle>
-        {timestamp ? (
-          <p className="text-xs text-fg-faint">{timestamp}</p>
-        ) : null}
-        {modelInfo ? (
-          <p className="text-xs text-fg-dim">{modelInfo}</p>
+        {fullCapsuleId && fullCapsuleId !== exchangeId ? (
+          <p className="text-xs text-fg-faint font-mono">{fullCapsuleId.slice(0, 24)}…</p>
         ) : null}
       </CardHeader>
 
       <CardContent className="flex flex-col gap-3 pt-0">
-        {/* 1. Chip strip */}
-        <div className="flex flex-wrap gap-1.5">
-          {orderedChips.map(({ propKey, label, tone, state, recomputed }) => (
-            <StatusPill
-              key={propKey}
-              label={recomputed ? `${label}: ${state} (recomputed)` : `${label}: ${state}`}
-              tone={tone}
-              tooltip={
-                recomputed
-                  ? 'recomputed in this browser — not taken from the data source'
-                  : (chipStates[propKey]?.text ?? undefined)
-              }
-            />
-          ))}
-        </div>
+        {/* L3.1 — Headline */}
+        {headline ? (
+          <p className="text-xs text-fg-dim">{headline}</p>
+        ) : null}
+
+        {/* L3.6 — Unanswered exchange state (never in FAIL, never red) */}
+        {unanswered ? (
+          <p className="text-xs text-fg-dim">
+            {unansweredDate
+              ? `Asked ${unansweredDate}, no reply.`
+              : 'Asked, no reply.'}{' '}
+            Seen online since: {seenOnlineSince ?? 'no.'}
+          </p>
+        ) : null}
+
+        {/* L4.1 — Owner identity */}
+        {ownerText ? (
+          <p className="text-xs text-fg-dim">{ownerText}</p>
+        ) : null}
 
         {/* 2. Promise line */}
         {promiseState ? (
@@ -258,11 +432,26 @@ function LedgerCard({
           </p>
         ) : null}
 
-        {/* 6. Security checks expander */}
+        {/* 6. Security checks expander — L3.3: chips in the trigger header */}
         <Accordion type="single" collapsible>
           <AccordionItem value="security-checks">
-            <AccordionTrigger className="text-xs text-fg-dim">
-              Show the security checks
+            <AccordionTrigger className="text-xs text-fg-dim flex-wrap gap-1.5">
+              {/* L3.3: chip strip is now the trigger header */}
+              <span className="flex flex-wrap gap-1 mr-2">
+                {orderedChips.map(({ propKey, label, tone, state, recomputed }) => (
+                  <StatusPill
+                    key={propKey}
+                    label={recomputed ? `${label}: ${state} (recomputed)` : `${label}: ${state}`}
+                    tone={tone}
+                    tooltip={
+                      recomputed
+                        ? 'recomputed in this browser — not taken from the data source'
+                        : (chipStates[propKey]?.text ?? undefined)
+                    }
+                  />
+                ))}
+              </span>
+              <span className="shrink-0">Show the security checks</span>
             </AccordionTrigger>
             <AccordionContent>
               <ol className="ml-2 flex flex-col gap-1 text-xs text-fg-dim">
@@ -297,6 +486,29 @@ function LedgerCard({
                   <span className="ml-1 text-fg-faint">—</span>
                 </li>
                 <li>digest matches: —</li>
+                {/* L4.1 — identity/authority as two facts */}
+                <li>
+                  <span className="font-mono">identity binding:</span>{' '}
+                  <StatusPill
+                    label={ownerStatus?.binding === 'bound' ? 'PASS' : ownerStatus?.binding === 'invalid' ? 'FAIL' : 'NOT_PRESENT'}
+                    tone={toneForState(ownerStatus?.binding === 'bound' ? 'PASS' : ownerStatus?.binding === 'invalid' ? 'FAIL' : 'NOT_PRESENT')}
+                  />
+                  {ownerStatus?.binding === 'bound' && ownerStatus.expiry
+                    ? <span className="ml-1 text-fg-faint">self-asserted, valid to {ownerStatus.expiry}</span>
+                    : null}
+                </li>
+                {/* L4.3 — authority always NOT_PRESENT */}
+                <li>
+                  <span className="font-mono">identity authority:</span>{' '}
+                  <StatusPill
+                    label="NOT_PRESENT"
+                    tone={toneForState('NOT_PRESENT')}
+                  />
+                  <span className="ml-1 text-fg-faint">not bound to a person</span>
+                </li>
+                <li>
+                  recomputed and verified in your browser, not asserted by this page
+                </li>
               </ol>
               {/* Each chip from the nine-property strip as a row */}
               <div className="mt-2 flex flex-col gap-1">
@@ -306,6 +518,9 @@ function LedgerCard({
                   </div>
                 ))}
               </div>
+              <p className="mt-2 text-xs text-fg-faint">
+                corroborated 0 · contradicted 0 · inconclusive 0
+              </p>
             </AccordionContent>
           </AccordionItem>
         </Accordion>
@@ -317,40 +532,51 @@ function LedgerCard({
           </p>
         ) : null}
 
-        {/* 8. Actions for FAIL states */}
-        {failedProps.length > 0 ? (
-          <div className="flex flex-wrap gap-1.5 pt-1">
-            <span className="text-xs text-fg-faint">Actions: </span>
-            <button
-              type="button"
-              className="rounded border border-border/60 px-2 py-0.5 text-xs text-fg-dim hover:bg-card"
-            >
-              Restore
-            </button>
-            <button
-              type="button"
-              className="rounded border border-border/60 px-2 py-0.5 text-xs text-fg-dim hover:bg-card"
-            >
-              Declare
-            </button>
-            <button
-              type="button"
-              className="rounded border border-border/60 px-2 py-0.5 text-xs text-fg-dim hover:bg-card"
-            >
-              Ask
-            </button>
-            <button
-              type="button"
-              className="rounded border border-border/60 px-2 py-0.5 text-xs text-fg-dim hover:bg-card"
-            >
-              Record
-            </button>
-            <button
-              type="button"
-              className="rounded border border-border/60 px-2 py-0.5 text-xs text-fg-dim hover:bg-card"
-            >
-              Stop using
-            </button>
+        {/* 8. Actions for FAIL states — L3.5 updated vocabulary */}
+        {failedProps.length > 0 && !unanswered ? (
+          <div className="flex flex-col gap-1.5 pt-1">
+            <div className="flex flex-wrap gap-1.5">
+              <span className="text-xs text-fg-faint">Actions: </span>
+              <button
+                type="button"
+                className="rounded border border-border/60 px-2 py-0.5 text-xs text-fg-dim hover:bg-card"
+              >
+                Restore from copies
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowDeclareDialog((v) => !v)}
+                className="rounded border border-border/60 px-2 py-0.5 text-xs text-fg-dim hover:bg-card"
+              >
+                Declare the break
+              </button>
+              <button
+                type="button"
+                className="rounded border border-border/60 px-2 py-0.5 text-xs text-fg-dim hover:bg-card"
+              >
+                Ask them for their copy
+              </button>
+              <button
+                type="button"
+                className="rounded border border-border/60 px-2 py-0.5 text-xs text-fg-dim hover:bg-card"
+              >
+                Record this
+              </button>
+              <button
+                type="button"
+                className="rounded border border-border/60 px-2 py-0.5 text-xs text-fg-dim hover:bg-card"
+              >
+                Stop using this node
+              </button>
+            </div>
+            {showDeclareDialog ? (
+              <DeclareBreakDialog
+                onConfirm={(_cause) => {
+                  setShowDeclareDialog(false)
+                }}
+                onCancel={() => setShowDeclareDialog(false)}
+              />
+            ) : null}
           </div>
         ) : null}
       </CardContent>
@@ -366,6 +592,11 @@ function PaneARowCard({ row, nodePubKeyPem }: { row: PaneARow; nodePubKeyPem: st
   const identity = useRecomputedIdentity(row.record, nodePubKeyPem)
   const model = row.model_claimed ?? undefined
 
+  // L3.1 — card headline for Balance rows
+  const headline = model
+    ? `Routed to ${model}; the node signed this answer. Sealed — digest only.`
+    : `Sealed record from this node. Sealed — digest only.`
+
   return (
     <LedgerCard
       exchangeId={row.capsule_id}
@@ -375,6 +606,7 @@ function PaneARowCard({ row, nodePubKeyPem }: { row: PaneARow; nodePubKeyPem: st
       chipStates={row.rungs}
       recomputedIdMatch={identity.idMatch}
       recomputedSignatureOk={identity.signatureOk}
+      headline={headline}
     />
   )
 }
@@ -404,6 +636,15 @@ function PaneCRowCard({
     }
   }
 
+  // L3.6 — safe optional unanswered field
+  const unansweredRaw = (row as Record<string, unknown>).unanswered
+  const isUnanswered = unansweredRaw === true
+
+  // L3.1 — exchange card headline
+  const headline = isUnanswered
+    ? null
+    : `Your node kept its half; the other side has ${row.theirs.state !== 'absent' ? 'provided their copy' : 'not provided their copy yet'}.`
+
   return (
     <LedgerCard
       exchangeId={row.exchange_key}
@@ -411,6 +652,8 @@ function PaneCRowCard({
       chipStates={chipStates}
       recomputedIdMatch={identity.idMatch}
       recomputedSignatureOk={identity.signatureOk}
+      headline={headline}
+      unanswered={isUnanswered}
     />
   )
 }
@@ -445,6 +688,10 @@ function BalanceSection({
 
   return (
     <div className="flex flex-col gap-2">
+      {/* L3.1 — Balance section headline */}
+      <p className="text-sm text-fg-dim">
+        Records sealed by this node. Each one is recomputed locally when you open this page.
+      </p>
       {query.data.rows.map((row) => (
         <PaneARowCard key={row.capsule_id} row={row} nodePubKeyPem={nodePubKeyPem} />
       ))}
@@ -476,6 +723,10 @@ function PeersSection({ baseUrl }: { baseUrl: string }) {
 
   return (
     <div className="flex flex-col gap-2">
+      {/* L3.1 — Peers section headline */}
+      <p className="text-sm text-fg-dim">
+        Nodes this node has exchanged with. What you sent, what they sent back, and whether it matched.
+      </p>
       {query.data.rows.map((row) => (
         <PeerRowCard key={row.peer_id} row={row} />
       ))}
@@ -515,11 +766,13 @@ function PeerRowCard({ row }: { row: PaneBRow }) {
 function ExchangesSection({
   baseUrl,
   recordsById,
-  nodePubKeyPem
+  nodePubKeyPem,
+  requesterStartedDate
 }: {
   baseUrl: string
   recordsById: Map<string, CapsuleRecord>
   nodePubKeyPem: string | null
+  requesterStartedDate?: string | null
 }) {
   const query = useQuery({
     queryKey: ['ledger', 'pane-c', baseUrl],
@@ -534,16 +787,30 @@ function ExchangesSection({
       <p className="text-sm text-amber-500">{diagnoseFetchError(query.error, baseUrl)}</p>
     )
   }
+
+  // L3.7 — Requester empty state
   if (!query.data || query.data.row_count === 0) {
+    if (requesterStartedDate) {
+      return (
+        <p className="text-sm text-muted-foreground">
+          Your node started keeping its half on {requesterStartedDate}.
+        </p>
+      )
+    }
     return <p className="text-sm text-muted-foreground">No exchanges recorded yet.</p>
   }
 
-  // Two counts — never a ratio
+  // L3.8 — Two counts — never a ratio
   const total = query.data.row_count
   const confirmed = query.data.rows.filter((r) => r.theirs.state !== 'absent' && !r.unilateral).length
 
   return (
     <div className="flex flex-col gap-2">
+      {/* L3.1 — Exchanges section headline */}
+      <p className="text-sm text-fg-dim">
+        Each exchange is a pair of sealed records — yours and theirs. Both sides keep a copy.
+      </p>
+      {/* L3.8 — Two counts, no ratio */}
       <p className="text-sm font-medium text-foreground">
         {total} exchange{total === 1 ? '' : 's'} · {confirmed} confirmed by the other side
       </p>
@@ -592,10 +859,25 @@ function IntegritySection({ baseUrl }: { baseUrl: string }) {
   const witnesses: unknown[] = Array.isArray(card?.witnesses) ? (card.witnesses as unknown[]) : []
   const witnessCount = witnesses.length
 
+  // L4.2 — owner-added-later headline
+  const ownerAddedAt = typeof card?.owner_added_at === 'string' ? card.owner_added_at : null
+  const ownerCardIndex = typeof card?.owner_card_index === 'number' ? card.owner_card_index : null
+
+  // L3.1 — Integrity headline
+  const integrityHeadline = `Your history is intact and registered with ${witnessCount} witness${witnessCount === 1 ? '' : 'es'} (run by the mesh team, not you). ${rows.length} exchange${rows.length === 1 ? '' : 's'} served, all sealed.`
+
   return (
     <Card>
       <CardHeader>
         <CardTitle className="text-sm">Chain integrity</CardTitle>
+        {/* L3.1 — section headline inside the Integrity card */}
+        <p className="text-xs text-fg-dim mt-1">{integrityHeadline}</p>
+        {/* L4.2 — owner-added-later notice */}
+        {ownerAddedAt && ownerCardIndex !== null ? (
+          <p className="text-xs text-fg-dim mt-1">
+            Owner bound from {ownerAddedAt} (card #{ownerCardIndex}); earlier records are unowned.
+          </p>
+        ) : null}
       </CardHeader>
       <CardContent className="flex flex-col gap-2 pt-0 text-sm text-fg-dim">
         {continuity ? (
@@ -684,7 +966,7 @@ export function LedgerPageContent() {
                 ) : (
                   <div>
                     <p className="mb-3 text-sm text-fg-dim">
-                      What have the nodes you've dealt with shown you?
+                      What have the nodes you have dealt with shown you?
                     </p>
                     <PeersSection baseUrl={baseUrl} />
                   </div>
