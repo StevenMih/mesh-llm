@@ -7,24 +7,32 @@
 //
 // Security boundary: NO user-visible strings may name internal tooling,
 // internal item IDs, or any branded service name. Comments are exempt.
-import { useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { ShieldCheck } from 'lucide-react'
+import { Search as SearchIcon, ShieldCheck } from 'lucide-react'
+import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { DataTable, type TanStackTable } from '@/components/ui/data-table'
+import { DataTableViewOptions } from '@/components/ui/data-table-view-options'
+import { FilterPopover, type FilterValueOption } from '@/components/ui/FilterPopover'
 import { InfoBanner } from '@/components/ui/InfoBanner'
+import { Input } from '@/components/ui/input'
 import { StatusBadge } from '@/components/ui/StatusBadge'
-import { StatusPill } from '@/components/ui/status-pill'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { TabPanel } from '@/components/ui/TabPanel'
-import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '@/components/ui/accordion'
 import { fetchCapsuleLedger } from '@/features/capsules/api/client'
 import type { CapsuleRecord, JsonRecord } from '@/features/capsules/api/types'
 import { PaneFetchError, fetchPaneA, fetchPaneB, fetchPaneCList } from '@/features/capsules/api/sidecarClient'
-import type { PaneCRow, PaneState } from '@/features/capsules/api/sidecarTypes'
 import { balanceCoverage } from '@/features/capsules/lib/balance-view'
-import { toneForState } from '@/features/capsules/lib/assurance-tone'
-import { useRecomputedIdentity } from '@/features/capsules/lib/recompute-identity'
 import { PeerCard } from '@/features/capsules/components/PeerCard'
+import { buildExchangeColumns, EXCHANGE_COLUMN_LABELS } from '@/features/capsules/components/ExchangeColumns'
+import { ExchangeInspector } from '@/features/capsules/components/ExchangeInspector'
+import {
+  buildExchangeCounterpartyIndex,
+  buildExchangeLedgerRows,
+  type ExchangeLedgerRow
+} from '@/features/capsules/lib/exchange-ledger'
+import { exchangeEvidenceBundle, exchangeRowsToCsv, saveTextFile } from '@/features/capsules/lib/exchange-export'
 import { HARNESS_PANE_A_PAYLOAD, HARNESS_PANE_C_PAYLOAD } from '@/features/capsules/lib/exchange-fixtures'
 import {
   HARNESS_PANE_B_PAYLOAD,
@@ -56,480 +64,6 @@ function describePaneError(error: unknown): string {
 // ---------------------------------------------------------------------------
 
 type LedgerTab = 'peers' | 'exchanges' | 'integrity'
-
-// The nine properties from the spec §2 — verbatim order
-const NINE_PROPERTY_LABELS: Record<string, string> = {
-  content_binding: 'content binding',
-  producer_signature: 'producer signature',
-  local_inclusion: 'local inclusion',
-  checkpoint_signature: 'checkpoint signature',
-  external_registration: 'external registration',
-  continuity: 'continuity',
-  identity_authority: 'identity/authority',
-  capture_coverage: 'capture coverage',
-  outcome_corroboration: 'outcome corroboration'
-}
-
-// These two are ALWAYS recomputed in-browser — never trusted from sidecar.
-const RECOMPUTED_PROPERTIES = new Set(['content_binding', 'producer_signature'])
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function boolToTone(value: boolean | null) {
-  return value === null ? ('neutral' as const) : value ? ('good' as const) : ('bad' as const)
-}
-
-function boolToState(value: boolean | null): string {
-  return value === null ? 'NOT_CHECKED' : value ? 'PASS' : 'FAIL'
-}
-
-// ---------------------------------------------------------------------------
-// L3.5 — Declare the break dialog
-// ---------------------------------------------------------------------------
-
-type DeclareBreakDialogProps = {
-  onConfirm: (cause: string) => void
-  onCancel: () => void
-}
-
-function DeclareBreakDialog({ onConfirm, onCancel }: DeclareBreakDialogProps) {
-  const [cause, setCause] = useState('unknown')
-
-  return (
-    <div className="mt-2 rounded border border-border/60 bg-card p-3 text-xs text-fg-dim">
-      <p className="mb-2 font-medium text-foreground">Declaring this break has two consequences:</p>
-      <ol className="mb-3 ml-3 flex list-decimal flex-col gap-1">
-        <li>This exchange will be marked as broken in your local record.</li>
-        <li>Other nodes you exchange with will be able to see that you declared a break here.</li>
-      </ol>
-      <div className="mb-3 flex items-center gap-2">
-        <label htmlFor="declare-cause" className="shrink-0">
-          Cause:
-        </label>
-        <select
-          id="declare-cause"
-          value={cause}
-          onChange={(e) => setCause(e.target.value)}
-          className="rounded border border-border/70 bg-card px-1 py-0.5 text-xs text-foreground"
-        >
-          <option value="restored_from_backup">Restored from backup</option>
-          <option value="reinstalled">Reinstalled</option>
-          <option value="unknown">Unknown</option>
-        </select>
-      </div>
-      <div className="flex gap-2">
-        <button
-          type="button"
-          onClick={() => onConfirm(cause)}
-          className="rounded border border-border/60 px-2 py-0.5 text-xs text-foreground hover:bg-card"
-        >
-          Confirm
-        </button>
-        <button
-          type="button"
-          onClick={onCancel}
-          className="rounded border border-border/60 px-2 py-0.5 text-xs text-fg-dim hover:bg-card"
-        >
-          Cancel
-        </button>
-      </div>
-    </div>
-  )
-}
-
-// ---------------------------------------------------------------------------
-// L4 — Owner identity types
-// ---------------------------------------------------------------------------
-
-type OwnerStatus = {
-  binding: 'absent' | 'bound' | 'invalid'
-  expiry?: string | null
-  owner_id?: string | null
-}
-
-// ---------------------------------------------------------------------------
-// LedgerCard — single card component for every section
-//
-// Anatomy (L3.3 updated order):
-//   1. Headline (L3.1)
-//   2. Promise line
-//   3. Recorded facts / advertised vs served
-//   4. Retained status
-//   5. Disclosure link
-//   6. "Show the security checks" expander (chips in trigger + verbatim checklist)
-//   7. Adjudications
-//   8. Actions (§5 vocabulary for FAIL states, L3.5)
-// ---------------------------------------------------------------------------
-
-type LedgerCardProps = {
-  // Minimal required identity fields
-  exchangeId: string
-  timestamp: string | null
-  // The nine-property chip strip — each key is one of the NINE_PROPERTY_LABELS keys
-  // For recomputed props (content_binding, producer_signature), pass the recomputed
-  // identity values; for others, pass the PaneState from the sidecar.
-  chipStates: Partial<Record<string, PaneState>>
-  // Recomputed properties override chipStates for the two identity props
-  recomputedIdMatch: boolean | null
-  recomputedSignatureOk: boolean | null
-  // Optional extra rows
-  modelInfo?: string | null
-  promiseState?: string | null
-  retainedMine?: string | null
-  retainedTheirs?: string | null
-  disclosureLabel?: string | null
-  adjudicationCount?: number
-  // For the security checklist expander
-  fullCapsuleId?: string | null
-  // L3.1 — headline text for this card
-  headline?: string | null
-  // L3.6 — unanswered exchange state
-  unanswered?: boolean
-  unansweredDate?: string | null
-  seenOnlineSince?: string | null
-  // L4.1 — owner identity
-  ownerStatus?: OwnerStatus | null
-}
-
-function LedgerCard({
-  exchangeId,
-  timestamp,
-  chipStates,
-  recomputedIdMatch,
-  recomputedSignatureOk,
-  modelInfo,
-  promiseState,
-  retainedMine,
-  retainedTheirs,
-  disclosureLabel,
-  adjudicationCount,
-  fullCapsuleId,
-  headline,
-  unanswered,
-  unansweredDate,
-  seenOnlineSince,
-  ownerStatus
-}: LedgerCardProps) {
-  const [showDeclareDialog, setShowDeclareDialog] = useState(false)
-  const failedProps = Object.entries(chipStates)
-    .filter(([, cell]) => cell?.state === 'FAIL')
-    .map(([key]) => key)
-
-  // Build the ordered nine-property chip list
-  const orderedChips = Object.keys(NINE_PROPERTY_LABELS).map((propKey) => {
-    const label = NINE_PROPERTY_LABELS[propKey] ?? propKey.replace(/_/g, ' ')
-    if (propKey === 'content_binding') {
-      return {
-        propKey,
-        label,
-        tone: boolToTone(recomputedIdMatch),
-        state: boolToState(recomputedIdMatch),
-        recomputed: true
-      }
-    }
-    if (propKey === 'producer_signature') {
-      return {
-        propKey,
-        label,
-        tone: boolToTone(recomputedSignatureOk),
-        state: boolToState(recomputedSignatureOk),
-        recomputed: true
-      }
-    }
-    // L4.1 — identity/authority chip: always NOT_PRESENT for authority sub-fact
-    if (propKey === 'identity_authority') {
-      const cell = chipStates[propKey]
-      // The binding fact determines the chip state; authority is always NOT_PRESENT
-      let state = 'NOT_PRESENT'
-      if (ownerStatus) {
-        state = ownerStatus.binding === 'bound' ? 'PASS' : ownerStatus.binding === 'invalid' ? 'FAIL' : 'NOT_PRESENT'
-      } else if (cell?.state) {
-        state = cell.state
-      }
-      return { propKey, label, tone: toneForState(state), state, recomputed: false }
-    }
-    const cell = chipStates[propKey]
-    const state = cell?.state ?? 'NOT_CHECKED'
-    return { propKey, label, tone: toneForState(state), state, recomputed: false }
-  })
-
-  // L3.2 — Card title: model · short-exchange-id · timestamp
-  function formatTimestamp(ts: string | null): string | null {
-    if (!ts) return null
-    // Extract time portion if it's an ISO timestamp
-    const match = ts.match(/T(\d{2}:\d{2}:\d{2})Z?/)
-    if (match) return `${match[1]}Z`
-    return ts
-  }
-
-  const shortId = exchangeId.slice(0, 8)
-  const timeDisplay = formatTimestamp(timestamp)
-  const cardTitle = modelInfo
-    ? [modelInfo, shortId, timeDisplay].filter(Boolean).join(' · ')
-    : [shortId, timeDisplay].filter(Boolean).join(' · ')
-
-  // L4.1 — owner identity text
-  function ownerLine(): string | null {
-    if (!ownerStatus) return null
-    if (ownerStatus.binding === 'bound') {
-      const expiryText = ownerStatus.expiry ? `valid to ${ownerStatus.expiry}` : 'self-asserted'
-      return `Owner: bound (self-asserted, ${expiryText}) — not bound to a person.`
-    }
-    if (ownerStatus.binding === 'invalid') {
-      return 'Owner: binding invalid — not bound to a person.'
-    }
-    return 'Owner: not present — not bound to a person.'
-  }
-
-  const ownerText = ownerLine()
-
-  return (
-    <Card className="mb-3">
-      <CardHeader className="pb-2">
-        {/* L3.2 — Card title: model · short-id · timestamp */}
-        <CardTitle className="text-sm font-mono text-fg-dim">{cardTitle}</CardTitle>
-        {fullCapsuleId && fullCapsuleId !== exchangeId ? (
-          <p className="text-xs text-fg-faint font-mono">{fullCapsuleId.slice(0, 24)}…</p>
-        ) : null}
-      </CardHeader>
-
-      <CardContent className="flex flex-col gap-3 pt-0">
-        {/* L3.1 — Headline */}
-        {headline ? <p className="text-xs text-fg-dim">{headline}</p> : null}
-
-        {/* L3.6 — Unanswered exchange state (never in FAIL, never red) */}
-        {unanswered ? (
-          <p className="text-xs text-fg-dim">
-            {unansweredDate ? `Asked ${unansweredDate}, no reply.` : 'Asked, no reply.'} Seen online since:{' '}
-            {seenOnlineSince ?? 'no.'}
-          </p>
-        ) : null}
-
-        {/* L4.1 — Owner identity */}
-        {ownerText ? <p className="text-xs text-fg-dim">{ownerText}</p> : null}
-
-        {/* 2. Promise line */}
-        {promiseState ? (
-          <p className="text-xs text-fg-dim">
-            <span className="font-medium">Promise: </span>
-            {promiseState}
-          </p>
-        ) : null}
-
-        {/* 4. Retained */}
-        {(retainedMine ?? retainedTheirs) ? (
-          <div className="text-xs text-fg-dim">
-            {retainedMine ? <div>Mine: {retainedMine}</div> : null}
-            {retainedTheirs ? <div>Theirs: {retainedTheirs}</div> : null}
-          </div>
-        ) : null}
-
-        {/* 5. Disclosure */}
-        {disclosureLabel ? (
-          <p className="text-xs">
-            <span className="text-fg-faint">Disclosure: </span>
-            <span className="text-fg-dim">{disclosureLabel}</span>
-          </p>
-        ) : null}
-
-        {/* 6. Security checks expander — L3.3: chips in the trigger header */}
-        <Accordion type="single" collapsible>
-          <AccordionItem value="security-checks">
-            <AccordionTrigger className="text-xs text-fg-dim flex-wrap gap-1.5">
-              {/* L3.3: chip strip is now the trigger header */}
-              <span className="flex flex-wrap gap-1 mr-2">
-                {orderedChips.map(({ propKey, label, tone, state, recomputed }) => (
-                  <StatusPill
-                    key={propKey}
-                    label={recomputed ? `${label}: ${state} (recomputed)` : `${label}: ${state}`}
-                    tone={tone}
-                    tooltip={
-                      recomputed
-                        ? 'recomputed in this browser — not taken from the data source'
-                        : (chipStates[propKey]?.text ?? undefined)
-                    }
-                  />
-                ))}
-              </span>
-              <span className="shrink-0">Show the security checks</span>
-            </AccordionTrigger>
-            <AccordionContent>
-              <ol className="ml-2 flex flex-col gap-1 text-xs text-fg-dim">
-                <li>
-                  <span className="font-mono">capsule_id</span>
-                  {fullCapsuleId ? (
-                    <span className="ml-1 font-mono text-fg-faint">{fullCapsuleId.slice(0, 24)}…</span>
-                  ) : null}
-                </li>
-                <li>recomputed in-browser</li>
-                <li>
-                  id matches: <StatusPill label={boolToState(recomputedIdMatch)} tone={boolToTone(recomputedIdMatch)} />
-                </li>
-                <li>
-                  COSE_Sign1 vs pubkey:{' '}
-                  <StatusPill label={boolToState(recomputedSignatureOk)} tone={boolToTone(recomputedSignatureOk)} />
-                </li>
-                <li>model ref: {modelInfo ?? '—'}</li>
-                <li>
-                  <span className="font-mono">model_identity_hash</span>
-                  <span className="ml-1 text-fg-faint">—</span>
-                </li>
-                <li>
-                  <span className="font-mono">served_by_node_id</span>
-                  <span className="ml-1 text-fg-faint">—</span>
-                </li>
-                <li>digest matches: —</li>
-                {/* L4.1 — identity/authority as two facts */}
-                <li>
-                  <span className="font-mono">identity binding:</span>{' '}
-                  <StatusPill
-                    label={
-                      ownerStatus?.binding === 'bound'
-                        ? 'PASS'
-                        : ownerStatus?.binding === 'invalid'
-                          ? 'FAIL'
-                          : 'NOT_PRESENT'
-                    }
-                    tone={toneForState(
-                      ownerStatus?.binding === 'bound'
-                        ? 'PASS'
-                        : ownerStatus?.binding === 'invalid'
-                          ? 'FAIL'
-                          : 'NOT_PRESENT'
-                    )}
-                  />
-                  {ownerStatus?.binding === 'bound' && ownerStatus.expiry ? (
-                    <span className="ml-1 text-fg-faint">self-asserted, valid to {ownerStatus.expiry}</span>
-                  ) : null}
-                </li>
-                {/* L4.3 — authority always NOT_PRESENT */}
-                <li>
-                  <span className="font-mono">identity authority:</span>{' '}
-                  <StatusPill label="NOT_PRESENT" tone={toneForState('NOT_PRESENT')} />
-                  <span className="ml-1 text-fg-faint">not bound to a person</span>
-                </li>
-                <li>recomputed and verified in your browser, not asserted by this page</li>
-              </ol>
-              {/* Each chip from the nine-property strip as a row */}
-              <div className="mt-2 flex flex-col gap-1">
-                {orderedChips.map(({ propKey, label, tone, state }) => (
-                  <div key={propKey} className="flex items-center gap-2 text-xs">
-                    <StatusPill label={`${label}: ${state}`} tone={tone} />
-                  </div>
-                ))}
-              </div>
-              <p className="mt-2 text-xs text-fg-faint">corroborated 0 · contradicted 0 · inconclusive 0</p>
-            </AccordionContent>
-          </AccordionItem>
-        </Accordion>
-
-        {/* 7. Adjudications */}
-        {adjudicationCount !== undefined && adjudicationCount > 0 ? (
-          <p className="text-xs text-fg-dim">
-            {adjudicationCount} adjudication{adjudicationCount === 1 ? '' : 's'} citing this record
-          </p>
-        ) : null}
-
-        {/* 8. Actions for FAIL states — L3.5 updated vocabulary */}
-        {failedProps.length > 0 && !unanswered ? (
-          <div className="flex flex-col gap-1.5 pt-1">
-            <div className="flex flex-wrap gap-1.5">
-              <span className="text-xs text-fg-faint">Actions: </span>
-              <button
-                type="button"
-                className="rounded border border-border/60 px-2 py-0.5 text-xs text-fg-dim hover:bg-card"
-              >
-                Restore from copies
-              </button>
-              <button
-                type="button"
-                onClick={() => setShowDeclareDialog((v) => !v)}
-                className="rounded border border-border/60 px-2 py-0.5 text-xs text-fg-dim hover:bg-card"
-              >
-                Declare the break
-              </button>
-              <button
-                type="button"
-                className="rounded border border-border/60 px-2 py-0.5 text-xs text-fg-dim hover:bg-card"
-              >
-                Ask them for their copy
-              </button>
-              <button
-                type="button"
-                className="rounded border border-border/60 px-2 py-0.5 text-xs text-fg-dim hover:bg-card"
-              >
-                Record this
-              </button>
-              <button
-                type="button"
-                className="rounded border border-border/60 px-2 py-0.5 text-xs text-fg-dim hover:bg-card"
-              >
-                Stop using this node
-              </button>
-            </div>
-            {showDeclareDialog ? (
-              <DeclareBreakDialog
-                onConfirm={(_cause) => {
-                  setShowDeclareDialog(false)
-                }}
-                onCancel={() => setShowDeclareDialog(false)}
-              />
-            ) : null}
-          </div>
-        ) : null}
-      </CardContent>
-    </Card>
-  )
-}
-
-// ---------------------------------------------------------------------------
-// PaneC row adapter
-// ---------------------------------------------------------------------------
-
-function PaneCRowCard({
-  row,
-  recordsById,
-  nodePubKeyPem
-}: {
-  row: PaneCRow
-  recordsById: Map<string, CapsuleRecord>
-  nodePubKeyPem: string | null
-}) {
-  const localRecord = row.mine.capsule_id ? (recordsById.get(row.mine.capsule_id) ?? null) : null
-  const identity = useRecomputedIdentity(localRecord, nodePubKeyPem)
-  const properties = row.properties ?? {}
-
-  // Build chip states: exclude content_binding/producer_signature (handled as recomputed)
-  const chipStates: Partial<Record<string, PaneState>> = {}
-  for (const [key, value] of Object.entries(properties)) {
-    if (!RECOMPUTED_PROPERTIES.has(key)) {
-      chipStates[key] = value
-    }
-  }
-
-  // L3.6 — safe optional unanswered field
-  const unansweredRaw = (row as Record<string, unknown>).unanswered
-  const isUnanswered = unansweredRaw === true
-
-  // L3.1 — exchange card headline
-  const headline = isUnanswered
-    ? null
-    : `Your node kept its half; the other side has ${row.theirs.state !== 'absent' ? 'provided their copy' : 'not provided their copy yet'}.`
-
-  return (
-    <LedgerCard
-      exchangeId={row.exchange_key}
-      timestamp={row.timestamp}
-      chipStates={chipStates}
-      recomputedIdMatch={identity.idMatch}
-      recomputedSignatureOk={identity.signatureOk}
-      headline={headline}
-      unanswered={isUnanswered}
-    />
-  )
-}
 
 // ---------------------------------------------------------------------------
 // Balance header strip (pane-a's card.served_summary) — sits above the
@@ -634,6 +168,46 @@ function PeersSection({ recordsById }: { recordsById: Map<string, CapsuleRecord>
 // Exchanges section (pane-c)
 // ---------------------------------------------------------------------------
 
+type ExchangeFilterKey = 'role' | 'checks'
+
+const ALL_ROLE_VALUES = ['SERVED', 'ASKED']
+const ALL_CHECKS_VALUES = ['clean', 'exception']
+
+// Stable, module-level references -- NEVER inline arrow functions here.
+// `DataTable` includes `getRowId` in its own `tableOptions` memo deps, so a
+// fresh function identity every render defeats that memo, produces a new
+// table instance every render, and (via `ExchangeTableCapture`'s effect
+// below) feeds straight back into a `setTable` call on every one of those
+// renders -- an infinite render loop, not merely a wasted recompute.
+function exchangeRowId(row: ExchangeLedgerRow): string {
+  return row.exchangeKey
+}
+
+function exchangeRowAriaLabel(row: ExchangeLedgerRow): string {
+  return `Open exchange inspector for ${row.exchangeKey}`
+}
+
+function ExchangeTableCapture({
+  table,
+  onCapture
+}: {
+  table: TanStackTable<ExchangeLedgerRow>
+  onCapture: (table: TanStackTable<ExchangeLedgerRow> | null) => void
+}) {
+  useEffect(() => {
+    onCapture(table)
+    return () => onCapture(null)
+  }, [table, onCapture])
+  return null
+}
+
+function exchangeFilterOptionLabel(value: string): string {
+  if (value === 'SERVED') return 'Served'
+  if (value === 'ASKED') return 'Asked'
+  if (value === 'clean') return 'Clean'
+  return 'Exception'
+}
+
 function ExchangesSection({
   recordsById,
   nodePubKeyPem,
@@ -664,6 +238,52 @@ function ExchangesSection({
     refetchInterval: 15_000,
     retry: false
   })
+  // Same queryKey + queryFn SHAPE as PeersSection's own pane-b query (both
+  // branch on harness mode identically) -- a symmetric pair shares one
+  // cache entry safely; an asymmetric one is the race that bit the pane-c
+  // key during Part 1 (see the outbox/commit history for that fix).
+  const paneBQuery = useQuery({
+    queryKey: ['ledger', 'pane-b', mode],
+    queryFn: () => (harnessMode ? Promise.resolve(HARNESS_PANE_B_PAYLOAD) : fetchPaneB()),
+    refetchInterval: 15_000,
+    retry: false
+  })
+
+  const counterpartyIndex = useMemo(
+    () => buildExchangeCounterpartyIndex(paneBQuery.data?.rows ?? []),
+    [paneBQuery.data]
+  )
+  const allRows = useMemo(
+    () => buildExchangeLedgerRows(query.data?.rows ?? [], counterpartyIndex),
+    [query.data, counterpartyIndex]
+  )
+  const columns = useMemo(() => buildExchangeColumns(), [])
+
+  const [search, setSearch] = useState('')
+  const [roleFilter, setRoleFilter] = useState<Set<string>>(new Set(ALL_ROLE_VALUES))
+  const [checksFilter, setChecksFilter] = useState<Set<string>>(new Set(ALL_CHECKS_VALUES))
+  const [selectedExchangeKey, setSelectedExchangeKey] = useState<string | null>(null)
+  const handleExchangeRowActivate = useCallback((row: ExchangeLedgerRow) => setSelectedExchangeKey(row.exchangeKey), [])
+  const [table, setTable] = useState<TanStackTable<ExchangeLedgerRow> | null>(null)
+
+  const trimmedSearch = search.trim().toLowerCase()
+  const visibleRows = useMemo(
+    () =>
+      allRows.filter((row) => {
+        if (!roleFilter.has(row.roleTag)) return false
+        if (!checksFilter.has(row.hasIssue ? 'exception' : 'clean')) return false
+        if (!trimmedSearch) return true
+        return `${row.exchangeKey} ${row.counterparty ?? ''}`.toLowerCase().includes(trimmedSearch)
+      }),
+    [allRows, roleFilter, checksFilter, trimmedSearch]
+  )
+
+  const selectedRow = selectedExchangeKey
+    ? (allRows.find((r) => r.exchangeKey === selectedExchangeKey)?.raw ?? null)
+    : null
+  const selectedCounterparty = selectedExchangeKey ? (counterpartyIndex.get(selectedExchangeKey) ?? null) : null
+  const selectedLocalRecord =
+    selectedRow?.mine.capsule_id != null ? (recordsById.get(selectedRow.mine.capsule_id) ?? null) : null
 
   const balanceHeader = <ExchangesBalanceHeader card={balanceQuery.data?.card ?? null} />
 
@@ -702,6 +322,17 @@ function ExchangesSection({
   const total = query.data.row_count
   const confirmed = query.data.rows.filter((r) => r.theirs.state !== 'absent' && !r.unilateral).length
 
+  const roleOptions: FilterValueOption[] = ALL_ROLE_VALUES.map((value) => ({
+    value,
+    count: allRows.filter((r) => r.roleTag === value).length
+  }))
+  const checksOptions: FilterValueOption[] = ALL_CHECKS_VALUES.map((value) => ({
+    value,
+    count: allRows.filter((r) => (r.hasIssue ? 'exception' : 'clean') === value).length
+  }))
+  const activeFilterGroups =
+    (roleFilter.size < ALL_ROLE_VALUES.length ? 1 : 0) + (checksFilter.size < ALL_CHECKS_VALUES.length ? 1 : 0)
+
   return (
     <div className="flex flex-col gap-2">
       {balanceHeader}
@@ -713,9 +344,109 @@ function ExchangesSection({
       <p className="text-sm font-medium text-foreground">
         {total} exchange{total === 1 ? '' : 's'} · {confirmed} confirmed by the other side
       </p>
-      {query.data.rows.map((row) => (
-        <PaneCRowCard key={row.exchange_key} row={row} recordsById={recordsById} nodePubKeyPem={nodePubKeyPem} />
-      ))}
+
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border-soft pb-2">
+        <p className="type-caption font-mono text-fg-dim">
+          {visibleRows.length === allRows.length ? visibleRows.length : `${visibleRows.length} of ${allRows.length}`}{' '}
+          shown
+        </p>
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="relative">
+            <SearchIcon
+              aria-hidden="true"
+              className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-fg-faint"
+            />
+            <Input
+              aria-label="Search exchanges"
+              className="ui-control h-8 w-52 rounded-[var(--radius)] border-border-soft pl-8 text-[length:var(--density-type-caption)]"
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder="Exchange ID or counterparty…"
+              value={search}
+            />
+          </div>
+          <FilterPopover<ExchangeFilterKey>
+            activeFilterGroups={activeFilterGroups}
+            categories={[
+              { key: 'role', label: 'Your role' },
+              { key: 'checks', label: 'Checks' }
+            ]}
+            contentLabel="Exchange filters"
+            formatOptionLabel={exchangeFilterOptionLabel}
+            id="exchange-ledger-filters"
+            itemLabel="exchanges"
+            onClear={() => {
+              setRoleFilter(new Set(ALL_ROLE_VALUES))
+              setChecksFilter(new Set(ALL_CHECKS_VALUES))
+            }}
+            onSelectAll={(key) =>
+              key === 'role' ? setRoleFilter(new Set(ALL_ROLE_VALUES)) : setChecksFilter(new Set(ALL_CHECKS_VALUES))
+            }
+            onSelectNone={(key) => (key === 'role' ? setRoleFilter(new Set()) : setChecksFilter(new Set()))}
+            onValueChange={(key, value, checked) => {
+              const setFilter = key === 'role' ? setRoleFilter : setChecksFilter
+              setFilter((prev) => {
+                const next = new Set(prev)
+                if (checked) next.add(value)
+                else next.delete(value)
+                return next
+              })
+            }}
+            optionsByCategory={{ role: roleOptions, checks: checksOptions }}
+            selectedValuesByCategory={{ role: roleFilter, checks: checksFilter }}
+            title="Exchange filters"
+            totalCount={allRows.length}
+            triggerLabel="Filter exchanges"
+            visibleCount={visibleRows.length}
+          />
+          {table ? <DataTableViewOptions columnLabels={EXCHANGE_COLUMN_LABELS} table={table} /> : null}
+          {/* Two distinct actions, never collapsed: a CSV of the current
+             view vs. the portable evidence bundle (full records). */}
+          <Button
+            className="ui-control h-8 gap-1.5 rounded-[var(--radius)] px-2.5 text-[length:var(--density-type-caption)]"
+            onClick={() => saveTextFile('mesh-exchanges-view.csv', exchangeRowsToCsv(visibleRows), 'text/csv')}
+            size="sm"
+            type="button"
+            variant="outline"
+          >
+            Export view (CSV)
+          </Button>
+          <Button
+            className="ui-control h-8 gap-1.5 rounded-[var(--radius)] px-2.5 text-[length:var(--density-type-caption)]"
+            onClick={() =>
+              saveTextFile(
+                'mesh-exchanges-evidence.json',
+                exchangeEvidenceBundle(visibleRows.map((visibleRow) => visibleRow.raw)),
+                'application/json'
+              )
+            }
+            size="sm"
+            type="button"
+            variant="outline"
+          >
+            Save evidence file
+          </Button>
+        </div>
+      </div>
+
+      <DataTable
+        ariaLabel="Exchange records"
+        columns={columns}
+        data={visibleRows}
+        emptyMessage="No exchanges match this filter."
+        getRowAriaLabel={exchangeRowAriaLabel}
+        getRowId={exchangeRowId}
+        onRowActivate={handleExchangeRowActivate}
+      >
+        {(tableInstance) => <ExchangeTableCapture onCapture={setTable} table={tableInstance} />}
+      </DataTable>
+
+      <ExchangeInspector
+        counterparty={selectedCounterparty}
+        localRecord={selectedLocalRecord}
+        nodePubKeyPem={nodePubKeyPem}
+        onClose={() => setSelectedExchangeKey(null)}
+        row={selectedRow}
+      />
     </div>
   )
 }

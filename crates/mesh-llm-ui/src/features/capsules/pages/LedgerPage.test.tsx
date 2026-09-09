@@ -233,3 +233,107 @@ describe('LedgerPageContent', () => {
     expect(await screen.findByText('No served-summary data available yet.')).toBeInTheDocument()
   })
 })
+
+describe('LedgerPageContent — Part 3: Exchanges table + row inspector', () => {
+  afterEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('renders a columned table: Checks is an em-dash for a clean row and names the failing property for an exception row, Confirmed shown, row opens the full-detail modal', async () => {
+    const { fetchPaneCList } = await import('@/features/capsules/api/sidecarClient')
+    vi.mocked(fetchPaneCList).mockResolvedValue({
+      rows: [
+        {
+          exchange_key: 'exch-clean-00',
+          role_tag: 'ASKED',
+          header_state: 'ok',
+          properties: { content_binding: { state: 'PASS' }, checkpoint_signature: { state: 'PASS' } },
+          has_issue: false,
+          mine: { state: 'present', capsule_id: 'mine-clean' },
+          theirs: { state: 'present', capsule_id: 'theirs-clean' },
+          unilateral: false,
+          timestamp: '2026-09-08T16:58:05Z'
+        },
+        {
+          exchange_key: 'exch-alarm-07',
+          role_tag: 'ASKED',
+          header_state: 'issue',
+          properties: { checkpoint_signature: { state: 'FAIL', text: 'could not verify against the pinned key' } },
+          has_issue: true,
+          mine: { state: 'present', capsule_id: 'mine-alarm' },
+          theirs: { state: 'absent', capsule_id: null },
+          unilateral: true,
+          timestamp: '2026-09-08T08:03:00Z'
+        }
+      ],
+      row_count: 2,
+      default_sort: '',
+      filters: [],
+      next_after_seq: null,
+      archived_segments: []
+    })
+
+    const user = userEvent.setup()
+    render(<LedgerPageContent />, { wrapper: makeWrapper() })
+    await user.click(screen.getByRole('tab', { name: /exchanges/i }))
+
+    // Both rows load — one clean (em-dash Checks, confirmed), one exception
+    // (Checks names the failing property, never a count).
+    expect(await screen.findByText('exch-cle')).toBeInTheDocument()
+    expect(screen.getByText('exch-ala')).toBeInTheDocument()
+    // '—' appears at least once (the clean row's Checks cell) — also the
+    // honest fallback for an unresolved Counterparty, so assert presence
+    // rather than uniqueness.
+    expect(screen.getAllByText('—').length).toBeGreaterThan(0)
+    expect(screen.getByText('checkpoint signature')).toBeInTheDocument()
+    expect(screen.getByText('confirmed')).toBeInTheDocument()
+    expect(screen.getByText('not yet confirmed')).toBeInTheDocument()
+
+    // Never a count anywhere in the Checks column.
+    const bodyText = document.body.textContent ?? ''
+    expect(bodyText).not.toMatch(/\d\/9/)
+
+    // Row click opens the full nine-property detail modal.
+    await user.click(screen.getByText('exch-ala'))
+    const dialog = screen.getByRole('dialog')
+    expect(dialog).toHaveTextContent('exch-alarm-07')
+    expect(dialog).toHaveTextContent('checkpoint signature: FAIL')
+    expect(dialog).toHaveTextContent('content binding')
+    expect(dialog).toHaveTextContent('producer signature')
+  })
+
+  it('Export view (CSV) and Save evidence file are two distinct, present toolbar actions', async () => {
+    const { fetchPaneCList } = await import('@/features/capsules/api/sidecarClient')
+    vi.mocked(fetchPaneCList).mockResolvedValue({
+      rows: [
+        {
+          exchange_key: 'exch-1',
+          role_tag: 'SERVED',
+          header_state: 'ok',
+          properties: null,
+          has_issue: false,
+          mine: { state: 'present', capsule_id: 'mine-1' },
+          theirs: { state: 'present', capsule_id: 'theirs-1' },
+          unilateral: false,
+          timestamp: '2026-09-08T00:00:00Z'
+        }
+      ],
+      row_count: 1,
+      default_sort: '',
+      filters: [],
+      next_after_seq: null,
+      archived_segments: []
+    })
+
+    const user = userEvent.setup()
+    render(<LedgerPageContent />, { wrapper: makeWrapper() })
+    await user.click(screen.getByRole('tab', { name: /exchanges/i }))
+    await screen.findByText('exch-1')
+
+    const exportButton = screen.getByRole('button', { name: /export view \(csv\)/i })
+    const evidenceButton = screen.getByRole('button', { name: /save evidence file/i })
+    expect(exportButton).toBeInTheDocument()
+    expect(evidenceButton).toBeInTheDocument()
+    expect(exportButton).not.toBe(evidenceButton)
+  })
+})
