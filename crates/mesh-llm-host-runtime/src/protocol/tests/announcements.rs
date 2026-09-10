@@ -890,3 +890,134 @@ fn test_proto_gpu_info_preserves_legacy_fields_for_old_consumers() {
     );
     assert_eq!(roundtripped.is_soc, Some(false));
 }
+
+/// Wire back-compat proof for the additive `effective_settings_digest` /
+/// `load_epoch` fields (mesh-b3-effective-settings): a `ServedModelIdentity`
+/// with those fields absent encodes to EXACTLY the bytes a pre-change sender
+/// would produce (protobuf never emits bytes for an unset `optional` field,
+/// regardless of whether the sender's schema knows the field exists), and
+/// those bytes decode byte-identically -- every pre-existing field survives,
+/// and the new fields decode as `None`, never a fabricated value.
+#[test]
+fn served_model_identity_missing_effective_settings_is_backward_compatible() {
+    let old_shape = crate::proto::node::ServedModelIdentity {
+        model_name: "Qwen3-8B-Q4_K_M".to_string(),
+        is_primary: true,
+        source_kind: crate::proto::node::ModelSourceKind::HuggingFace as i32,
+        canonical_ref: Some("bartowski/Qwen3-8B-GGUF@main/Qwen3-8B-Q4_K_M.gguf".to_string()),
+        repository: Some("bartowski/Qwen3-8B-GGUF".to_string()),
+        revision: Some("main".to_string()),
+        artifact: Some("Qwen3-8B-Q4_K_M.gguf".to_string()),
+        local_file_name: Some("Qwen3-8B-Q4_K_M.gguf".to_string()),
+        identity_hash: Some("deadbeef".to_string()),
+        effective_settings_digest: None,
+        load_epoch: None,
+    };
+
+    let bytes = old_shape.encode_to_vec();
+    let decoded = crate::proto::node::ServedModelIdentity::decode(bytes.as_slice())
+        .expect("old-shape ServedModelIdentity (fields 1-9 only) must still decode");
+
+    assert_eq!(
+        decoded, old_shape,
+        "decoding an old-shape message must be byte-identical field-for-field"
+    );
+    assert_eq!(decoded.model_name, "Qwen3-8B-Q4_K_M");
+    assert_eq!(decoded.identity_hash.as_deref(), Some("deadbeef"));
+    assert_eq!(
+        decoded.effective_settings_digest, None,
+        "an absent field must decode as None, never a fabricated digest"
+    );
+    assert_eq!(decoded.load_epoch, None);
+}
+
+/// The positive direction: a node that DOES compute the digest advertises it
+/// end-to-end through the real conversion path (`local_ann_to_proto_ann` /
+/// `proto_ann_to_local`), not just in a standalone helper.
+#[test]
+fn served_model_identity_effective_settings_roundtrip_through_proto_announcement() {
+    let peer_id = EndpointId::from(SecretKey::from_bytes(&[0xDF; 32]).public());
+    let identity = crate::mesh::ServedModelIdentity {
+        model_name: "Qwen3-8B-Q4_K_M".to_string(),
+        is_primary: true,
+        source_kind: crate::mesh::ModelSourceKind::LocalGguf,
+        local_file_name: Some("Qwen3-8B-Q4_K_M.gguf".to_string()),
+        effective_settings_digest: Some("a".repeat(64)),
+        load_epoch: Some(7),
+        ..Default::default()
+    };
+    let ann = super::super::PeerAnnouncement {
+        addr: iroh::EndpointAddr {
+            id: peer_id,
+            addrs: Default::default(),
+        },
+        role: super::super::NodeRole::Worker,
+        first_joined_mesh_ts: None,
+        models: vec![],
+        vram_bytes: 0,
+        model_source: None,
+        serving_models: vec![],
+        hosted_models: None,
+        available_models: vec![],
+        requested_models: vec![],
+        explicit_model_interests: vec![],
+        version: None,
+        model_demand: HashMap::new(),
+        mesh_id: None,
+        mesh_policy_hash: None,
+        gpu_name: None,
+        hostname: None,
+        is_soc: None,
+        gpu_vram: None,
+        gpu_reserved_bytes: None,
+        gpu_mem_bandwidth_gbps: None,
+        gpu_compute_tflops_fp32: None,
+        gpu_compute_tflops_fp16: None,
+        available_model_metadata: vec![],
+        experts_summary: None,
+        available_model_sizes: HashMap::new(),
+        served_model_descriptors: vec![crate::mesh::ServedModelDescriptor {
+            identity,
+            capabilities_known: false,
+            capabilities: crate::models::ModelCapabilities::default(),
+            topology: None,
+            metadata: None,
+        }],
+        served_model_runtime: vec![],
+        owner_attestation: None,
+        genesis_policy: None,
+        release_attestation: None,
+        direct_admission_proof: None,
+        artifact_transfer_supported: true,
+        stage_protocol_generation_supported: true,
+        stage_status_list_supported: true,
+        local_gguf_content_id_supported: true,
+        advertised_model_throughput: vec![],
+        cache_affinity: None,
+        latency_ms: None,
+        latency_source: None,
+        latency_age_ms: None,
+        latency_observer_id: None,
+        inference_admission_state: None,
+        checkpoint: None,
+    };
+
+    let proto_pa = local_ann_to_proto_ann(&ann);
+    let proto_identity = proto_pa.served_model_descriptors[0]
+        .identity
+        .as_ref()
+        .expect("descriptor identity must be present");
+    assert_eq!(
+        proto_identity.effective_settings_digest.as_deref(),
+        Some("a".repeat(64).as_str())
+    );
+    assert_eq!(proto_identity.load_epoch, Some(7));
+
+    let (_, roundtripped) = proto_ann_to_local(&proto_pa).expect("proto_ann_to_local must succeed");
+    let roundtripped_identity = &roundtripped.served_model_descriptors[0].identity;
+    assert_eq!(
+        roundtripped_identity.effective_settings_digest,
+        Some("a".repeat(64))
+    );
+    assert_eq!(roundtripped_identity.load_epoch, Some(7));
+}

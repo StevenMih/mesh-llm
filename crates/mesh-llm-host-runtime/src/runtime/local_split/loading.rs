@@ -357,6 +357,12 @@ pub(super) async fn load_split_runtime_generation_inner(
             context_length: spec.ctx_size,
             slots: spec.slots,
             capabilities,
+            // Split-topology loads resolve settings per-stage across
+            // multiple nodes, not as one `ResolvedSkippyConfig` for the
+            // whole served model -- out of scope for this digest; see
+            // `LocalRuntimeModelHandle::effective_settings_digest`.
+            effective_settings_digest: None,
+            load_epoch: None,
             inner: LocalRuntimeBackendHandle::Skippy {
                 model: handle,
                 http,

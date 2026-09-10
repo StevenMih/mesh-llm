@@ -49,6 +49,8 @@ pub(crate) fn unknown_identity(model_name: &str) -> ServedModelIdentity {
         local_file_name: Some(format!("{model_name}.gguf")),
         identity_hash: None,
         weights_digest: None,
+        effective_settings_digest: None,
+        load_epoch: None,
     }
 }
 
@@ -71,6 +73,8 @@ pub(crate) fn identity_from_model_source(source: &str) -> Option<ServedModelIden
             local_file_name: None,
             identity_hash: Some(identity_hash_for(&display_id)),
             weights_digest: None,
+            effective_settings_digest: None,
+            load_epoch: None,
         });
     }
 
@@ -91,6 +95,8 @@ pub(crate) fn identity_from_model_source(source: &str) -> Option<ServedModelIden
             local_file_name: file.rsplit('/').next().map(str::to_string),
             identity_hash: Some(identity_hash_for(&canonical_ref)),
             weights_digest: None,
+            effective_settings_digest: None,
+            load_epoch: None,
         });
     }
 
@@ -107,6 +113,8 @@ pub(crate) fn identity_from_model_source(source: &str) -> Option<ServedModelIden
             local_file_name: file.rsplit('/').next().map(str::to_string),
             identity_hash: Some(identity_hash_for(&canonical_ref)),
             weights_digest: None,
+            effective_settings_digest: None,
+            load_epoch: None,
         });
     }
 
@@ -122,6 +130,8 @@ pub(crate) fn identity_from_model_source(source: &str) -> Option<ServedModelIden
             local_file_name: trimmed.rsplit('/').next().map(str::to_string),
             identity_hash: Some(identity_hash_for(trimmed)),
             weights_digest: None,
+            effective_settings_digest: None,
+            load_epoch: None,
         });
     }
 
@@ -142,6 +152,8 @@ pub(crate) fn identity_from_model_source(source: &str) -> Option<ServedModelIden
         local_file_name: None,
         identity_hash: Some(identity_hash_for(&format!("catalog:{trimmed}"))),
         weights_digest: None,
+        effective_settings_digest: None,
+        load_epoch: None,
     })
 }
 
@@ -161,6 +173,8 @@ pub(crate) fn local_gguf_identity_from_source(source: &str) -> ServedModelIdenti
         local_file_name,
         identity_hash: None,
         weights_digest: None,
+        effective_settings_digest: None,
+        load_epoch: None,
     }
 }
 

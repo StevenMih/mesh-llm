@@ -1002,6 +1002,8 @@ fn gossip_frame_roundtrip_preserves_scanned_model_metadata() {
                 local_file_name: Some("Qwen3-8B-Q4_K_M.gguf".into()),
                 identity_hash: Some("identity-hash".into()),
                 weights_digest: None,
+                effective_settings_digest: None,
+                load_epoch: None,
             },
             capabilities_known: true,
             capabilities: crate::models::ModelCapabilities::default(),

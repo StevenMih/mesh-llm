@@ -2,6 +2,8 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use tempfile::NamedTempFile;
 
+use super::resolution::resolve_skippy_config;
+use super::types::{ResolvedSkippyConfig, SkippyConfigResolveRequest};
 use crate::inference::skippy::SkippyPackageIdentity;
 use crate::plugin::MeshConfig;
 
@@ -101,4 +103,55 @@ pub(super) fn fake_hf_package_identity(layer_count: u32) -> SkippyPackageIdentit
     let mut package = fake_package_identity(layer_count);
     package.package_ref = "hf://meshllm/Qwen3-8B-Q4_K_M-layers".to_string();
     package
+}
+
+/// A fully resolved config with concrete, non-default values for every field
+/// the `effective_settings_digest` covers -- so a test flipping one field
+/// starts from a state where "changed" and "unchanged" are unambiguous
+/// (e.g. flash attention starts `Enabled`, not the `Auto` default, so a test
+/// can flip it to a different concrete variant).
+pub(super) fn sample_resolved_skippy_config() -> ResolvedSkippyConfig {
+    let mesh_config = parse_config(
+        r#"
+[defaults.model_fit]
+ctx_size = 8192
+batch = 512
+ubatch = 128
+cache_type_k = "f16"
+cache_type_v = "f16"
+flash_attention = "enabled"
+
+[defaults.hardware]
+gpu_layers = 32
+
+[defaults.speculative]
+mode = "off"
+
+[defaults.request_defaults]
+temperature = 0.7
+top_p = 0.9
+top_k = 40
+min_p = 0.05
+presence_penalty = 0.1
+frequency_penalty = 0.1
+repeat_penalty = 1.1
+repeat_last_n = 64
+max_tokens = 128
+
+[[models]]
+model = "test/sample-model:Q4_K_M"
+"#,
+    );
+    let model_file = temp_model_file();
+    resolve_skippy_config(SkippyConfigResolveRequest {
+        mesh_config: &mesh_config,
+        model_id: "test/sample-model:Q4_K_M",
+        model_path: model_file.path(),
+        model_bytes: 8 * 1024 * 1024 * 1024,
+        allocatable_memory_bytes: Some(16 * 1024 * 1024 * 1024),
+        request_defaults: None,
+        package_generation: None,
+        compact_meta: None,
+    })
+    .expect("sample resolved skippy config should resolve")
 }

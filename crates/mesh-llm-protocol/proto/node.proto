@@ -281,6 +281,18 @@ message ServedModelIdentity {
   optional string artifact = 7;
   optional string local_file_name = 8;
   optional string identity_hash = 9;
+  // SHA-256 of the RESOLVED serving settings that change output (KV cache
+  // K/V precision, context window, batch/micro-batch size, flash-attention
+  // policy, GPU layers, speculative-decoding mode, sampling Request
+  // Defaults), computed once per model load. Additive/optional: absent means
+  // the announcing node predates this field, or has not loaded a model yet.
+  optional string effective_settings_digest = 10;
+  // Monotonically increasing id, one per successful local model (re)load on
+  // the announcing node. Pairs with effective_settings_digest: comparing two
+  // announcements' digests for the same load_epoch tells you nothing (it is
+  // unchanged by construction); comparing across a load_epoch change is how
+  // a silent settings change becomes detectable.
+  optional uint64 load_epoch = 11;
 }
 
 message ModelCapabilities {

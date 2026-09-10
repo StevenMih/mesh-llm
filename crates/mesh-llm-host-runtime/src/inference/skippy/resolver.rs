@@ -1,3 +1,4 @@
+mod effective_settings_digest;
 mod request_defaults;
 mod resolution;
 mod speculative;
@@ -23,6 +24,7 @@ mod exact_head_tests;
 #[cfg(test)]
 mod hardware_tests;
 
+pub(crate) use effective_settings_digest::effective_settings_digest_for;
 #[cfg(test)]
 pub(crate) use resolution::resolve_skippy_config;
 pub(crate) use resolution::resolve_skippy_config_for_selector;

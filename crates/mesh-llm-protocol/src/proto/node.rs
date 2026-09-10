@@ -334,6 +334,20 @@ pub struct ServedModelIdentity {
     pub local_file_name: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(string, optional, tag = "9")]
     pub identity_hash: ::core::option::Option<::prost::alloc::string::String>,
+    /// SHA-256 of the RESOLVED serving settings that change output (KV cache
+    /// K/V precision, context window, batch/micro-batch size, flash-attention
+    /// policy, GPU layers, speculative-decoding mode, sampling Request
+    /// Defaults), computed once per model load. Additive/optional: absent means
+    /// the announcing node predates this field, or has not loaded a model yet.
+    #[prost(string, optional, tag = "10")]
+    pub effective_settings_digest: ::core::option::Option<::prost::alloc::string::String>,
+    /// Monotonically increasing id, one per successful local model (re)load on
+    /// the announcing node. Pairs with effective_settings_digest: comparing two
+    /// announcements' digests for the same load_epoch tells you nothing (it is
+    /// unchanged by construction); comparing across a load_epoch change is how
+    /// a silent settings change becomes detectable.
+    #[prost(uint64, optional, tag = "11")]
+    pub load_epoch: ::core::option::Option<u64>,
 }
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ModelCapabilities {

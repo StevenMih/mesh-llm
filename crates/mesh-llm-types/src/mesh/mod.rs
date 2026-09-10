@@ -44,6 +44,22 @@ pub struct ServedModelIdentity {
     /// content hash are different facts about the model, and this field
     /// never replaces the other.
     pub weights_digest: Option<String>,
+    /// SHA-256 of the RESOLVED serving settings that change output (KV cache
+    /// K/V precision, context window, batch/micro-batch size, flash-attention
+    /// policy, GPU layers, speculative-decoding mode, and the sampling
+    /// Request Defaults) -- computed once per model load, never per request.
+    /// `None` before a load has happened for this descriptor. Unlike
+    /// `weights_digest`, this DOES cross the gossip wire (see
+    /// `descriptor_identity_to_proto`): the point is for a peer -- or this
+    /// node's own history -- to notice the digest changed across two
+    /// announcements for the SAME `weights_digest`, i.e. `changed_without_saying`.
+    pub effective_settings_digest: Option<String>,
+    /// Monotonically increasing id, one per successful local model (re)load
+    /// in this node's process. `None` before a load has happened. Pairs with
+    /// `effective_settings_digest`: the digest is stable for the life of one
+    /// epoch and is recomputed only when the epoch advances (a reload), never
+    /// per request.
+    pub load_epoch: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -227,6 +243,8 @@ fn identity_from_model_source(source: &str) -> Option<ServedModelIdentity> {
             local_file_name: None,
             identity_hash: Some(identity_hash_for(&canonical_ref)),
             weights_digest: None,
+            effective_settings_digest: None,
+            load_epoch: None,
         });
     }
 
@@ -247,6 +265,8 @@ fn identity_from_model_source(source: &str) -> Option<ServedModelIdentity> {
             local_file_name: file.rsplit('/').next().map(str::to_string),
             identity_hash: Some(identity_hash_for(&canonical_ref)),
             weights_digest: None,
+            effective_settings_digest: None,
+            load_epoch: None,
         });
     }
 
@@ -263,6 +283,8 @@ fn identity_from_model_source(source: &str) -> Option<ServedModelIdentity> {
             local_file_name: file.rsplit('/').next().map(str::to_string),
             identity_hash: Some(identity_hash_for(&canonical_ref)),
             weights_digest: None,
+            effective_settings_digest: None,
+            load_epoch: None,
         });
     }
 
@@ -278,6 +300,8 @@ fn identity_from_model_source(source: &str) -> Option<ServedModelIdentity> {
             local_file_name: trimmed.rsplit('/').next().map(str::to_string),
             identity_hash: Some(identity_hash_for(trimmed)),
             weights_digest: None,
+            effective_settings_digest: None,
+            load_epoch: None,
         });
     }
 
@@ -298,6 +322,8 @@ fn identity_from_model_source(source: &str) -> Option<ServedModelIdentity> {
         local_file_name: None,
         identity_hash: Some(identity_hash_for(&format!("catalog:{trimmed}"))),
         weights_digest: None,
+        effective_settings_digest: None,
+        load_epoch: None,
     })
 }
 
@@ -386,6 +412,8 @@ fn local_gguf_identity_from_source(source: &str) -> ServedModelIdentity {
         local_file_name,
         identity_hash: None,
         weights_digest: None,
+        effective_settings_digest: None,
+        load_epoch: None,
     }
 }
 

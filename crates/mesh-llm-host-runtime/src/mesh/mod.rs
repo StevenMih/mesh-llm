@@ -88,6 +88,7 @@ mod heartbeat;
 mod host_role_claims;
 mod identity_persistence;
 mod lan_bootstrap;
+mod load_epoch;
 mod model_identity;
 mod node;
 mod node_identity;
@@ -145,6 +146,7 @@ pub use identity_persistence::{
     load_node_key_from_path, mark_was_public, save_last_mesh_id, save_node_key_to_path,
     was_previously_public,
 };
+pub(crate) use load_epoch::next_load_epoch;
 #[expect(
     unused_imports,
     reason = "public compatibility re-export for existing mesh node callers"

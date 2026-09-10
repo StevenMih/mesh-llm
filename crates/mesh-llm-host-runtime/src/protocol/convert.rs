@@ -282,6 +282,15 @@ fn descriptor_identity_to_proto(
         // be a claim, not a locally-checkable fact. It rides the
         // `openai.exchange.v1` serving-provenance event instead, straight to
         // whoever actually served the exchange.
+        //
+        // `effective_settings_digest`/`load_epoch` DO cross the wire, unlike
+        // `weights_digest`: the point is not for a peer to verify the
+        // settings directly, but for a peer -- or this node's own announcement
+        // history -- to notice the digest change across two announcements
+        // that still carry the same `weights_digest`, i.e. a silent settings
+        // change (`changed_without_saying`).
+        effective_settings_digest: identity.effective_settings_digest.clone(),
+        load_epoch: identity.load_epoch,
     }
 }
 
@@ -302,6 +311,8 @@ fn proto_identity_to_local(
         // -- a descriptor rebuilt from a peer's proto message has no
         // load-time weights digest to report, honestly `None`.
         weights_digest: None,
+        effective_settings_digest: identity.effective_settings_digest.clone(),
+        load_epoch: identity.load_epoch,
     }
 }
 

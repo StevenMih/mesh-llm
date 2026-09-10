@@ -96,6 +96,19 @@ pub(super) struct LocalRuntimeModelHandle {
     pub(super) context_length: u32,
     pub(super) slots: usize,
     pub(super) capabilities: models::ModelCapabilities,
+    /// SHA-256 over this load's resolved output-affecting settings; see
+    /// `inference::skippy::resolver::effective_settings_digest`. Computed
+    /// once, here at load time -- never per request. `None` on the
+    /// split-topology load path (`local_split/`): a split load's settings
+    /// are resolved per-stage across multiple nodes, not as one
+    /// `ResolvedSkippyConfig` for the whole served model, so this task's
+    /// scope (a single resolved config per load) does not cover it. See the
+    /// originating task's escalation note before extending this to split
+    /// loads.
+    pub(super) effective_settings_digest: Option<String>,
+    /// This load's epoch id (see `mesh::next_load_epoch`); pairs with
+    /// `effective_settings_digest`, `None` for the same reason.
+    pub(super) load_epoch: Option<u64>,
     pub(super) inner: LocalRuntimeBackendHandle,
 }
 
@@ -481,6 +494,41 @@ pub(super) async fn set_local_model_weights_digest(
     node.upsert_served_model_descriptor(descriptor).await;
 }
 
+/// Record this load's `effective_settings_digest` + `load_epoch` on the
+/// model's served descriptor, so the next self-announcement advertises both
+/// (see `descriptor_identity_to_proto`). Unlike `weights_digest`, both cross
+/// the gossip wire -- see `ServedModelIdentity::effective_settings_digest`.
+/// `None` on the split-topology load path (see
+/// `LocalRuntimeModelHandle::effective_settings_digest`) -- left absent,
+/// never fabricated.
+pub(super) async fn set_local_model_effective_settings(
+    node: &mesh::Node,
+    model_name: &str,
+    effective_settings_digest: Option<String>,
+    load_epoch: Option<u64>,
+) {
+    let mut descriptor = node
+        .served_model_descriptors()
+        .await
+        .into_iter()
+        .find(|descriptor| descriptor.identity.model_name == model_name)
+        .unwrap_or_else(|| mesh::ServedModelDescriptor {
+            identity: mesh::ServedModelIdentity {
+                model_name: model_name.to_string(),
+                source_kind: mesh::ModelSourceKind::LocalGguf,
+                local_file_name: Some(format!("{model_name}.gguf")),
+                ..Default::default()
+            },
+            capabilities_known: false,
+            capabilities: models::ModelCapabilities::default(),
+            topology: None,
+            metadata: crate::models::served_model_metadata_for_model(model_name),
+        });
+    descriptor.identity.effective_settings_digest = effective_settings_digest;
+    descriptor.identity.load_epoch = load_epoch;
+    node.upsert_served_model_descriptor(descriptor).await;
+}
+
 pub(super) async fn withdraw_advertised_model(node: &mesh::Node, model_name: &str, profile: &str) {
     let mut hosted_models = node.hosted_models().await;
     let public_id = if profile.is_empty() {
@@ -631,7 +679,7 @@ pub(super) async fn start_runtime_local_model(
     let http_bind_addr = ([127, 0, 0, 1], alloc_local_port().await?).into();
     let hook_policy =
         Some(skippy::MeshAutoHookPolicy::new(spec.node.clone()) as Arc<dyn OpenAiHookPolicy>);
-    start_local_openai_model(
+    let (loaded_name, handle, death_rx) = start_local_openai_model(
         LocalOpenAiModelStartSpec {
             mesh_config: spec.mesh_config,
             config_model_id: spec.config_model_id,
@@ -658,7 +706,15 @@ pub(super) async fn start_runtime_local_model(
         },
         runtime_model_name,
     )
-    .await
+    .await?;
+    set_local_model_effective_settings(
+        spec.node,
+        runtime_model_name,
+        handle.effective_settings_digest.clone(),
+        handle.load_epoch,
+    )
+    .await;
+    Ok((loaded_name, handle, death_rx))
 }
 
 pub(super) async fn start_local_openai_model(
@@ -794,6 +850,10 @@ async fn start_local_skippy_model(
         resolved.model_fit.cache_type_v.to_ascii_uppercase(),
         context_length / 1024,
     );
+    // Computed once, here at load -- never per request. See
+    // `inference::skippy::resolver::effective_settings_digest`.
+    let effective_settings_digest = skippy::effective_settings_digest_for(&resolved);
+    let load_epoch = mesh::next_load_epoch();
     let capabilities = models::runtime_verified_model_capabilities(
         &model_name,
         spec.model_path,
@@ -851,6 +911,8 @@ async fn start_local_skippy_model(
             context_length,
             slots: plan.slots,
             capabilities,
+            effective_settings_digest: Some(effective_settings_digest),
+            load_epoch: Some(load_epoch),
             inner: LocalRuntimeBackendHandle::Skippy {
                 model: skippy_model,
                 http,
@@ -921,6 +983,10 @@ async fn start_local_package_v2_model(
         resolved.model_fit.cache_type_v.to_ascii_uppercase(),
         context_length / 1024,
     );
+    // Computed once, here at load -- never per request. See
+    // `inference::skippy::resolver::effective_settings_digest`.
+    let effective_settings_digest = skippy::effective_settings_digest_for(&resolved);
+    let load_epoch = mesh::next_load_epoch();
     let capabilities = models::runtime_verified_model_capabilities(
         &model_name,
         spec.model_path,
@@ -1013,6 +1079,8 @@ async fn start_local_package_v2_model(
             context_length,
             slots: plan.slots,
             capabilities,
+            effective_settings_digest: Some(effective_settings_digest),
+            load_epoch: Some(load_epoch),
             inner: LocalRuntimeBackendHandle::Skippy {
                 model: handle,
                 http,
