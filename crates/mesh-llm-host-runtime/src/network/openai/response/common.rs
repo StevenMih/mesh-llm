@@ -67,6 +67,12 @@ impl PeerCapsuleIdSink {
     }
 }
 
+// `Delivered`'s `output_digests` carries real disclosure data
+// ([disclosure-default-on]), which is inherently larger than the other
+// variants' payloads. Boxing it would ripple into every construction/match
+// site across this response pipeline for a memory-size lint on a per-request,
+// not hot-allocation, path -- not worth the churn/review risk.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::network::openai) enum RouteAttemptResult {
     Delivered {

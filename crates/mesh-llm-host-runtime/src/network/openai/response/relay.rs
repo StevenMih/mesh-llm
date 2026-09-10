@@ -401,6 +401,8 @@ mod tests {
             status_code: 200,
             content_length: Some(body.len()),
             content_type: Some("application/json".to_owned()),
+            client_nonce: None,
+            nonce_origin: None,
         };
         let probe_for = |header: &str| ResponseProbe {
             buffered: header.as_bytes().to_vec(),
@@ -419,9 +421,12 @@ mod tests {
             status_code: parsed.status_code,
             content_length: parsed.content_length,
             content_type: parsed.content_type.clone(),
+            client_nonce: parsed.client_nonce.clone(),
+            nonce_origin: parsed.nonce_origin.clone(),
         };
         let task = tokio::spawn(async move {
-            let (mut client, _) = listener.accept().await.unwrap();
+            let (client, _) = listener.accept().await.unwrap();
+            let mut client: ClientStream = client.into();
             relay_success_response(
                 &mut client,
                 &mut upstream_reader,
@@ -454,7 +459,8 @@ mod tests {
         let address = listener.local_addr().unwrap();
         let task_header = header.clone();
         let task = tokio::spawn(async move {
-            let (mut client, _) = listener.accept().await.unwrap();
+            let (client, _) = listener.accept().await.unwrap();
+            let mut client: ClientStream = client.into();
             relay_success_response(
                 &mut client,
                 &mut upstream_reader,
@@ -507,7 +513,8 @@ mod tests {
         let address = listener.local_addr().unwrap();
         let task_header = header.clone();
         let task = tokio::spawn(async move {
-            let (mut client, _) = listener.accept().await.unwrap();
+            let (client, _) = listener.accept().await.unwrap();
+            let mut client: ClientStream = client.into();
             relay_error_response(
                 &mut client,
                 &mut upstream_reader,
@@ -537,7 +544,8 @@ mod tests {
         let address = listener.local_addr().unwrap();
         let task_header = header.clone();
         let task = tokio::spawn(async move {
-            let (mut client, _) = listener.accept().await.unwrap();
+            let (client, _) = listener.accept().await.unwrap();
+            let mut client: ClientStream = client.into();
             relay_error_response(
                 &mut client,
                 &mut upstream_reader,

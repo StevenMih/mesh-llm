@@ -72,7 +72,10 @@ fn resolve_target(ledger_dir: &Path, rel: &str) -> Option<(PathBuf, &'static str
     }
     match rel {
         "capsules.jsonl" => Some((ledger_dir.join("capsules.jsonl"), "application/x-ndjson")),
-        "accountability_self.json" => Some((ledger_dir.join("accountability_self.json"), "application/json")),
+        "accountability_self.json" => Some((
+            ledger_dir.join("accountability_self.json"),
+            "application/json",
+        )),
         "node-key.pub.pem" => Some((
             ledger_dir.join("..").join("keys").join("node-key.pub.pem"),
             "application/x-pem-file",

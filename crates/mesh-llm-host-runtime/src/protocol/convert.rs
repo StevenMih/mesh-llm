@@ -900,6 +900,13 @@ fn cap_remote_model_names(names: &[String]) -> Vec<String> {
         .collect()
 }
 
+// Was exactly at the 200-line threshold before [mesh-catch-up-rebase]; the
+// rebase's new upstream `PeerAnnouncement` fields (cache_affinity,
+// local_gguf_content_id_supported, checkpoint) each need one more
+// straight-line field mapping here, pushing it a few lines over. This is a
+// flat proto->local field-by-field conversion; splitting it would trade one
+// long function for several short ones with no independent meaning.
+#[allow(clippy::too_many_lines)]
 pub(crate) fn proto_ann_to_local(
     pa: &crate::proto::node::PeerAnnouncement,
 ) -> Option<(EndpointAddr, PeerAnnouncement)> {

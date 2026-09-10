@@ -123,6 +123,7 @@ pub(super) async fn handle(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     #[test]
@@ -155,6 +156,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn handle_reports_service_unavailable_when_the_sidecar_is_unreachable() {
         // No sidecar listens on this port -- exercises the "connection
         // refused" branch without a live sidecar process.
@@ -184,6 +186,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn handle_forwards_only_allowlisted_query_keys() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let sidecar_addr = listener.local_addr().unwrap();

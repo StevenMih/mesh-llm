@@ -233,6 +233,10 @@ struct MeshAttemptState {
     refreshed: bool,
 }
 
+// `RouteAttemptResult::Delivered` already carries an intentionally-unboxed
+// disclosure payload (see its own `#[allow(clippy::large_enum_variant)]`);
+// this wrapper inherits the same size and the same rationale.
+#[allow(clippy::large_enum_variant)]
 enum MeshAttemptDisposition {
     Continue,
     Return(RouteAttemptResult),

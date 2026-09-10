@@ -78,6 +78,12 @@ async fn acquire_local_attempt_upstream(
     Ok((instance_request, upstream))
 }
 
+// Pre-existing on both sides of the [mesh-catch-up-rebase] merge (already 9
+// args before the rebase); each parameter is a distinct, independently-
+// supplied piece of per-attempt routing/disclosure context, not a bundle
+// that naturally collapses into one struct without adding an intermediate
+// type this function's few call sites don't otherwise need.
+#[allow(clippy::too_many_arguments)]
 async fn route_local_attempt_after_forward<U: AsyncRead + Unpin + CancelUpstream>(
     tcp_stream: &mut ClientStream,
     upstream: &mut U,
@@ -617,7 +623,8 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let task = tokio::spawn(async move {
-            let (mut client, _) = listener.accept().await.unwrap();
+            let (client, _) = listener.accept().await.unwrap();
+            let mut client: ClientStream = client.into();
             route_remote_attempt_after_forward(
                 &mut client,
                 &mut upstream,
@@ -656,7 +663,8 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let task = tokio::spawn(async move {
-            let (mut client, _) = listener.accept().await.unwrap();
+            let (client, _) = listener.accept().await.unwrap();
+            let mut client: ClientStream = client.into();
             route_remote_attempt_after_forward(
                 &mut client,
                 &mut upstream,

@@ -927,6 +927,7 @@ fn exchange_usage_from_outcome_extracts_real_counts_and_omits_otherwise() {
         status_code: 200,
         usage: TokenUsage {
             prompt_tokens: Some(42),
+            cached_prompt_tokens: None,
             completion_tokens: Some(6),
             total_tokens: Some(48),
         },
@@ -942,6 +943,7 @@ fn exchange_usage_from_outcome_extracts_real_counts_and_omits_otherwise() {
         status_code: 200,
         usage: TokenUsage {
             prompt_tokens: Some(10),
+            cached_prompt_tokens: None,
             completion_tokens: Some(5),
             total_tokens: None,
         },
@@ -962,6 +964,7 @@ fn exchange_usage_from_outcome_extracts_real_counts_and_omits_otherwise() {
         status_code: 200,
         usage: TokenUsage {
             prompt_tokens: None,
+            cached_prompt_tokens: None,
             completion_tokens: None,
             total_tokens: None,
         },
@@ -1023,7 +1026,9 @@ fn test_remote_peer(seed: u8, model: &str) -> mesh::PeerInfo {
         artifact_transfer_supported: false,
         stage_protocol_generation_supported: false,
         stage_status_list_supported: false,
+        local_gguf_content_id_supported: false,
         advertised_model_throughput: vec![],
+        cache_affinity: None,
         display_rtt: None,
         selected_path: None,
         propagated_latency: None,
