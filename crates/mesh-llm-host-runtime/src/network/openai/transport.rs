@@ -5,17 +5,18 @@
 
 use crate::inference::election;
 use crate::logging::{
-    OpenAiLifecycleAttachment, OpenAiRouteAttempt, OpenAiRouteObserver, ProxyAttemptFinish,
+    CallerPathType, OpenAiLifecycleAttachment, OpenAiRouteAttempt, OpenAiRouteObserver,
+    ProxyAttemptFinish,
 };
 use crate::mesh;
 use crate::network::affinity::{
     AffinityRouter, PreparedTargets, TargetSelection, prepare_remote_targets_for_request,
 };
 use crate::network::openai::auto_route;
+use crate::network::openai::client_stream::ClientStream;
 use crate::network::openai::response_quality::ResponseQualityFailure;
 use crate::network::router;
 use std::time::{Duration, Instant};
-use tokio::net::TcpStream;
 
 pub use super::request_normalize::{ResponseAdapter, release_request_objects};
 pub(crate) use super::request_parse::read_http_request_with_plugin_manager_with_context;
@@ -24,23 +25,25 @@ pub use super::request_parse::{
     read_http_request, rewrite_model_field, rewrite_public_model_alias,
 };
 pub(crate) use super::response::{
-    PeerCapsuleIdSink, PipelineProxyResult, append_safe_header, pipeline_proxy_local,
-    send_400_observed, send_503_observed, send_error_observed, send_json_ok_with_headers,
-    send_json_with_status_and_headers_observed, send_models_list_with_descriptors,
+    PeerCapsuleIdSink, PipelineCapsuleNonce, PipelineProxyResult, append_safe_header,
+    pipeline_proxy_local, send_400_observed, send_503_observed, send_error_observed,
+    send_json_ok_with_headers, send_json_with_status_and_headers_observed,
+    send_models_list_with_descriptors,
 };
 pub(crate) use super::routing_rank::{
     capabilities_for_model, descriptor_metadata_for_model, request_budget_tokens_from_parts,
 };
 
 use super::response::{
-    ResponseRetryPolicy, RouteAttemptLoggingContext, RouteAttemptResult,
+    CacheCostObservation, ResponseRetryPolicy, RouteAttemptLoggingContext, RouteAttemptResult,
     attempt_outcome_for_result, completion_tokens_for_result, request_outcome_for_status,
     request_service_for_target, route_attempt_result_label, route_http_endpoint_attempt,
     route_local_attempt, route_remote_attempt, target_health_outcome_for_attempt,
 };
+#[cfg(test)]
+use super::routing_rank::order_remote_hosts_by_context;
 use super::routing_rank::{
-    cached_auto_model_satisfies_media_requirements, move_target_first,
-    order_remote_hosts_by_context, order_targets_by_context,
+    cached_auto_model_satisfies_media_requirements, move_target_first, rank_remote_hosts_by_context,
 };
 use mesh_llm_events::logging::events::TokenUsage;
 use mesh_llm_events::logging::identifiers::RequestId;
@@ -50,6 +53,8 @@ const REMOTE_UNCOMMITTED_RETRIES: usize = 1;
 #[path = "transport_route_model.rs"]
 mod route_model;
 pub(crate) use route_model::RouteModelRequestContext;
+#[cfg(test)]
+pub(crate) use route_model::finalize_route_model_result;
 pub use route_model::route_model_request;
 
 /// Response result returned to the ingress boundary. Unlike the historical
@@ -168,7 +173,7 @@ const LEGACY_LIFECYCLE_ROUTE_MESSAGE: &str =
     "model lifecycle routes moved to the trusted local management API at :3131/api/runtime/models";
 
 pub(crate) async fn reject_legacy_lifecycle_request(
-    tcp_stream: TcpStream,
+    tcp_stream: ClientStream,
     route_observer: OpenAiRouteObserver<'_>,
 ) -> RouteDispatchOutcome {
     response_outcome(
@@ -208,8 +213,11 @@ enum MeshTargetResolution {
 struct MeshRequestPlan {
     effective_model: Option<String>,
     auto_session_key: Option<u64>,
-    prepared: PreparedTargets,
     target_hosts: Vec<iroh::EndpointId>,
+    /// Leading run of `target_hosts` whose throughput rank ties with the best
+    /// one; reservation spreading is confined to this run.
+    equivalent_hosts: usize,
+    affinity_applied: bool,
 }
 
 enum MeshRequestFailure {
@@ -231,7 +239,7 @@ enum MeshAttemptDisposition {
 }
 
 enum MeshRouteResult {
-    Exhausted(TcpStream),
+    Exhausted(ClientStream),
     Finished(RouteAttemptResult),
 }
 
@@ -241,19 +249,24 @@ pub(crate) struct RouteSelectionMetadata<'a> {
     pub(crate) engine: Option<&'a str>,
 }
 
-fn should_learn_affinity(status_code: u16) -> bool {
-    (200..400).contains(&status_code)
-}
-
 fn capture_path_for_request(request: &BufferedHttpRequest) -> &str {
     &request.client_path
 }
 
-fn attach_request_logging(request: &mut BufferedHttpRequest) -> OpenAiLifecycleAttachment {
+fn attach_request_logging(
+    request: &mut BufferedHttpRequest,
+    source_addr: Option<std::net::SocketAddr>,
+) -> OpenAiLifecycleAttachment {
+    let caller_addr = source_addr.map(|addr| addr.to_string());
     let metadata =
         crate::logging::RequestSummaryMetadata::from_openai_ingress_path(&request.client_path)
             .with_source(Some("mesh_forwarded"))
-            .with_method(Some(&request.method));
+            .with_method(Some(&request.method))
+            .with_caller_identity(
+                None,
+                caller_addr.as_deref(),
+                caller_addr.as_ref().map(|_| CallerPathType::LocalHttp),
+            );
     let lifecycle = crate::logging_runtime_state()
         .map(|state| state.openai_ingress_attachment(request.request_id, metadata))
         .unwrap_or_else(OpenAiLifecycleAttachment::unowned);
@@ -268,10 +281,10 @@ fn attach_request_logging(request: &mut BufferedHttpRequest) -> OpenAiLifecycleA
 
 async fn handle_mesh_control_request(
     node: &mesh::Node,
-    tcp_stream: TcpStream,
+    tcp_stream: ClientStream,
     request: &BufferedHttpRequest,
     lifecycle: &mut OpenAiLifecycleAttachment,
-) -> Option<TcpStream> {
+) -> Option<ClientStream> {
     if is_legacy_lifecycle_path(&request.path) {
         let outcome = reject_legacy_lifecycle_request(tcp_stream, lifecycle.route_observer()).await;
         lifecycle.terminal(outcome.terminal_outcome());
@@ -304,7 +317,7 @@ async fn handle_mesh_control_request(
 /// Set `track_demand` to record requests for demand-based rebalancing.
 pub async fn handle_mesh_request(
     node: mesh::Node,
-    tcp_stream: TcpStream,
+    tcp_stream: ClientStream,
     track_demand: bool,
     affinity: AffinityRouter,
 ) {
@@ -325,7 +338,7 @@ pub async fn handle_mesh_request(
     };
     // The parsed host ingress owns the parent. Downstream route code receives
     // only the attachment's metadata observer and cannot terminalize it.
-    let mut lifecycle = attach_request_logging(&mut request);
+    let mut lifecycle = attach_request_logging(&mut request, source_addr);
     if node.swarm_capture_enabled() {
         node.capture_http_request(crate::mesh::HttpCaptureEvent {
             event: "openai_ingress_http_request",
@@ -358,6 +371,7 @@ pub async fn handle_mesh_request(
         &node,
         tcp_stream,
         &mut request,
+        &affinity,
         lifecycle.route_observer(),
     )
     .await
@@ -421,10 +435,11 @@ pub async fn handle_mesh_request(
 
 async fn route_mesh_moa_or_passthrough(
     node: &mesh::Node,
-    tcp_stream: TcpStream,
+    tcp_stream: ClientStream,
     request: &mut BufferedHttpRequest,
+    affinity: &AffinityRouter,
     route_observer: OpenAiRouteObserver<'_>,
-) -> Result<TcpStream, RouteDispatchOutcome> {
+) -> Result<ClientStream, RouteDispatchOutcome> {
     if request.is_tokenize_request() {
         return Ok(tcp_stream);
     }
@@ -436,8 +451,11 @@ async fn route_mesh_moa_or_passthrough(
         tcp_stream,
         request,
         moa_model_name.as_deref(),
-        None, // passive path has no local targets table
-        moa_required_tokens,
+        super::moa_gateway::MoaRoutingContext {
+            targets: None, // passive path has no local targets table
+            required_tokens: moa_required_tokens,
+            affinity,
+        },
         route_observer,
     )
     .await
@@ -529,25 +547,26 @@ async fn build_mesh_request_plan(
         MeshTargetResolution::NoHostsAvailable => return Err(MeshRequestFailure::NoHostsAvailable),
     };
 
-    let prepared = prepare_mesh_targets(
+    let mut prepared = prepare_mesh_targets(
         request,
         effective_model.as_deref(),
         &resolved_hosts,
         affinity,
     );
-    let target_hosts = order_mesh_target_hosts(
+    let (target_hosts, equivalent_hosts) = order_mesh_target_hosts(
         node,
         effective_model.as_deref(),
         required_tokens,
-        &prepared,
+        &mut prepared,
         affinity,
     )
     .await;
     Ok(MeshRequestPlan {
         effective_model,
         auto_session_key,
-        prepared,
         target_hosts,
+        equivalent_hosts,
+        affinity_applied: prepared.affinity_applied,
     })
 }
 
@@ -571,7 +590,7 @@ fn prepare_mesh_targets(
     target_hosts: &[iroh::EndpointId],
     affinity: &AffinityRouter,
 ) -> PreparedTargets {
-    if !request.is_tokenize_request() && effective_model.is_some() && target_hosts.len() > 1 {
+    if !request.is_tokenize_request() && effective_model.is_some() && !target_hosts.is_empty() {
         request.ensure_body_json();
     }
     let body_json = request.body_json.as_ref();
@@ -583,8 +602,9 @@ fn prepare_mesh_targets(
                 .copied()
                 .map(election::InferenceTarget::Remote)
                 .collect(),
-            learn_prefix_hash: None,
-            cached_target: None,
+            prefix_hash: None,
+            cache_target: None,
+            affinity_applied: false,
         })
 }
 
@@ -592,9 +612,9 @@ async fn order_mesh_target_hosts(
     node: &mesh::Node,
     effective_model: Option<&str>,
     required_tokens: Option<u32>,
-    prepared: &PreparedTargets,
+    prepared: &mut PreparedTargets,
     affinity: &AffinityRouter,
-) -> Vec<iroh::EndpointId> {
+) -> (Vec<iroh::EndpointId>, usize) {
     let target_hosts: Vec<iroh::EndpointId> = prepared
         .ordered
         .iter()
@@ -604,31 +624,49 @@ async fn order_mesh_target_hosts(
         })
         .collect();
     let Some(name) = effective_model else {
-        return target_hosts;
+        let hosts_len = target_hosts.len();
+        return (target_hosts, hosts_len);
     };
-    let mut ordered =
-        order_remote_hosts_by_context(node, name, required_tokens, &target_hosts).await;
-    if let (Some(prefix_hash), Some(election::InferenceTarget::Remote(cached_host))) =
-        (prepared.learn_prefix_hash, prepared.cached_target.as_ref())
+    let ranked = rank_remote_hosts_by_context(node, name, required_tokens, &target_hosts).await;
+    let equivalent_hosts = ranked.equivalent_prefix;
+    let mut ordered = ranked.ordered;
+    if affinity.prefix_enabled()
+        && let Some(prefix_hash) = prepared.prefix_hash
     {
-        let cached_context = node.peer_model_context_length(*cached_host, name).await;
-        if matches!((required_tokens, cached_context), (Some(required), Some(context)) if context < required)
+        let candidates: Vec<_> = ordered
+            .iter()
+            .copied()
+            .map(election::InferenceTarget::Remote)
+            .collect();
+        prepared.cache_target = match affinity.lookup_cache_lease(name, prefix_hash, &candidates) {
+            Some(target) => Some(target),
+            None => {
+                let lease_epoch = affinity.cache_lease_epoch();
+                let selected = node
+                    .select_cache_target(name, prefix_hash, &candidates)
+                    .await;
+                if let Some(target) = selected.as_ref() {
+                    affinity.remember_cache_lease_if_epoch(name, prefix_hash, target, lease_epoch);
+                }
+                selected
+            }
+        };
+        prepared.affinity_applied |= prepared.cache_target.is_some();
+        affinity.record_cache_probe(prepared.cache_target.is_some());
+        if let Some(election::InferenceTarget::Remote(cache_host)) = prepared.cache_target.as_ref()
         {
-            affinity.forget_target(
-                name,
-                prefix_hash,
-                &election::InferenceTarget::Remote(*cached_host),
-            );
-        } else {
-            move_target_first(&mut ordered, cached_host);
+            // Cache affinity sets `affinity_applied`, which disables
+            // reservation spreading, so this rotation cannot leak a
+            // lower-ranked host into the equivalent run.
+            move_target_first(&mut ordered, cache_host);
         }
     }
-    ordered
+    (ordered, equivalent_hosts)
 }
 
 async fn handle_mesh_request_failure(
     node: &mesh::Node,
-    tcp_stream: TcpStream,
+    tcp_stream: ClientStream,
     request: &BufferedHttpRequest,
     failure: MeshRequestFailure,
     route_observer: OpenAiRouteObserver<'_>,
@@ -681,7 +719,7 @@ async fn handle_mesh_request_failure(
 
 async fn route_mesh_request_attempts(
     node: &mesh::Node,
-    mut tcp_stream: TcpStream,
+    mut tcp_stream: ClientStream,
     request: &BufferedHttpRequest,
     plan: &MeshRequestPlan,
     affinity: &AffinityRouter,
@@ -689,8 +727,7 @@ async fn route_mesh_request_attempts(
 ) -> MeshRouteResult {
     let effective_model = plan.effective_model.as_deref();
     let auto_session_key = plan.auto_session_key;
-    let prepared = &plan.prepared;
-    let target_hosts = &plan.target_hosts;
+    let (target_hosts, mut reservation) = reserve_mesh_request_target(plan, affinity);
     let total_targets = target_hosts.len();
     let mut state = MeshAttemptState {
         route_started: Instant::now(),
@@ -699,6 +736,7 @@ async fn route_mesh_request_attempts(
         refreshed: false,
     };
     for (idx, target_host) in target_hosts.iter().enumerate() {
+        transfer_mesh_reservation(reservation.as_mut(), *target_host);
         state.attempts += 1;
         let attempt_started = Instant::now();
         let attempt_result = route_remote_attempt_with_retry(
@@ -742,8 +780,6 @@ async fn route_mesh_request_attempts(
             node,
             effective_model,
             auto_session_key,
-            prepared,
-            attempt_target: &attempt_target,
             target_host: *target_host,
             state: &mut state,
             affinity,
@@ -768,6 +804,45 @@ async fn route_mesh_request_attempts(
         crate::network::metrics::RequestOutcome::Unavailable,
     );
     MeshRouteResult::Exhausted(tcp_stream)
+}
+
+fn reserve_mesh_request_target(
+    plan: &MeshRequestPlan,
+    affinity: &AffinityRouter,
+) -> (
+    Vec<iroh::EndpointId>,
+    Option<crate::network::reservations::RoutingReservation>,
+) {
+    let mut target_hosts = plan.target_hosts.clone();
+    let reservation = plan.effective_model.as_deref().and_then(|model| {
+        let candidates = target_hosts
+            .iter()
+            .copied()
+            .map(election::InferenceTarget::Remote)
+            .collect::<Vec<_>>();
+        let preferred = candidates.first()?;
+        let (selected, reservation) = affinity.reserve_route(
+            model,
+            &candidates,
+            plan.equivalent_hosts,
+            preferred,
+            plan.affinity_applied,
+        )?;
+        if let election::InferenceTarget::Remote(selected_host) = selected {
+            move_target_first(&mut target_hosts, &selected_host);
+        }
+        Some(reservation)
+    });
+    (target_hosts, reservation)
+}
+
+fn transfer_mesh_reservation(
+    reservation: Option<&mut crate::network::reservations::RoutingReservation>,
+    target_host: iroh::EndpointId,
+) {
+    if let Some(reservation) = reservation {
+        reservation.transfer_to(&election::InferenceTarget::Remote(target_host));
+    }
 }
 
 fn finish_route_attempt(
@@ -853,8 +928,6 @@ struct MeshAttemptResultContext<'a> {
     node: &'a mesh::Node,
     effective_model: Option<&'a str>,
     auto_session_key: Option<u64>,
-    prepared: &'a PreparedTargets,
-    attempt_target: &'a election::InferenceTarget,
     target_host: iroh::EndpointId,
     state: &'a mut MeshAttemptState,
     affinity: &'a AffinityRouter,
@@ -869,12 +942,26 @@ fn handle_mesh_attempt_result(
             status_code,
             usage,
             output_digests,
+            cache_cost,
         } => {
+            let outcome = request_outcome_for_status(
+                status_code,
+                crate::network::metrics::RequestService::Remote,
+            );
+            if let Some(usage) = usage.as_ref() {
+                context.node.record_prompt_shape(
+                    context.effective_model,
+                    usage.prompt_tokens,
+                    usage.completion_tokens,
+                    outcome,
+                );
+            }
             handle_delivered_mesh_attempt(context, status_code);
             MeshAttemptDisposition::Return(RouteAttemptResult::Delivered {
                 status_code,
                 usage,
                 output_digests,
+                cache_cost,
             })
         }
         RouteAttemptResult::RetryableContextOverflow => handle_retryable_context_overflow(context),
@@ -897,15 +984,7 @@ fn handle_mesh_attempt_result(
 }
 
 fn handle_delivered_mesh_attempt(context: &MeshAttemptResultContext<'_>, status_code: u16) {
-    if should_learn_affinity(status_code) {
-        if let (Some(name), Some(prefix_hash)) =
-            (context.effective_model, context.prepared.learn_prefix_hash)
-        {
-            context
-                .affinity
-                .learn_target(name, prefix_hash, context.attempt_target);
-        }
-    } else if let Some(key) = context
+    if let Some(key) = context
         .auto_session_key
         .filter(|_| (500..600).contains(&status_code))
     {
@@ -984,16 +1063,11 @@ fn terminal_outcome_for_mesh_request_failure(
 fn handle_retryable_context_overflow(
     context: &mut MeshAttemptResultContext<'_>,
 ) -> MeshAttemptDisposition {
-    forget_mesh_cached_target(
-        context.effective_model,
-        context.prepared,
-        context.attempt_target,
-        context.affinity,
-    );
     tracing::warn!(
         "Host {} rejected request with context overflow-style 400, trying next",
         context.target_host.fmt_short()
     );
+    forget_failed_target_cache_leases(context);
     context.state.last_retryable = true;
     MeshAttemptDisposition::Continue
 }
@@ -1002,17 +1076,12 @@ fn handle_retryable_mesh_response_quality(
     context: &mut MeshAttemptResultContext<'_>,
     failure: ResponseQualityFailure,
 ) -> MeshAttemptDisposition {
-    forget_mesh_cached_target(
-        context.effective_model,
-        context.prepared,
-        context.attempt_target,
-        context.affinity,
-    );
     tracing::warn!(
         reason = failure.label(),
         "Host {} returned low-quality success response, trying next",
         context.target_host.fmt_short()
     );
+    forget_failed_target_cache_leases(context);
     context.state.last_retryable = true;
     MeshAttemptDisposition::Continue
 }
@@ -1024,6 +1093,7 @@ fn handle_retryable_mesh_timeout(
         "Host {} timed out, trying next",
         context.target_host.fmt_short()
     );
+    forget_failed_target_cache_leases(context);
     context.state.last_retryable = true;
     spawn_mesh_refresh_once(context.node, &mut context.state.refreshed);
     MeshAttemptDisposition::Continue
@@ -1032,34 +1102,25 @@ fn handle_retryable_mesh_timeout(
 fn handle_retryable_mesh_unavailable(
     context: &mut MeshAttemptResultContext<'_>,
 ) -> MeshAttemptDisposition {
-    forget_mesh_cached_target(
-        context.effective_model,
-        context.prepared,
-        context.attempt_target,
-        context.affinity,
-    );
     tracing::warn!(
         "Failed to tunnel to host {}, trying next",
         context.target_host.fmt_short()
     );
+    forget_failed_target_cache_leases(context);
     context.state.last_retryable = true;
     spawn_mesh_refresh_once(context.node, &mut context.state.refreshed);
     MeshAttemptDisposition::Continue
 }
 
-fn forget_mesh_cached_target(
-    effective_model: Option<&str>,
-    prepared: &PreparedTargets,
-    failed_target: &election::InferenceTarget,
-    affinity: &AffinityRouter,
-) {
-    if let (Some(name), Some(prefix_hash), Some(cached_target)) = (
-        effective_model,
-        prepared.learn_prefix_hash,
-        prepared.cached_target.as_ref(),
-    ) && cached_target == failed_target
-    {
-        affinity.forget_target(name, prefix_hash, failed_target);
+fn forget_failed_target_cache_leases(context: &MeshAttemptResultContext<'_>) {
+    let target = election::InferenceTarget::Remote(context.target_host);
+    let invalidated = context.affinity.forget_cache_leases_for_target(&target);
+    if invalidated > 0 {
+        tracing::debug!(
+            target = %context.target_host.fmt_short(),
+            invalidated,
+            "invalidated cache leases after retryable target failure"
+        );
     }
 }
 
@@ -1076,7 +1137,7 @@ fn spawn_mesh_refresh_once(node: &mesh::Node, refreshed: &mut bool) {
 
 async fn finish_exhausted_mesh_request(
     node: &mesh::Node,
-    tcp_stream: TcpStream,
+    tcp_stream: ClientStream,
     effective_model: Option<&str>,
     total_targets: usize,
     affinity: &AffinityRouter,
@@ -1271,7 +1332,7 @@ async fn resolve_mesh_target_hosts(
 
 async fn route_attempt_for_target(
     node: &mesh::Node,
-    tcp_stream: &mut TcpStream,
+    tcp_stream: &mut ClientStream,
     target: &election::InferenceTarget,
     prefetched: &[u8],
     retry_policy: ResponseRetryPolicy,
@@ -1322,7 +1383,7 @@ async fn route_attempt_for_target(
 
 async fn route_local_transport_attempt(
     node: &mesh::Node,
-    tcp_stream: &mut TcpStream,
+    tcp_stream: &mut ClientStream,
     port: u16,
     prefetched: &[u8],
     retry_policy: ResponseRetryPolicy,
@@ -1347,7 +1408,7 @@ async fn route_local_transport_attempt(
 
 async fn route_remote_attempt_with_retry(
     node: &mesh::Node,
-    tcp_stream: &mut TcpStream,
+    tcp_stream: &mut ClientStream,
     host_id: iroh::EndpointId,
     prefetched: &[u8],
     retry_policy: ResponseRetryPolicy,
@@ -1387,7 +1448,7 @@ async fn route_remote_attempt_with_retry(
 
 async fn route_remote_transport_attempt(
     node: &mesh::Node,
-    tcp_stream: &mut TcpStream,
+    tcp_stream: &mut ClientStream,
     host_id: iroh::EndpointId,
     prefetched: &[u8],
     retry_policy: ResponseRetryPolicy,
@@ -1460,7 +1521,7 @@ pub(crate) struct RouteTargetContext<'a> {
 
 pub async fn route_to_target(
     node: mesh::Node,
-    tcp_stream: TcpStream,
+    tcp_stream: ClientStream,
     model: Option<&str>,
     target: election::InferenceTarget,
     prefetched: &[u8],
@@ -1511,9 +1572,19 @@ pub async fn route_to_target(
             status_code,
             usage,
             output_digests,
+            ..
         } => {
             let service = request_service_for_target(&target);
-            node.record_routed_request(model, 1, request_outcome_for_status(status_code, service));
+            let outcome = request_outcome_for_status(status_code, service);
+            if let Some(usage) = usage.as_ref() {
+                node.record_prompt_shape(
+                    model,
+                    usage.prompt_tokens,
+                    usage.completion_tokens,
+                    outcome,
+                );
+            }
+            node.record_routed_request(model, 1, outcome);
             usage.map_or(RouteDispatchOutcome::Responded(status_code), |usage| {
                 RouteDispatchOutcome::RespondedWithUsage {
                     status_code,
@@ -1555,7 +1626,7 @@ pub async fn route_http_endpoint_request(
     node: &mesh::Node,
     model: Option<&str>,
     route_metadata: RouteSelectionMetadata<'_>,
-    tcp_stream: &mut TcpStream,
+    tcp_stream: &mut ClientStream,
     base_url: &str,
     request: &BufferedHttpRequest,
     route_observer: OpenAiRouteObserver<'_>,
@@ -1609,15 +1680,21 @@ pub async fn route_http_endpoint_request(
             status_code,
             usage,
             output_digests,
+            ..
         } => {
-            node.record_routed_request(
-                model,
-                1,
-                request_outcome_for_status(
-                    status_code,
-                    crate::network::metrics::RequestService::Endpoint,
-                ),
+            let outcome = request_outcome_for_status(
+                status_code,
+                crate::network::metrics::RequestService::Endpoint,
             );
+            if let Some(usage) = usage.as_ref() {
+                node.record_prompt_shape(
+                    model,
+                    usage.prompt_tokens,
+                    usage.completion_tokens,
+                    outcome,
+                );
+            }
+            node.record_routed_request(model, 1, outcome);
             usage.map_or(RouteDispatchOutcome::Responded(status_code), |usage| {
                 RouteDispatchOutcome::RespondedWithUsage {
                     status_code,

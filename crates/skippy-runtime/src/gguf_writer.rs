@@ -134,6 +134,7 @@ impl SlicePlan {
         layer_end: u32,
         include_embeddings: bool,
         include_output: bool,
+        include_per_layer_token_embd: bool,
     ) -> Result<()> {
         let mut error = ptr::null_mut();
         let status = unsafe {
@@ -144,6 +145,7 @@ impl SlicePlan {
                 i32::try_from(layer_end).context("layer_end exceeds i32")?,
                 include_embeddings,
                 include_output,
+                include_per_layer_token_embd,
                 &mut error,
             )
         };
@@ -181,6 +183,37 @@ pub fn write_gguf_from_parts(
     let mut error = ptr::null_mut();
     let status = unsafe {
         skippy_ffi::skippy_write_gguf_from_parts(
+            input_ptrs.as_ptr(),
+            input_ptrs.len(),
+            output_path.as_ptr(),
+            &mut error,
+        )
+    };
+    ensure_ok(status, error)
+}
+
+pub fn write_gguf_metadata_from_parts(
+    input_paths: &[impl AsRef<Path>],
+    output_path: impl AsRef<Path>,
+) -> Result<()> {
+    if input_paths.is_empty() {
+        return Err(anyhow!(
+            "at least one GGUF metadata source path is required"
+        ));
+    }
+
+    let input_paths = input_paths
+        .iter()
+        .map(|path| path_to_cstring(path.as_ref(), "input path"))
+        .collect::<Result<Vec<_>>>()?;
+    let input_ptrs = input_paths
+        .iter()
+        .map(|path| path.as_ptr())
+        .collect::<Vec<_>>();
+    let output_path = path_to_cstring(output_path.as_ref(), "output path")?;
+    let mut error = ptr::null_mut();
+    let status = unsafe {
+        skippy_ffi::skippy_write_gguf_metadata_from_parts(
             input_ptrs.as_ptr(),
             input_ptrs.len(),
             output_path.as_ptr(),

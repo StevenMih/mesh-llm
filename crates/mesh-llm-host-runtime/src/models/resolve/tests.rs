@@ -104,6 +104,91 @@ fn remote_catalog_entry_with_mmproj(
     entry
 }
 
+#[cfg(unix)]
+fn hf_snapshot_symlink(
+    cache: &Path,
+    repo: &str,
+    revision: &str,
+    filename: &str,
+) -> (PathBuf, PathBuf) {
+    use std::os::unix::fs::symlink;
+
+    let repo_dir = cache.join(format!("models--{}", repo.replace('/', "--")));
+    let blob_name = "78f1dbb60dedc080b99d26b8098f719f020b0f9bafe9e12a20c7d25652d4fd86";
+    let blob = repo_dir.join("blobs").join(blob_name);
+    let snapshot = repo_dir.join("snapshots").join(revision).join(filename);
+    std::fs::create_dir_all(blob.parent().unwrap()).unwrap();
+    std::fs::create_dir_all(snapshot.parent().unwrap()).unwrap();
+    std::fs::create_dir_all(repo_dir.join("refs")).unwrap();
+    std::fs::write(&blob, b"verified gguf bytes").unwrap();
+    std::fs::write(repo_dir.join("refs").join("main"), revision).unwrap();
+    symlink(Path::new("../../blobs").join(blob_name), &snapshot).unwrap();
+    (snapshot, blob)
+}
+
+#[cfg(unix)]
+#[tokio::test]
+#[serial]
+async fn fresh_hf_snapshot_symlink_resolves_to_verified_blob() {
+    let cache = tempfile::tempdir().unwrap();
+    let variant = "Fresh-HF-Snapshot-Q8_0";
+    let repo = "mesh-test/fresh-hf-snapshot";
+    let filename = "Fresh-HF-Snapshot-Q8_0.gguf";
+    let (snapshot, blob) = hf_snapshot_symlink(cache.path(), repo, "revision-a", filename);
+    let _cache_guard = EnvGuard::set_path("HF_HUB_CACHE", cache.path());
+    let _hf_home_guard = EnvGuard::remove("HF_HOME");
+    let _catalog_guard =
+        crate::models::remote_catalog::set_catalog_entries_for_test(vec![remote_catalog_entry(
+            variant, variant, repo, filename,
+        )]);
+    let _download_guard = crate::models::catalog::set_download_hf_assets_label_override(
+        variant.to_string(),
+        Arc::new({
+            let snapshot = snapshot.clone();
+            move |_| Ok(vec![snapshot.clone()])
+        }),
+    );
+
+    let resolved = resolve_model_spec_with_progress(Path::new(variant), false)
+        .await
+        .unwrap();
+
+    assert_eq!(resolved, blob.canonicalize().unwrap());
+    assert!(
+        !std::fs::symlink_metadata(resolved)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+#[serial]
+async fn cached_hf_snapshot_symlink_resolves_to_verified_blob() {
+    let cache = tempfile::tempdir().unwrap();
+    let repo = "mesh-test/cached-hf-snapshot";
+    let revision = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    let filename = "Cached-HF-Snapshot-Q8_0.gguf";
+    let (_snapshot, blob) = hf_snapshot_symlink(cache.path(), repo, revision, filename);
+    let _cache_guard = EnvGuard::set_path("HF_HUB_CACHE", cache.path());
+    let _hf_home_guard = EnvGuard::remove("HF_HOME");
+    let _catalog_guard = crate::models::remote_catalog::set_catalog_entries_for_test(Vec::new());
+    let model_ref = format!("{repo}@{revision}:Q8_0");
+
+    let resolved = resolve_model_spec_with_progress(Path::new(&model_ref), false)
+        .await
+        .unwrap();
+
+    assert_eq!(resolved, blob.canonicalize().unwrap());
+    assert!(
+        !std::fs::symlink_metadata(resolved)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+}
+
 #[tokio::test]
 async fn existing_model_path_resolves_to_canonical_path() {
     let temp = tempfile::tempdir().expect("create temp model dir");
@@ -158,7 +243,7 @@ fn synthetic_local_gguf_ref_for_test(path: &Path) -> String {
     hasher.update(b"\0");
     hasher.update(len.to_le_bytes());
     hasher.update(modified.to_le_bytes());
-    let digest = format!("{:x}", hasher.finalize());
+    let digest = hex::encode(hasher.finalize());
     format!("local-gguf/sha256-{}", &digest[..16])
 }
 
@@ -167,6 +252,9 @@ fn synthetic_local_gguf_ref_for_test(path: &Path) -> String {
 async fn bare_name_resolves_from_remote_catalog() {
     let query = "RemoteOnlyResolverFallbackModel-Q4_K_M";
     let source_file = "RemoteOnlyResolverFallbackModel-Q4_K_M.gguf";
+    let cache = tempfile::tempdir().unwrap();
+    let downloaded = cache.path().join(source_file);
+    std::fs::write(&downloaded, b"gguf").unwrap();
 
     let _catalog_guard =
         crate::models::remote_catalog::set_catalog_entries_for_test(vec![remote_catalog_entry(
@@ -177,14 +265,17 @@ async fn bare_name_resolves_from_remote_catalog() {
         )]);
     let _download_guard = catalog::set_download_hf_assets_label_override(
         query.to_string(),
-        Arc::new(move |_| Ok(vec![PathBuf::from(format!("/tmp/{source_file}"))])),
+        Arc::new({
+            let downloaded = downloaded.clone();
+            move |_| Ok(vec![downloaded.clone()])
+        }),
     );
 
     let resolved = resolve_model_spec_with_progress(Path::new(query), false)
         .await
         .unwrap();
 
-    assert_eq!(resolved, PathBuf::from(format!("/tmp/{source_file}")));
+    assert_eq!(resolved, downloaded);
 }
 
 #[tokio::test]
@@ -192,6 +283,9 @@ async fn bare_name_resolves_from_remote_catalog() {
 async fn bare_name_resolution_prefers_remote_catalog_over_baked_catalog() {
     let query = "Qwen3-8B-Q4_K_M";
     let source_file = "RemotePreferred-Q4_K_M.gguf";
+    let cache = tempfile::tempdir().unwrap();
+    let downloaded = cache.path().join(source_file);
+    std::fs::write(&downloaded, b"gguf").unwrap();
     let _catalog_guard =
         crate::models::remote_catalog::set_catalog_entries_for_test(vec![remote_catalog_entry(
             query,
@@ -201,14 +295,17 @@ async fn bare_name_resolution_prefers_remote_catalog_over_baked_catalog() {
         )]);
     let _download_guard = catalog::set_download_hf_assets_label_override(
         "Remote Preferred Catalog Model".to_string(),
-        Arc::new(move |_| Ok(vec![PathBuf::from(format!("/tmp/{source_file}"))])),
+        Arc::new({
+            let downloaded = downloaded.clone();
+            move |_| Ok(vec![downloaded.clone()])
+        }),
     );
 
     let resolved = resolve_model_spec_with_progress(Path::new(query), false)
         .await
         .unwrap();
 
-    assert_eq!(resolved, PathBuf::from(format!("/tmp/{source_file}")));
+    assert_eq!(resolved, downloaded);
 }
 
 #[test]
@@ -293,6 +390,42 @@ fn mmproj_url_does_not_expand_to_full_remote_catalog_download() {
         )
         .is_none()
     );
+}
+
+#[tokio::test]
+#[serial]
+async fn direct_mmproj_url_materializes_only_the_projector_file() {
+    let url = "https://huggingface.co/unsloth/Qwen3.5-0.8B-GGUF/resolve/main/mmproj-BF16.gguf";
+    let cache = tempfile::tempdir().unwrap();
+    let downloaded = cache.path().join("mmproj-BF16.gguf");
+    std::fs::write(&downloaded, b"mmproj").unwrap();
+    let _catalog_guard = crate::models::remote_catalog::set_catalog_entries_for_test(vec![
+        remote_catalog_entry_with_mmproj(
+            "Qwen3.5-0.8B-Q4_K_M",
+            "Qwen3.5-0.8B-Vision-Q4_K_M",
+            "unsloth/Qwen3.5-0.8B-GGUF",
+            "Qwen3.5-0.8B-Q4_K_M.gguf",
+            "unsloth/Qwen3.5-0.8B-GGUF@main/mmproj-BF16.gguf",
+        ),
+    ]);
+    let _siblings_guard = RepoSiblingEntriesOverrideGuard::set(Arc::new(|repo, revision| {
+        assert_eq!(repo, "unsloth/Qwen3.5-0.8B-GGUF");
+        assert_eq!(revision, "main");
+        Some(vec![("mmproj-BF16.gguf".to_string(), Some(6))])
+    }));
+    let _download_guard = catalog::set_download_hf_assets_label_override(
+        url.to_string(),
+        Arc::new({
+            let downloaded = downloaded.clone();
+            move |_| Ok(vec![downloaded.clone()])
+        }),
+    );
+
+    let materialized = download_direct_ref_with_progress(url, false)
+        .await
+        .expect("projector URL should download directly");
+
+    assert_eq!(materialized, downloaded);
 }
 
 #[test]
@@ -805,6 +938,13 @@ fn format_huggingface_display_ref_uses_selector_for_split_gguf() {
 #[serial]
 async fn download_exact_ref_bf16_shorthand_downloads_full_split_model() {
     let fixture = load_gemma_live_fixture();
+    let cache = tempfile::tempdir().unwrap();
+    let bf16_dir = cache.path().join("BF16");
+    let shard_one = bf16_dir.join("gemma-4-31B-it-BF16-00001-of-00002.gguf");
+    let shard_two = bf16_dir.join("gemma-4-31B-it-BF16-00002-of-00002.gguf");
+    std::fs::create_dir_all(&bf16_dir).unwrap();
+    std::fs::write(&shard_one, b"gguf-one").unwrap();
+    std::fs::write(&shard_two, b"gguf-two").unwrap();
     let _siblings_guard = RepoSiblingEntriesOverrideGuard::set(Arc::new({
         let repo = fixture.repo.clone();
         let siblings = fixture
@@ -832,11 +972,10 @@ async fn download_exact_ref_bf16_shorthand_downloads_full_split_model() {
     }));
     let _download_guard = catalog::set_download_hf_assets_label_override(
         "unsloth/gemma-4-31B-it-GGUF:BF16".to_string(),
-        Arc::new(|_| {
-            Ok(vec![
-                PathBuf::from("/tmp/BF16/gemma-4-31B-it-BF16-00001-of-00002.gguf"),
-                PathBuf::from("/tmp/BF16/gemma-4-31B-it-BF16-00002-of-00002.gguf"),
-            ])
+        Arc::new({
+            let shard_one = shard_one.clone();
+            let shard_two = shard_two.clone();
+            move |_| Ok(vec![shard_one.clone(), shard_two.clone()])
         }),
     );
 
@@ -844,10 +983,7 @@ async fn download_exact_ref_bf16_shorthand_downloads_full_split_model() {
         .await
         .unwrap();
 
-    assert_eq!(
-        resolved,
-        PathBuf::from("/tmp/BF16/gemma-4-31B-it-BF16-00001-of-00002.gguf")
-    );
+    assert_eq!(resolved, shard_one);
     assert_eq!(
         *planned.lock().unwrap(),
         vec![

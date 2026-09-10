@@ -162,6 +162,37 @@ not report, lock, or clean a second artifact tree.
 
 On native Windows, `just check-release` runs the host-safe Rust/doc invariant subset and skips the Bash-only `install.sh` / `package-release.sh` parity checks. Run it on macOS or Linux when you need full shell parity coverage.
 
+### Testing crates on native Windows
+
+A bare Windows checkout cannot build the test targets of crates that pull in
+`skippy-ffi`'s static link mode (`mesh-llm-system` does, through
+`mesh-llm-runtime-install`, which depends on `skippy-ffi` with
+`default-features = false`), because `skippy-ffi/build.rs` then requires
+the llama.cpp ABI archives to be prepared
+(`automatic native preparation is not supported for Windows from build.rs yet`).
+`just test-all` needs the same native preparation, through its Bash pipeline.
+
+For crate suites that do not exercise the native runtime, enable
+`dynamic-native-runtime`: feature unification turns on `skippy-ffi`'s
+`dynamic-runtime`, whose build script returns early. The `mesh-llm-system`
+gates then run on a machine without a prepared native build:
+
+```powershell
+cargo test --locked -p mesh-llm-system --lib --features dynamic-native-runtime
+cargo clippy --no-deps -p mesh-llm-system --all-targets --features dynamic-native-runtime -- -D warnings
+cargo fmt --check -p mesh-llm-system
+cargo run -p xtask -- repo-consistency no-console-print
+```
+
+`--no-deps` keeps Clippy scoped to the package you are changing. `cfg`-gated
+code can be dead on one platform only, so if a platform-specific warning
+appears that your diff does not touch, compare the run against the same
+command on `main` before attributing it to your change. Running the
+native-runtime suites still needs a prepared build (`LLAMA_STAGE_BUILD_DIR`
+or `SKIPPY_LLAMA_BUILD_DIR` pointing at one), which this section does not cover.
+The Rust MSVC toolchain needs the Visual Studio Build Tools with the
+"Desktop development with C++" workload installed.
+
 ## CI / GitHub Actions
 
 For the current PR and main topology, read [`ci/ci.md`](ci/ci.md), the
@@ -169,19 +200,11 @@ For the current PR and main topology, read [`ci/ci.md`](ci/ci.md), the
 [`manage-ci` skill](.agents/skills/manage-ci/SKILL.md) before editing CI.
 `.github/AGENTS.md` enforces that sequence.
 
-The five `pr_{quality,website,linux,macos,windows}.yml` files are focused PR
-entrypoints, while `ci.yml` is the thin main entrypoint. On protected main,
-`ci-control.yml` computes one versioned plan from `ci/ownership.yml` and
-`ci/slices.yml`, then dispatches separate Quality, Website, Linux, macOS and
-Windows workflow graphs with bounded native inputs. Each PR entry invokes only
-its matching protected reusable lane, keeping platform/topic logs in separate
-PR-associated runs.
-A PR selects representative rows from the same catalog that `main` runs; it
-does not maintain a second build graph. GitHub-hosted runners are the PR
-provider.
-Trusted main Linux jobs may use Depot only through the checked runner policy;
-PR Depot execution and cache isolation are future work documented in
-[`ci/DEPOT_MIGRATION.md`](ci/DEPOT_MIGRATION.md).
+The current five-way PR/main topology, manual controller, planner profiles,
+and runner/provider/cache policy are documented in [`ci/ci.md`](ci/ci.md),
+especially [Planner and profiles](ci/ci.md#planner-and-profiles) and [Provider
+and cache policy](ci/ci.md#provider-and-cache-policy). The normative rules for
+editing workflows and CI scripts live in the [`manage-ci` skill](.agents/skills/manage-ci/SKILL.md).
 
 Linux CI uses prebuilt public and self-hosted images from
 [`Mesh-LLM/mesh-llm-runner-images`](https://github.com/Mesh-LLM/mesh-llm-runner-images).
@@ -196,22 +219,6 @@ and pin its OCI digest. Do not add a one-off `apt-get`, `pip`, global `npm`,
 `cargo install`, downloaded binary, or similar setup step to an individual
 workflow. Existing workflow-local setup is migration debt, not a pattern for
 new jobs.
-
-### Routing and profiles
-
-| Change class | PR profile | Main profile |
-| --- | --- | --- |
-| Draft pull request | `pr-draft`: quality plus the smallest affected signal and core smoke | n/a |
-| Ready pull request | `pr-ready`: complete targeted rows and affected Rust dependents | n/a |
-| Push to `main` | n/a | `main`: every workspace crate and supported product/platform/backend/SDK row |
-| Manual dispatch | `manual-full` when invoked from the PR entrypoint | `main`-equivalent full validation from `ci.yml` |
-
-Docs-only changes select the quality contract slice. UI, website, Rust,
-protocol, split-serving, model, backend, platform and SDK ownership selects the
-corresponding typed rows. CI-control and runner-infrastructure changes fail
-open to the control rows and supported product rows. Paths mapping only to
-documentation plus `ci-control` retain limited documentation routing instead
-of forcing all product rows. Unknown paths fail closed.
 
 ### Local validation and extensions
 

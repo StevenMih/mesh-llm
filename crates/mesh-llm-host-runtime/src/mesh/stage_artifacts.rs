@@ -6,7 +6,7 @@ use crate::mesh::artifact_transfer_io::{
 };
 use crate::mesh::stage_proto::{
     stage_control_request_from_proto, stage_control_response_to_proto,
-    stage_control_unavailable_response, stage_status_from_load, stage_topology_from_load,
+    stage_control_unavailable_response, stage_status_from_load,
 };
 use crate::mesh::stage_transport::{
     ARTIFACT_TRANSFER_BUFFER_BYTES, ARTIFACT_TRANSFER_INVALID_OFFSET_ERROR,
@@ -113,6 +113,9 @@ impl Node {
                 "claim"
             }
             Some(skippy_stage_proto::stage_control_request::Command::LoadStage(_)) => "load",
+            Some(skippy_stage_proto::stage_control_request::Command::LoadLocalStage(_)) => {
+                "load-local"
+            }
             Some(skippy_stage_proto::stage_control_request::Command::StopStage(_)) => "stop",
             Some(skippy_stage_proto::stage_control_request::Command::PrepareStage(_)) => "prepare",
             _ => "other",
@@ -177,8 +180,10 @@ impl Node {
         request: crate::inference::skippy::StageControlRequest,
         error: anyhow::Error,
     ) -> anyhow::Result<crate::inference::skippy::StageControlResponse> {
-        let crate::inference::skippy::StageControlRequest::Load(load) = request else {
-            return Err(error);
+        let load = match request {
+            crate::inference::skippy::StageControlRequest::Load(load)
+            | crate::inference::skippy::StageControlRequest::LoadLocal(load) => load,
+            _ => return Err(error),
         };
         let error_message = format!("{error:#}");
         tracing::warn!(
@@ -207,6 +212,7 @@ impl Node {
         use prost::Message as _;
 
         let frame = self.decode_stage_control_request(remote, &mut recv).await?;
+        self.ensure_current_stage_control_peer(remote).await?;
         let request_kind = Self::stage_control_request_kind(&frame);
         tracing::debug!(
             "handle_stage_control: received {request_kind} from {}",
@@ -223,34 +229,78 @@ impl Node {
                 );
                 e
             })?;
-        if let crate::inference::skippy::StageControlRequest::Load(load) = &request {
-            self.record_stage_topology(stage_topology_from_load(self.endpoint.id(), load))
-                .await;
+        if let crate::inference::skippy::StageControlRequest::Load(load)
+        | crate::inference::skippy::StageControlRequest::LoadLocal(load) = &request
+        {
+            self.record_stage_load_topology(load).await;
         }
-        let response = self
+        let status_filter = match &request {
+            crate::inference::skippy::StageControlRequest::Status(filter) => Some(filter.clone()),
+            _ => None,
+        };
+        let mut response = self
             .execute_stage_control_request_for_peer(remote, request)
             .await?;
-        self.record_stage_control_response(&response).await;
-        let status_list_supported = self
-            .peer_supports_skippy_subprotocol_feature(
-                remote,
-                skippy_protocol::STAGE_SUBPROTOCOL_FEATURE_STATUS_LIST,
-            )
+        self.append_locally_executing_statuses(status_filter, &mut response)
             .await;
-        let proto_response = stage_control_response_to_proto(response, status_list_supported);
+        self.record_stage_control_response(&response).await;
+        let proto_response = stage_control_response_to_proto(response);
         write_len_prefixed(&mut send, &proto_response.encode_to_vec()).await?;
         let _ = send.finish();
         Ok(())
+    }
+
+    async fn append_locally_executing_statuses(
+        &self,
+        filter: Option<crate::inference::skippy::StageStatusFilter>,
+        response: &mut crate::inference::skippy::StageControlResponse,
+    ) {
+        let (Some(filter), crate::inference::skippy::StageControlResponse::Status(statuses)) =
+            (filter, response)
+        else {
+            return;
+        };
+        // StageControlState owns explicitly loaded downstream servers. The
+        // first stage executes inside the host runtime and publishes its
+        // actual load result through Node's runtime status state instead.
+        // Include only stages owned by this node so a peer never receives a
+        // relayed snapshot as authoritative status.
+        for local_status in self.locally_executing_stage_statuses(&filter).await {
+            if !statuses.iter().any(|status| {
+                status.topology_id == local_status.topology_id
+                    && status.run_id == local_status.run_id
+                    && status.stage_id == local_status.stage_id
+            }) {
+                statuses.push(local_status);
+            }
+        }
     }
 
     pub(crate) async fn prepare_stage_control_request(
         &self,
         request: &mut crate::inference::skippy::StageControlRequest,
     ) -> anyhow::Result<()> {
+        if let crate::inference::skippy::StageControlRequest::LoadLocal(load) = request {
+            // Enforce the command-level policy before any resolver is allowed
+            // to inspect the request. StageControlState repeats this at the
+            // execution boundary as defense in depth.
+            load.local_source_required = true;
+        }
         match request {
             crate::inference::skippy::StageControlRequest::Claim(_) => {}
-            crate::inference::skippy::StageControlRequest::Load(load) => {
-                if load.load_mode == skippy_protocol::LoadMode::RuntimeSlice
+            crate::inference::skippy::StageControlRequest::Load(load)
+            | crate::inference::skippy::StageControlRequest::LoadLocal(load) => {
+                let mut effective_load = load.clone();
+                let verified = tokio::task::spawn_blocking(move || {
+                    let verified =
+                        crate::inference::skippy::apply_verified_local_source(&mut effective_load)?;
+                    anyhow::Ok((effective_load, verified))
+                })
+                .await
+                .context("join verify local-required stage load source task")??;
+                *load = verified.0;
+                if !verified.1
+                    && load.load_mode == skippy_protocol::LoadMode::RuntimeSlice
                     && load
                         .model_path
                         .as_deref()
@@ -320,7 +370,11 @@ impl Node {
         prepare: &crate::inference::skippy::StagePrepareRequest,
     ) -> Result<()> {
         let load = &prepare.load;
-        if load.load_mode != skippy_protocol::LoadMode::LayerPackage {
+        if !matches!(
+            load.load_mode,
+            skippy_protocol::LoadMode::LayerPackage | skippy_protocol::LoadMode::RuntimeSlice
+        ) || !crate::inference::skippy::is_layer_package_ref(&load.package_ref)
+        {
             return Ok(());
         }
         if !crate::models::artifact_transfer::artifact_transfer_enabled() {
@@ -371,6 +425,23 @@ impl Node {
         }
     }
 
+    pub(crate) async fn ensure_current_stage_control_peer(
+        &self,
+        peer_id: EndpointId,
+    ) -> Result<()> {
+        anyhow::ensure!(
+            self.peer_supports_skippy_subprotocol_feature(
+                peer_id,
+                skippy_protocol::STAGE_SUBPROTOCOL_FEATURE_STAGE_CONTROL,
+            )
+            .await,
+            "stage peer {} does not advertise the required generation-{} control bundle",
+            peer_id.fmt_short(),
+            skippy_protocol::STAGE_PROTOCOL_GENERATION
+        );
+        Ok(())
+    }
+
     pub(crate) async fn fetch_stage_package_artifacts_from_peer(
         &self,
         peer_id: EndpointId,
@@ -394,18 +465,49 @@ impl Node {
                 .context("fetch package manifest from peer")?;
         }
 
-        let artifacts = crate::models::artifact_transfer::required_stage_package_artifacts(
-            &package_dir,
-            &load.package_ref,
-            &load.manifest_sha256,
-            crate::models::artifact_transfer::StageArtifactSelection {
-                layer_start: load.layer_start,
-                layer_end: load.layer_end,
-                include_embeddings: load.layer_start == 0,
-                include_output: load.downstream.is_none(),
-                include_projectors: load.layer_start == 0,
-            },
-        )?;
+        let package_v2 =
+            crate::models::artifact_transfer::package_manifest_schema_version(&package_dir)?
+                == u64::from(skippy_package_format::PACKAGE_SCHEMA_VERSION);
+        if package_v2 {
+            let carrier = crate::models::artifact_transfer::package_v2_metadata_carrier_request(
+                &package_dir,
+                &load.package_ref,
+                &load.manifest_sha256,
+            )?;
+            if !crate::models::artifact_transfer::local_artifact_satisfies(
+                &package_dir,
+                &carrier,
+                true,
+            )? {
+                let destination =
+                    crate::models::artifact_transfer::local_artifact_path(&package_dir, &carrier);
+                self.fetch_artifact_from_peer(peer_id, load, &carrier, &destination)
+                    .await
+                    .context("fetch package metadata carrier from peer")?;
+            }
+        }
+
+        let artifacts = if package_v2 {
+            crate::models::artifact_transfer::required_admitted_stage_package_artifacts(
+                &package_dir,
+                &load.package_ref,
+                &load.manifest_sha256,
+                &load.admission,
+            )?
+        } else {
+            crate::models::artifact_transfer::required_stage_package_artifacts(
+                &package_dir,
+                &load.package_ref,
+                &load.manifest_sha256,
+                crate::models::artifact_transfer::StageArtifactSelection {
+                    layer_start: load.layer_start,
+                    layer_end: load.layer_end,
+                    include_embeddings: load.layer_start == 0,
+                    include_output: load.downstream.is_none(),
+                    include_projectors: load.layer_start == 0,
+                },
+            )?
+        };
         for artifact in artifacts {
             if crate::models::artifact_transfer::local_artifact_satisfies(
                 &package_dir,

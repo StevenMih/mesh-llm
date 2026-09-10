@@ -560,11 +560,18 @@ you want quiet output, use `--log-format json` and parse what you need.
 
 Before committing, run the local checks most likely to fail in CI for the files you touched. Do not rely on CI to catch basic formatting, compile, or stale UI build issues.
 
-### Minimum bar before every commit
+### Minimum validation by change type
 
-- Rust-only change — format the changed Rust files and run `cargo check -p <touched-crate>` plus `cargo clippy -p <touched-crate> --all-targets -- -D warnings` (and both commands with `-p mesh-llm` if you touched anything reachable from the shipped binary).
+Choose validation from the changed surface, not merely from the directory that contains the changed file. A non-Rust file under a Rust crate does not require Cargo validation only when it cannot affect Cargo metadata, build scripts, generated Rust, or the shipped binary. Treat Cargo and build configuration changes as Rust-impacting.
+
+- Rust change — format the changed Rust files and run `cargo check -p <touched-crate>` plus `cargo clippy -p <touched-crate> --all-targets -- -D warnings` (and both commands with `-p mesh-llm` if you touched anything reachable from the shipped binary).
+- Python-only change — pass every changed module explicitly to `python3 -m py_compile <changed-module.py>...` and run `python3 -m unittest <nearest-test-module>...` for the nearest relevant tests. Run the full `scripts/tests` suite only for shared script infrastructure, CI planning, or broad cross-script changes.
 - UI-only change — run `just build`.
-- Mixed Rust and UI change — run `just build`.
+- CI workflow, planner fixture, or CI script change — run `just ci-validate` plus any additional checks required by the CI section below.
+- Documentation, non-build configuration, or non-CI shell-only change — run the targeted formatter, generator check, contract test, or syntax check for the changed surface.
+- Mixed change — run the union of the checks required for each changed surface.
+
+Do not rerun otherwise unchanged validation solely because a commit is about to be pushed. Rerun affected checks when the validated diff or commit has changed.
 
 ### Rust changes
 
@@ -572,6 +579,13 @@ Before committing, run the local checks most likely to fail in CI for the files 
 - Format Rust files in a way that preserves the owning crate's edition metadata. Prefer `cargo fmt -p <crate> -- path/to/file.rs` for a narrow edit, or `cargo fmt --all` when changes span packages. Do not use `cargo fmt --all -- path/to/file.rs`: workspace-level file arguments can be parsed without the owning crate's Rust 2024 edition metadata and fail on let-chains.
 - If you must invoke `rustfmt` directly on a standalone file, pass the edition resolved from that manifest lookup, for example `--edition 2024` for the current workspace default; otherwise use `cargo fmt` through the owning package.
 - Before committing Rust changes, ensure the formatting check passes with `cargo fmt --all --check`.
+- After Rust changes, run `just no-console-print`. The allowlist records source
+  locations, so adding or removing unrelated lines can move an existing
+  approved occurrence and invalidate the ratchet. If the check reports only
+  moved existing occurrences, regenerate it with
+  `cargo run -p xtask -- repo-consistency no-console-print --regen`, review the
+  allowlist diff to confirm that no new console prints were approved, and
+  commit the regenerated allowlist with the source change.
 - After Rust changes, run `cargo check` and `cargo clippy --all-targets -- -D warnings` for each touched crate (`-p <crate>`), and at least `cargo check -p mesh-llm` plus `cargo clippy -p mesh-llm --all-targets -- -D warnings` if the change is reachable from the shipped binary.
 - Treat Clippy as a required local gate, not a CI-only cleanup step. `cargo check`, `just build`, and formatter success do not catch lints such as `clippy::collapsible-if`; run the warning-denying Clippy command before opening or updating a PR.
 - If you touched tests, public APIs, routing, inference, gossip, plugin protocol, skippy ABI, or CLI behavior, run the relevant tests before committing.
@@ -676,16 +690,22 @@ bash -c './target/debug/mesh-llm serve --model "..." --auto > /tmp/mesh.log 2>&1
 3. Kill ALL processes on ALL nodes — `pkill -9 -f mesh-llm`
 4. Verify clean — `ps -eo pid,args | grep -E 'mesh-llm' | grep -v grep` must be empty.
 5. Deploy bundle — scp + tar + codesign on remote nodes.
-6. Verify version — `mesh-llm --version` on every node.
+6. On every macOS node, complete the `deploy-macos` skill's Local Network
+   privacy preflight for the exact signed identity and launch context. Clear any
+   blocking desktop alert before remote diagnosis.
+7. Verify version — `mesh-llm --version` on every node.
 
 ### After starting nodes
-7. Verify exactly 1 mesh-llm process per node.
-8. Verify no external llama serving child processes are required.
-9. `curl -s http://localhost:3131/api/status` returns valid JSON on every node.
-10. Check `/api/status` peers for new version string.
-11. Verify expected peer count.
-12. Test inference through every model in `/v1/models`.
-13. Test `/v1/` passthrough on port 3131.
+8. Verify exactly 1 mesh-llm process per node.
+9. Verify no external llama serving child processes are required.
+10. `curl -s http://localhost:3131/api/status` returns valid JSON on every node.
+11. Check `/api/status` peers for new version string.
+12. Verify expected peer count.
+13. For same-LAN tests, require a direct iroh path to the intended LAN address
+    from both nodes before attributing failures to candidate selection or
+    collecting performance data.
+14. Test inference through every model in `/v1/models`.
+15. Test `/v1/` passthrough on port 3131.
 
 ### Debugging Embedded Runtime Startup
 

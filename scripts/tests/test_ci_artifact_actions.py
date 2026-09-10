@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from fnmatch import fnmatch
 from pathlib import Path
 import re
 import shutil
@@ -23,6 +24,11 @@ XTASK_MANIFEST = ROOT / "tools" / "xtask" / "Cargo.toml"
 class CiArtifactActionTests(unittest.TestCase):
     def read_action(self, name: str) -> str:
         return (ACTIONS / name / "action.yml").read_text(encoding="utf-8")
+
+    def read_compute_changes(self) -> str:
+        return self.read_action("compute-changes") + "\n" + (
+            ACTIONS / "compute-changes" / "derive-outputs.sh"
+        ).read_text(encoding="utf-8")
 
     def test_external_actions_have_sha_and_release_provenance(self) -> None:
         action_files = sorted(ACTIONS.glob("*/action.yml"))
@@ -111,9 +117,18 @@ class CiArtifactActionTests(unittest.TestCase):
             contract,
         )
         self.assertIn(
+            "python3 -m pip install --disable-pip-version-check --no-input "
+            "-r ci/requirements-ci-python.txt",
+            contract,
+        )
+        self.assertIn(
             "python3 -m unittest discover -s scripts/tests -p 'test_*.py'",
             contract,
         )
+        requirements = (
+            ROOT / "ci" / "requirements-ci-python.txt"
+        ).read_text(encoding="utf-8")
+        self.assertRegex(requirements, r"(?m)^PyYAML>=6\.0$")
         self.assertIn(
             "cargo run -p xtask -- repo-consistency release-targets",
             contract,
@@ -522,7 +537,7 @@ class CiArtifactActionTests(unittest.TestCase):
         self.assertNotIn("git ", debug)
 
     def test_windows_routes_cover_every_shared_product_primitive(self) -> None:
-        action = self.read_action("compute-changes")
+        action = self.read_compute_changes()
         routing = action[
             action.index("WINDOWS_CPU_INPUTS=")
             : action.index("# SDK smokes are consumer tests")
@@ -544,6 +559,27 @@ class CiArtifactActionTests(unittest.TestCase):
             with self.subTest(workflow=workflow):
                 self.assertIn(workflow, cpu_routing)
                 self.assertIn(workflow, gpu_routing)
+
+        for input_name, route in (
+            ("WINDOWS_CPU_INPUTS", cpu_routing),
+            ("WINDOWS_GPU_INPUTS", gpu_routing),
+        ):
+            with self.subTest(input_name=input_name):
+                match = re.search(
+                    rf"{input_name}=.*?grep -E '([^']+)'",
+                    route,
+                )
+                self.assertIsNotNone(
+                    match,
+                    f"{input_name} classifier pattern was not found",
+                )
+                classifier = re.compile(match.group(1))
+                for action_path in (
+                    ".github/actions/compute-changes/action.yml",
+                    ".github/actions/compute-changes/derive-outputs.sh",
+                ):
+                    with self.subTest(action_path=action_path):
+                        self.assertRegex(action_path, classifier)
 
         for primitive in (
             "prepare-windows-host-input",
@@ -864,7 +900,7 @@ class CiArtifactActionTests(unittest.TestCase):
             )
 
     def test_push_routing_diffs_the_complete_event_range(self) -> None:
-        action = self.read_action("compute-changes")
+        action = self.read_compute_changes()
         push_start = action.index(
             'elif [[ "${{ inputs.event_name }}" == "push" ]]',
         )
@@ -893,7 +929,7 @@ class CiArtifactActionTests(unittest.TestCase):
     def test_runner_contract_routing_covers_cache_evidence_actions(
         self,
     ) -> None:
-        action = self.read_action("compute-changes")
+        action = self.read_compute_changes()
         routing = action[
             action.index("RUNNER_CONTRACT_INPUTS=")
             : action.index("# Determine docs_only")
@@ -924,14 +960,15 @@ class CiArtifactActionTests(unittest.TestCase):
                 self.assertIn(epoch_resolver, route)
 
     def test_justfile_release_primitives_route_backend_builds(self) -> None:
-        action = self.read_action("compute-changes")
+        action = self.read_compute_changes()
         match = re.search(
             r"function is_backend_recipe\(name\).*?"
             r"return name ~ /\^\((.*?)\)\$/",
             action,
             re.DOTALL,
         )
-        self.assertIsNotNone(match)
+        if match is None:
+            self.fail("backend recipe allowlist was not found")
         recipe_names = set(match.group(1).split("|"))
 
         for recipe in (
@@ -942,13 +979,109 @@ class CiArtifactActionTests(unittest.TestCase):
             with self.subTest(recipe=recipe):
                 self.assertIn(recipe, recipe_names)
 
+    def test_imported_justfile_sources_are_classified_on_both_diff_sides(self) -> None:
+        action = self.read_compute_changes()
+
+        self.assertIn("grep -E '^Justfile$|^just/.+\\.just$'", action)
+        self.assertIn("$JUSTFILE_SOURCE_BASE_SHA:$JUSTFILE_SOURCE", action)
+        self.assertIn("$HEAD_SHA:$JUSTFILE_SOURCE", action)
+        self.assertIn(
+            'JUSTFILE_SOURCE_BASE_SHA=$(git merge-base "$BASE_SHA" "$HEAD_SHA")',
+            action,
+        )
+        self.assertIn("git diff --name-status --no-renames", action)
+        self.assertIn("A$'\\t'*)", action)
+        self.assertIn("D$'\\t'*)", action)
+        self.assertIn("M$'\\t'*)", action)
+        self.assertIn("justfile_has_recipe \"$JUSTFILE_SOURCE_BASE\"", action)
+        self.assertIn("justfile_has_recipe \"$JUSTFILE_SOURCE_HEAD\"", action)
+        self.assertIn(
+            'changed_range_touches_lines "$JUSTFILE_SOURCE_BACKEND_LINES_HEAD" '
+            '"$JUSTFILE_SOURCE_CHANGED_LINES" new',
+            action,
+        )
+        self.assertIn(
+            'changed_range_touches_lines "$JUSTFILE_SOURCE_BACKEND_LINES_BASE" '
+            '"$JUSTFILE_SOURCE_CHANGED_LINES" old',
+            action,
+        )
+
+    def test_top_level_justfile_inputs_of_backend_recipes_route_backend_builds(
+        self,
+    ) -> None:
+        action = self.read_compute_changes()
+
+        self.assertIn(
+            'justfile_backend_recipe_tokens "$JUSTFILE_SOURCE_BASE_SHA" '
+            '> "$JUSTFILE_BACKEND_TOKENS_BASE"',
+            action,
+        )
+        self.assertIn(
+            'justfile_backend_recipe_tokens "$HEAD_SHA" '
+            '> "$JUSTFILE_BACKEND_TOKENS_HEAD"',
+            action,
+        )
+        self.assertIn(
+            'justfile_backend_input_lines "$JUSTFILE_SOURCE_BASE" '
+            '"$JUSTFILE_BACKEND_TOKENS_BASE"',
+            action,
+        )
+        self.assertIn(
+            'justfile_backend_input_lines "$JUSTFILE_SOURCE_HEAD" '
+            '"$JUSTFILE_BACKEND_TOKENS_HEAD"',
+            action,
+        )
+        self.assertIn('>> "$JUSTFILE_SOURCE_BACKEND_LINES_BASE"', action)
+        self.assertIn('>> "$JUSTFILE_SOURCE_BACKEND_LINES_HEAD"', action)
+
+    def test_backend_recipe_attributes_route_backend_builds(self) -> None:
+        action = self.read_compute_changes()
+
+        self.assertIn("pending_attribute_lines[++pending_attribute_count] = NR", action)
+        self.assertIn("print pending_attribute_lines[pending_index]", action)
+        self.assertIn("delete pending_attribute_lines", action)
+
+    def test_sccache_seed_keys_include_imported_just_sources(self) -> None:
+        workflow_dir = ROOT / ".github" / "workflows"
+        workflows = (
+            "cache-warm-sccache.yml",
+            "ci-quality-slice.yml",
+            "ci-linux-host-slice.yml",
+            "ci-rust-tests-slice.yml",
+            "ci-linux-runtime-slice.yml",
+        )
+
+        for workflow in workflows:
+            with self.subTest(workflow=workflow):
+                source = (workflow_dir / workflow).read_text(encoding="utf-8")
+                self.assertIn(
+                    "hashFiles('Cargo.lock', '.github/cache-version.txt', 'Justfile', 'just/**')",
+                    source,
+                )
+
+    def test_root_justfile_import_graph_changes_fail_open_to_backend_builds(self) -> None:
+        action = self.read_compute_changes()
+
+        self.assertIn("JUSTFILE_SOURCE_DIFF=$(git diff -U0", action)
+        self.assertIn(
+            'printf \'%s\\n\' "$JUSTFILE_SOURCE_DIFF" | justfile_changed_import',
+            action,
+        )
+        self.assertIn("if (line ~ /^import[?]?[[:space:]]+/)", action)
+        self.assertIn(
+            '[[ "$JUSTFILE_SOURCE_BASE_AVAILABLE" == "false" '
+            '&& "$JUSTFILE_SOURCE_HEAD_AVAILABLE" == "false" ]]',
+            action,
+        )
+
     def test_sdk_routing_covers_every_direct_smoke_script(self) -> None:
-        action = self.read_action("compute-changes")
+        action = self.read_compute_changes()
         match = re.search(
             r"DIRECT_SDK_INPUTS=.*?grep -E '([^']+)'",
             action,
         )
-        self.assertIsNotNone(match)
+        if match is None:
+            self.fail("direct SDK routing pattern was not found")
         direct_sdk_pattern = re.compile(match.group(1))
         self.assertRegex(
             ".github/actions/restore-smoke-inputs/action.yml",
@@ -956,6 +1089,7 @@ class CiArtifactActionTests(unittest.TestCase):
         )
         for contract_path in (
             ".github/actions/compute-changes/action.yml",
+            ".github/actions/compute-changes/derive-outputs.sh",
             ".github/workflows/ci.yml",
             ".github/workflows/release.yml",
         ):
@@ -998,7 +1132,7 @@ class CiArtifactActionTests(unittest.TestCase):
         restore_script = (
             ROOT / "scripts" / "restore-native-sdk-input.sh"
         ).read_text(encoding="utf-8")
-        routing = self.read_action("compute-changes")
+        routing = self.read_compute_changes()
 
         self.assertIn(
             "uses: ./.github/actions/prepare-native-sdk-input",
@@ -1077,7 +1211,7 @@ class CiArtifactActionTests(unittest.TestCase):
         )
         self.assertIn(
             "actions/download-artifact@"
-            "37930b1c2abaa49bbe596cd826c3c89aef350131",
+            "3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
             consumer_workflow,
         )
         self.assertIn(
@@ -1108,7 +1242,7 @@ class CiArtifactActionTests(unittest.TestCase):
         native_sdk_producer = (
             ROOT / ".github" / "workflows" / "native-sdk-artifact.yml"
         ).read_text(encoding="utf-8")
-        routing = self.read_action("compute-changes")
+        routing = self.read_compute_changes()
 
         self.assertIn("CACHE_NAMESPACE: mesh-llm", producer)
         self.assertIn(
@@ -1116,6 +1250,7 @@ class CiArtifactActionTests(unittest.TestCase):
             "steps.native_toolchain.outputs.epoch, hashFiles(",
             producer,
         )
+        self.assertIn("'Justfile', 'just/**'", producer)
         self.assertIn(
             "uses: ./.github/actions/resolve-native-toolchain-epoch",
             producer,
@@ -1528,7 +1663,7 @@ class CiArtifactActionTests(unittest.TestCase):
         consumer_script = (
             ROOT / "scripts" / "ci-swift-sdk-smoke.sh"
         ).read_text(encoding="utf-8")
-        routing = self.read_action("compute-changes")
+        routing = self.read_compute_changes()
 
         self.assertIn("type: string", producer)
         self.assertIn("host-only|full", producer)
@@ -1537,6 +1672,29 @@ class CiArtifactActionTests(unittest.TestCase):
             producer,
         )
         self.assertIn("sdk/swift/scripts/build-xcframework.sh", producer)
+        self.assertIn("max-parallel: ${{ inputs.max_parallel }}", producer)
+        self.assertEqual(producer.count("- aarch64-apple-ios\n"), 1)
+        self.assertIn(
+            'build-xcframework.sh --target "${{ matrix.target }}"',
+            producer,
+        )
+        self.assertIn(
+            "name: swift-sdk-target-${{ matrix.target }}-"
+            "${{ github.run_attempt }}",
+            producer,
+        )
+        self.assertIn(
+            "pattern: swift-sdk-target-*",
+            producer,
+        )
+        self.assertNotIn(
+            "pattern: swift-sdk-target-*-${{ github.run_attempt }}",
+            producer,
+        )
+        self.assertIn(
+            "build-xcframework.sh --assemble-from dist/swift-targets",
+            producer,
+        )
         self.assertIn(
             "scripts/verify-swift-release-artifact.sh",
             producer,
@@ -1600,6 +1758,33 @@ class CiArtifactActionTests(unittest.TestCase):
             producer,
         )
 
+        targets = (
+            "aarch64-apple-ios",
+            "aarch64-apple-ios-sim",
+            "x86_64-apple-ios",
+            "aarch64-apple-ios-macabi",
+            "x86_64-apple-ios-macabi",
+            "aarch64-apple-darwin",
+            "x86_64-apple-darwin",
+        )
+        assembly_only_retry = [
+            f"swift-sdk-target-{target}-1" for target in targets
+        ]
+        self.assertEqual(
+            {name.rsplit("-", maxsplit=1)[0] for name in assembly_only_retry
+             if fnmatch(name, "swift-sdk-target-*")},
+            {f"swift-sdk-target-{target}" for target in targets},
+        )
+        partial_matrix_retry = [
+            f"swift-sdk-target-{target}-{2 if index == 3 else 1}"
+            for index, target in enumerate(targets)
+        ]
+        self.assertEqual(
+            {name.rsplit("-", maxsplit=1)[0] for name in partial_matrix_retry
+             if fnmatch(name, "swift-sdk-target-*")},
+            {f"swift-sdk-target-{target}" for target in targets},
+        )
+
         self.assertIn(
             "name: ${{ inputs.swift_artifact_name }}",
             consumer_workflow,
@@ -1611,7 +1796,7 @@ class CiArtifactActionTests(unittest.TestCase):
         )
         self.assertIn(
             "actions/download-artifact@"
-            "37930b1c2abaa49bbe596cd826c3c89aef350131",
+            "3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
             consumer_workflow,
         )
         self.assertIn("persist-credentials: false", consumer_workflow)
@@ -1619,6 +1804,13 @@ class CiArtifactActionTests(unittest.TestCase):
             "if: ${{ inputs.sdk_kind == 'rust' }}",
             consumer_workflow,
         )
+        self.assertNotIn("pnpm/action-setup@", consumer_workflow)
+        self.assertNotIn("actions/setup-node@", consumer_workflow)
+        self.assertIn(
+            'LEGACY_PNPM_STORE="$(pnpm store path --silent)"',
+            consumer_script,
+        )
+        self.assertIn('mkdir -p "$LEGACY_PNPM_STORE"', consumer_script)
 
         for forbidden in (
             "cargo ",
@@ -1676,10 +1868,19 @@ class CiArtifactActionTests(unittest.TestCase):
             / "build-host-macos-xcframework.sh"
         ).read_text(encoding="utf-8")
 
+        exact_key = "format('mesh-llm-swift-sdk-target-{0}-{1}-{2}-{3}-{4}'"
+        self.assertEqual(producer.count(exact_key), 2)
         self.assertIn(
-            "format('mesh-llm-swift-sdk-{0}-{1}-{2}-{3}', "
-            "runner.os, runner.arch, "
-            "steps.native_toolchain.outputs.epoch, hashFiles(",
+            "shared-key: swift-sdk-${{ matrix.target }}",
+            producer,
+        )
+        self.assertIn(
+            "shared-key: ${{ format('swift-sdk-{0}', runner.arch == 'ARM64' "
+            "&& 'aarch64-apple-darwin' || 'x86_64-apple-darwin') }}",
+            producer,
+        )
+        self.assertIn(
+            "path: ${{ format('.deps/llama-build/build-stage-abi-{0}-metal'",
             producer,
         )
         self.assertNotIn("runner.arch, inputs.mode, hashFiles(", producer)
@@ -1689,10 +1890,16 @@ class CiArtifactActionTests(unittest.TestCase):
         )
         self.assertIn('include_tool_versions: "true"', producer)
         self.assertNotIn("SWIFT_NATIVE_XCODE_CACHE_EPOCH", producer)
-        self.assertIn("trusted main full build", producer)
+        self.assertIn("Trusted main can", producer)
         self.assertNotIn("build-stage-abi-host-metal", producer)
         self.assertIn(
             ".deps/llama-build/build-stage-abi-$RUST_TARGET-metal",
+            host_builder,
+        )
+        self.assertIn("-DCMAKE_OSX_SYSROOT=macosx", host_builder)
+        self.assertIn('-DCMAKE_OSX_ARCHITECTURES="$CMAKE_ARCH"', host_builder)
+        self.assertIn(
+            '-DCMAKE_OSX_DEPLOYMENT_TARGET="$MACOSX_DEPLOYMENT_TARGET"',
             host_builder,
         )
 
@@ -1907,10 +2114,26 @@ class CiArtifactActionTests(unittest.TestCase):
     def test_smoke_restore_model_is_optional(self) -> None:
         action = self.read_action("restore-smoke-inputs")
         model_inputs_present = (
-            "inputs.model_url != '' && inputs.model_file != ''"
+            "steps.resolve-model.outputs.url != '' && "
+            "steps.resolve-model.outputs.file != ''"
         )
 
         self.assertEqual(action.count(model_inputs_present), 4)
+        self.assertIn("model_manifest:", action)
+        self.assertIn("model_cadence:", action)
+        self.assertIn("scripts/resolve-test-model-manifest.py", action)
+        self.assertIn('--cadence "$MODEL_CADENCE"', action)
+        self.assertIn("--require-single-file", action)
+        self.assertIn('^[A-Za-z0-9][A-Za-z0-9._-]*$', action)
+        self.assertIn("--verify-root \"$HOME/.models\"", action)
+        self.assertIn("MODEL_MANIFEST: ${{ inputs.model_manifest }}", action)
+        self.assertIn("MODEL_CADENCE: ${{ inputs.model_cadence }}", action)
+        self.assertIn("MODEL_URL: ${{ steps.resolve-model.outputs.url }}", action)
+        self.assertIn("MODEL_FILE: ${{ steps.resolve-model.outputs.file }}", action)
+        self.assertNotIn('"${{ inputs.model_manifest }}"', action)
+        self.assertNotIn('"${{ inputs.model_cadence }}"', action)
+        self.assertNotIn('"${{ steps.resolve-model.outputs.url }}"', action)
+        self.assertNotIn('"${{ steps.resolve-model.outputs.file }}"', action)
         self.assertIn(
             f"if: ${{{{ {model_inputs_present} }}}}\n"
             "      id: cache-model",
@@ -2023,8 +2246,8 @@ class CiArtifactActionTests(unittest.TestCase):
         self.assertIn("depot-macos-15", action)
         self.assertIn("depot-windows-2022", action)
         self.assertIn('depot_pr_exception_expires="2026-09-14"', action)
-        self.assertIn("INPUT_PR_APPROVED_REF", action)
-        self.assertIn("INPUT_PR_APPROVED_SHA", action)
+        self.assertNotIn("INPUT_PR_APPROVED_REF", action)
+        self.assertNotIn("INPUT_PR_APPROVED_SHA", action)
 
         selector_calls = 0
         approved_policy_calls = 0
@@ -2359,15 +2582,19 @@ class CiArtifactActionTests(unittest.TestCase):
         self.assertEqual(canary_pr["allow_native_github_cache"], "false")
         self.assertEqual(canary_pr["allow_trusted_sccache_seed"], "false")
 
-        unapproved_pr = self.run_runner_selector(
+        globally_enabled_pr = self.run_runner_selector(
             event_name="pull_request",
             ref="refs/pull/12/merge",
             main_enabled="false",
             manual_enabled="false",
             pr_enabled="true",
         )
-        self.assertEqual(unapproved_pr["depot_enabled"], "false")
-        self.assertEqual(unapproved_pr["runner"], "ubuntu-24.04")
+        self.assertEqual(globally_enabled_pr["depot_enabled"], "true")
+        self.assertEqual(globally_enabled_pr["runner"], "depot-ubuntu-24.04")
+        self.assertEqual(
+            globally_enabled_pr["allow_native_github_cache"],
+            "true",
+        )
 
         stale_approval = self.run_runner_selector(
             event_name="pull_request",
@@ -2378,7 +2605,7 @@ class CiArtifactActionTests(unittest.TestCase):
             pr_approved_ref="refs/pull/12/merge",
             pr_approved_sha="fedcba9876543210fedcba9876543210fedcba98",
         )
-        self.assertEqual(stale_approval["depot_enabled"], "false")
+        self.assertEqual(stale_approval["depot_enabled"], "true")
 
         stale_ref_approval = self.run_runner_selector(
             event_name="pull_request",
@@ -2389,8 +2616,8 @@ class CiArtifactActionTests(unittest.TestCase):
             pr_approved_ref="refs/pull/13/merge",
             pr_approved_sha="0123456789abcdef0123456789abcdef01234567",
         )
-        self.assertEqual(stale_ref_approval["depot_enabled"], "false")
-        self.assertEqual(stale_ref_approval["runner"], "ubuntu-24.04")
+        self.assertEqual(stale_ref_approval["depot_enabled"], "true")
+        self.assertEqual(stale_ref_approval["runner"], "depot-ubuntu-24.04")
         self.assertEqual(
             stale_ref_approval["allow_native_github_cache"],
             "true",
@@ -2604,13 +2831,21 @@ class CiArtifactActionTests(unittest.TestCase):
             "ci-ui-artifact-slice.yml": {"runner_policy", "ui_artifact"},
             "ci-linux-host-slice.yml": {"runner_policy", "linux_host"},
             "ci-linux-runtime-slice.yml": {"runner_policy", "linux_runtime"},
-            "ci-rust-tests-slice.yml": {"runner_policy", "rust_tests"},
+            "ci-rust-tests-slice.yml": {
+                "runner_policy",
+                "rust_tests",
+                "safetensors_runtime_smoke",
+            },
             "ci-macos-host-slice.yml": {"runner_policy", "macos_host"},
             "ci-platform-checks-slice.yml": {"runner_policy", "platform_checks"},
             "ci-windows-host-slice.yml": {"runner_policy", "windows_host"},
             "ci-windows-runtime-slice.yml": {"runner_policy", "windows_runtime"},
             "static-abi-artifact.yml": {"runner_policy", "static_abi_artifact"},
-            "swift-sdk-artifact.yml": {"runner_policy", "swift_sdk_artifact"},
+            "swift-sdk-artifact.yml": {
+                "runner_policy",
+                "swift_sdk_target",
+                "swift_sdk_artifact",
+            },
         }
 
         def step_block(workflow: str, marker: str) -> str:
@@ -2653,7 +2888,13 @@ class CiArtifactActionTests(unittest.TestCase):
                     block = step_block(workflow, marker)
                     with self.subTest(consumer=marker):
                         if "restore-sccache-seed" in marker:
-                            self.assertIn("allow_trusted_sccache_seed", block)
+                            if filename == "ci-linux-runtime-slice.yml":
+                                self.assertEqual(
+                                    re.findall(r'^\s*allow_trusted_seed:\s*(.+)$', block, re.MULTILINE),
+                                    ['"false"'],
+                                )
+                            else:
+                                self.assertIn("allow_trusted_sccache_seed", block)
                         else:
                             self.assertIn("allow_native_github_cache", block)
 
@@ -2695,11 +2936,11 @@ class CiArtifactActionTests(unittest.TestCase):
         # baked pnpm store instead (#1392); see the comment on
         # `eligible_consumers` above.
         self.assertIn(
-            f"cache: ${{{{ {native_cache_expression} && 'pnpm' || '' }}}}",
+            f"cache: ${{{{ inputs.ui_artifact_name == '' && {native_cache_expression} && 'pnpm' || '' }}}}",
             swift,
         )
         self.assertIn(
-            f"package-manager-cache: ${{{{ {native_cache_expression} }}}}",
+            f"package-manager-cache: ${{{{ inputs.ui_artifact_name == '' && {native_cache_expression} }}}}",
             swift,
         )
         self.assertIn(
@@ -2747,7 +2988,8 @@ class CiArtifactActionTests(unittest.TestCase):
             jobs,
             re.MULTILINE | re.DOTALL,
         )
-        self.assertIsNotNone(match)
+        if match is None:
+            self.fail("authority sentinel job was not found")
         sentinel = match.group("body")
         self.assertIn(
             "# Explicit diagnostic exception: this no-checkout job attests the",

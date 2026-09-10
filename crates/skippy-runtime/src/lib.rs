@@ -3,6 +3,7 @@ pub use skippy_ffi::Status;
 pub(crate) use skippy_ffi::TensorRole;
 
 mod activation;
+mod checkpoint;
 mod config;
 mod devices;
 mod error;
@@ -19,22 +20,25 @@ mod runtime_events;
 mod session;
 mod types;
 
-pub use activation::DecodeFrameBatchRequest;
+pub use activation::{DecodeFrameBatchRequest, IterationBatchPhase, IterationBatchRequest};
+pub use checkpoint::{CheckpointQuantization, is_safetensors_checkpoint};
 pub use config::{
-    FlashAttentionType, GGML_TYPE_F16, GGML_TYPE_Q4_0, GGML_TYPE_Q8_0,
+    FlashAttentionType, GGML_TYPE_F16, GGML_TYPE_F32, GGML_TYPE_Q4_0, GGML_TYPE_Q8_0, GlmDsaPolicy,
     LLAMA_SERVER_DEFAULT_N_BATCH, LLAMA_SERVER_DEFAULT_N_UBATCH, MtpSource, RuntimeConfig,
-    SKIPPY_UNIFIED_KV_DEFAULT_N_BATCH, parse_cache_type,
+    SKIPPY_UNIFIED_KV_DEFAULT_N_BATCH, SplitMode, parse_cache_type,
 };
 pub use devices::{BackendDevice, BackendDeviceType, backend_devices};
 pub(crate) use error::ensure_ok;
-pub use gguf_writer::{ModelInfo, SlicePlan, write_gguf_from_parts};
+pub use gguf_writer::{
+    ModelInfo, SlicePlan, write_gguf_from_parts, write_gguf_metadata_from_parts,
+};
 pub use logging::{
     LLAMA_LOG_LEVEL_DEBUG, NativeLogEvent, disable_verbose_native_logs, enable_verbose_native_logs,
     redirect_native_logs_to_file, register_filtered_native_logs, restore_native_logs,
     set_filtered_native_logs_enabled, suppress_native_logs, unregister_filtered_native_logs,
     write_native_log_note,
 };
-pub use native::StageModel;
+pub use native::{StageModel, StageModelReader};
 pub use native_mtp::NativeMtpDraft;
 pub use ngram::{Cache as NgramCache, NGRAM_CACHE_MAX_NGRAM};
 pub use runtime_events::{
@@ -43,15 +47,18 @@ pub use runtime_events::{
 };
 pub use session::{DecodeBatchRequest, StageSession};
 pub use skippy_ffi::LoadMode as RuntimeLoadMode;
+pub use skippy_ffi::MAX_DRY_SEQUENCE_BREAKER_BYTES;
 pub use skippy_ffi::{
+    ACTIVATION_FLAG_GEMMA3N_ALTUP, ACTIVATION_SIDEBAND_TOKEN_IDS,
     ActivationDType as RuntimeActivationDType, ActivationLayout as RuntimeActivationLayout,
 };
 pub use types::{
-    ActivationDesc, ActivationFrame, ChatReasoningFormat, ChatTemplateJsonOptions,
-    ChatTemplateJsonResult, ChatTemplateMessage, ChatTemplateOptions, DecodeFrameBatchOutput,
-    GenerationSignalWindow, LogitBias, MAX_LOGIT_BIAS, MediaInput, MediaPrefill,
-    MediaPrefillChunkFrame, MediaPrefillFrame, RuntimeKvPage, RuntimeKvPageDesc, SamplingConfig,
-    TensorInfo, TokenSignal,
+    ActivationBoundaryDesc, ActivationDesc, ActivationFrame, ChatReasoningFormat,
+    ChatTemplateJsonOptions, ChatTemplateJsonResult, ChatTemplateMessage, ChatTemplateOptions,
+    DecodeFrameBatchOutput, DrySamplingConfig, GenerationSignalWindow, IterationBatchOutput,
+    IterationSample, LoadedModelCapability, LogitBias, MAX_LOGIT_BIAS, MediaInput, MediaPrefill,
+    MediaPrefillChunkFrame, MediaPrefillFrame, ModelStateKind, RuntimeKvPage, RuntimeKvPageDesc,
+    SamplingConfig, TensorInfo, TokenSignal, XtcSamplingConfig,
 };
 
 #[cfg(feature = "dynamic-native-runtime")]

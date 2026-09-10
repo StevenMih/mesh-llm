@@ -18,20 +18,36 @@ WORK_DIR="${WORK_DIR:-${RUNNER_TEMP:-${TMPDIR:-/tmp}}/skippy-ci-smoke}"
 REPORT_DIR="${WORK_DIR}/reports"
 MODEL_DIR="${MODEL_DIR:-${WORK_DIR}/models}"
 
-DENSE_MODEL_REPO="${DENSE_MODEL_REPO:-jc-builds/SmolLM2-135M-Instruct-Q4_K_M-GGUF}"
-DENSE_MODEL_FILE="${DENSE_MODEL_FILE:-SmolLM2-135M-Instruct.Q4_K_M.gguf}"
-DENSE_MODEL_SELECTOR="${DENSE_MODEL_SELECTOR:-Q4_K_M}"
+DENSE_MODEL_MANIFEST="${DENSE_MODEL_MANIFEST:-$ROOT/ci/model-artifacts/manifests/skippy-ci-smoke.json}"
+DENSE_MODEL_ARTIFACT_ID="${DENSE_MODEL_ARTIFACT_ID:-family-qwen3-dense}"
+DENSE_MODEL_OVERRIDDEN=0
+if [[ -n "${DENSE_MODEL_REPO:-}" || -n "${DENSE_MODEL_FILE:-}" || -n "${DENSE_MODEL_SELECTOR:-}" || -n "${DENSE_MODEL_REVISION:-}" || -n "${DENSE_MODEL_PATH:-}" ]]; then
+  DENSE_MODEL_OVERRIDDEN=1
+fi
+DENSE_MODEL_FIXTURE="$(python3 "$ROOT/scripts/resolve-test-model-manifest.py" "$DENSE_MODEL_MANIFEST" --artifact-id "$DENSE_MODEL_ARTIFACT_ID" --cadence manual)"
+DENSE_MODEL_REPO="${DENSE_MODEL_REPO:-$(jq -r '.repo' <<<"$DENSE_MODEL_FIXTURE")}"
+DENSE_MODEL_FILE="${DENSE_MODEL_FILE:-$(jq -r '.file' <<<"$DENSE_MODEL_FIXTURE")}"
+DENSE_MODEL_SELECTOR="${DENSE_MODEL_SELECTOR:-$(jq -r '.selector' <<<"$DENSE_MODEL_FIXTURE")}"
+DENSE_MODEL_REVISION="${DENSE_MODEL_REVISION:-$(jq -r '.revision' <<<"$DENSE_MODEL_FIXTURE")}"
 DENSE_MODEL_ID="${DENSE_MODEL_ID:-${DENSE_MODEL_REPO}:${DENSE_MODEL_SELECTOR}}"
 DENSE_MODEL_PATH="${DENSE_MODEL_PATH:-}"
 
-RECURRENT_MODEL_REPO="${RECURRENT_MODEL_REPO:-tiiuae/Falcon-H1-0.5B-Instruct-GGUF}"
-RECURRENT_MODEL_FILE="${RECURRENT_MODEL_FILE:-Falcon-H1-0.5B-Instruct-Q4_K_M.gguf}"
-RECURRENT_MODEL_SELECTOR="${RECURRENT_MODEL_SELECTOR:-Q4_K_M}"
+RECURRENT_MODEL_MANIFEST="${RECURRENT_MODEL_MANIFEST:-$ROOT/ci/model-artifacts/manifests/skippy-ci-smoke.json}"
+RECURRENT_MODEL_ARTIFACT_ID="${RECURRENT_MODEL_ARTIFACT_ID:-family-falcon-h1}"
+RECURRENT_MODEL_OVERRIDDEN=0
+if [[ -n "${RECURRENT_MODEL_REPO:-}" || -n "${RECURRENT_MODEL_FILE:-}" || -n "${RECURRENT_MODEL_SELECTOR:-}" || -n "${RECURRENT_MODEL_REVISION:-}" || -n "${RECURRENT_MODEL_PATH:-}" ]]; then
+  RECURRENT_MODEL_OVERRIDDEN=1
+fi
+RECURRENT_MODEL_FIXTURE="$(python3 "$ROOT/scripts/resolve-test-model-manifest.py" "$RECURRENT_MODEL_MANIFEST" --artifact-id "$RECURRENT_MODEL_ARTIFACT_ID" --cadence manual)"
+RECURRENT_MODEL_REPO="${RECURRENT_MODEL_REPO:-$(jq -r '.repo' <<<"$RECURRENT_MODEL_FIXTURE")}"
+RECURRENT_MODEL_FILE="${RECURRENT_MODEL_FILE:-$(jq -r '.file' <<<"$RECURRENT_MODEL_FIXTURE")}"
+RECURRENT_MODEL_SELECTOR="${RECURRENT_MODEL_SELECTOR:-$(jq -r '.selector' <<<"$RECURRENT_MODEL_FIXTURE")}"
+RECURRENT_MODEL_REVISION="${RECURRENT_MODEL_REVISION:-$(jq -r '.revision' <<<"$RECURRENT_MODEL_FIXTURE")}"
 RECURRENT_MODEL_ID="${RECURRENT_MODEL_ID:-${RECURRENT_MODEL_REPO}:${RECURRENT_MODEL_SELECTOR}}"
 RECURRENT_MODEL_PATH="${RECURRENT_MODEL_PATH:-}"
 
-CTX_SIZE="${CTX_SIZE:-384}"
-PROMPT_CTX_SIZE="${PROMPT_CTX_SIZE:-768}"
+CTX_SIZE="${CTX_SIZE:-8192}"
+PROMPT_CTX_SIZE="${PROMPT_CTX_SIZE:-$CTX_SIZE}"
 STATE_PREFIX_TOKENS="${STATE_PREFIX_TOKENS:-128}"
 PROMPT_PREFILL_CHUNK_SIZE="${PROMPT_PREFILL_CHUNK_SIZE:-128}"
 PROMPT_MAX_NEW_TOKENS="${PROMPT_MAX_NEW_TOKENS:-8}"
@@ -128,23 +144,48 @@ descendant_pids() {
 download_model() {
   local repo="$1"
   local file="$2"
-  local out_dir="$3"
-  mkdir -p "$out_dir"
-  local cached_path="${out_dir}/${file}"
-  if [[ -s "$cached_path" ]]; then
-    echo "using cached ${repo}/${file} at ${cached_path}" >&2
-    printf '%s\n' "$cached_path"
-    return 0
-  fi
-  echo "downloading ${repo}/${file}" >&2
+  local revision="$3"
+  local out_dir="$4"
   local output path
-  output="$(run_with_timeout "download ${repo}/${file}" hf download "$repo" "$file" --local-dir "$out_dir")"
-  path="$(printf '%s\n' "$output" | sed -n 's/^path=//p' | tail -n 1)"
+
+  if [[ -n "${HF_CACHE:-}" ]]; then
+    # The family-certify runner's cache is shared over NFS. Resolve artifacts
+    # from that pre-warmed cache without creating local-dir metadata or locks;
+    # a miss must fail instead of mutating shared storage during certification.
+    output="$(
+      HF_HOME="$HF_CACHE" \
+      HF_HUB_CACHE="$HF_CACHE/hub" \
+      HF_HUB_OFFLINE=1 \
+        run_with_timeout "resolve cached ${repo}/${file}" hf download "$repo" "$file" --revision "$revision"
+    )"
+  else
+    mkdir -p "$out_dir"
+    local cached_path="${out_dir}/${file}"
+    if [[ -s "$cached_path" ]]; then
+      echo "using cached ${repo}/${file} at ${cached_path}" >&2
+      printf '%s\n' "$cached_path"
+      return 0
+    fi
+    echo "downloading ${repo}/${file}" >&2
+    output="$(run_with_timeout "download ${repo}/${file}" hf download "$repo" "$file" --revision "$revision" --local-dir "$out_dir")"
+  fi
+
+  path="$(
+    printf '%s\n' "$output" \
+      | sed -n \
+        -e 's/^path=//p' \
+        -e 's/^[[:space:]]*path:[[:space:]]*//p' \
+      | tail -n 1
+  )"
   if [[ -z "$path" ]]; then
-    path="${out_dir}/${file}"
+    if [[ -n "${HF_CACHE:-}" ]]; then
+      path="$(printf '%s\n' "$output" | tail -n 1)"
+    else
+      path="${out_dir}/${file}"
+    fi
   fi
   if [[ ! -f "$path" ]]; then
-    echo "downloaded model path not found: $path" >&2
+    echo "resolved model path not found: $path" >&2
     printf '%s\n' "$output" >&2
     exit 1
   fi
@@ -319,10 +360,24 @@ fi
 mkdir -p "$REPORT_DIR" "$MODEL_DIR"
 
 if [[ -z "$DENSE_MODEL_PATH" ]]; then
-  DENSE_MODEL_PATH="$(download_model "$DENSE_MODEL_REPO" "$DENSE_MODEL_FILE" "${MODEL_DIR}/dense")"
+  DENSE_MODEL_PATH="$(download_model "$DENSE_MODEL_REPO" "$DENSE_MODEL_FILE" "$DENSE_MODEL_REVISION" "${MODEL_DIR}/dense")"
 fi
 if [[ -z "$RECURRENT_MODEL_PATH" ]]; then
-  RECURRENT_MODEL_PATH="$(download_model "$RECURRENT_MODEL_REPO" "$RECURRENT_MODEL_FILE" "${MODEL_DIR}/recurrent")"
+  RECURRENT_MODEL_PATH="$(download_model "$RECURRENT_MODEL_REPO" "$RECURRENT_MODEL_FILE" "$RECURRENT_MODEL_REVISION" "${MODEL_DIR}/recurrent")"
+fi
+if [[ "$DENSE_MODEL_OVERRIDDEN" == "0" ]]; then
+  python3 "$ROOT/scripts/resolve-test-model-manifest.py" \
+    "$DENSE_MODEL_MANIFEST" \
+    --artifact-id "$DENSE_MODEL_ARTIFACT_ID" \
+    --cadence manual \
+    --verify-root "$(dirname "$DENSE_MODEL_PATH")"
+fi
+if [[ "$RECURRENT_MODEL_OVERRIDDEN" == "0" ]]; then
+  python3 "$ROOT/scripts/resolve-test-model-manifest.py" \
+    "$RECURRENT_MODEL_MANIFEST" \
+    --artifact-id "$RECURRENT_MODEL_ARTIFACT_ID" \
+    --cadence manual \
+    --verify-root "$(dirname "$RECURRENT_MODEL_PATH")"
 fi
 
 echo "building skippy smoke binaries"
@@ -666,8 +721,6 @@ echo "smoke: prompt exact-prefix hit and live-session reuse"
 LLAMA_STAGE_BUILD_DIR="$LLAMA_BUILD_DIR" \
   "$STAGE_SERVER_BIN" serve-binary \
     --config "$PROMPT_CONFIG" \
-    --activation-width 2048 \
-    --activation-wire-dtype f16 \
     --max-inflight 4 \
     >"$PROMPT_LOG" 2>&1 &
 SERVER_PID="$!"
@@ -688,7 +741,6 @@ LLAMA_STAGE_BUILD_DIR="$LLAMA_BUILD_DIR" \
     --first-stage-addr "$PROMPT_BIND" \
     --ctx-size "$PROMPT_CTX_SIZE" \
     --activation-width 2048 \
-    --activation-wire-dtype f16 \
     --prefill-chunk-size "$PROMPT_PREFILL_CHUNK_SIZE" \
     --max-new-tokens "$PROMPT_MAX_NEW_TOKENS" \
     --session-id skippy-ci-smoke \

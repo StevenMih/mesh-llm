@@ -9,10 +9,24 @@ remaining consumable by normal YAML tooling.
 This planner is the eligibility boundary for both PR and main CI. It is strict:
 an invalid manifest, unknown path, missing producer, or malformed matrix is an
 error rather than an implicit broad build.
+
+``--manifest-root`` is the audit path, not a convenience.  The planner itself
+always runs from the protected default-branch checkout, which is the authority:
+by default it reads the catalogs beside its own code.  A PR caller instead
+extracts the source revision's ``ci/ownership.yml`` and ``ci/slices.yml`` into a
+runner-temp directory and points ``--manifest-root`` at it, so the routing
+inputs that reviewers see on the PR are the ones the plan is audited against
+while the executable planner, Cargo workspace discovery, and every fan-out
+ceiling stay protected.  The caller first requires those source catalogs to
+match the protected copies byte for byte.  In that protected PR path, the
+comparison prevents the switch from widening routing.  Do not collapse it into
+a single read of the source tree, and do not delete it as redundant: the two
+roots are deliberately different trust domains.
 """
 
 from __future__ import annotations
 
+import argparse
 from collections import OrderedDict
 from fnmatch import fnmatchcase
 import json
@@ -466,6 +480,15 @@ def _select_rows(
     sdk_rows = _row_map(slices, "sdk_rows")
     smoke_rows = _row_map(slices, "smoke_rows")
 
+    if profile == "pr-draft" and not force_all_rows:
+        return {
+            "hosts": [],
+            "runtime_products": [],
+            "platform_checks": [],
+            "sdk": [],
+            "smoke": [],
+        }
+
     if force_all_rows:
         runtime_ids = list(runtime_rows)
         platform_ids = list(platform_rows)
@@ -487,9 +510,7 @@ def _select_rows(
         for domain in domains:
             smoke_ids.extend(slices.get("smoke_domain_rows", {}).get(domain, []))
         if "product-smoke" in selected and not smoke_ids:
-            smoke_ids.append("core")
-        if profile == "pr-draft" and smoke_ids:
-            smoke_ids = [row_id for row_id in smoke_ids if row_id == "core"] or [smoke_ids[0]]
+            smoke_ids.append("product-integration-cpu")
 
     def unique_rows(mapping: dict[str, dict[str, Any]], ids: Iterable[str], field: str) -> list[dict[str, Any]]:
         result: list[dict[str, Any]] = []
@@ -615,10 +636,13 @@ def _select_slices(
         slice_id: ["profile:base"] for slice_id in selected
     }
     domain_rules = {rule["domain"]: rule["slices"] for rule in slices["domain_rules"]}
-    for domain in domains:
-        for slice_id in domain_rules[domain]:
-            selected.add(slice_id)
-            reasons.setdefault(slice_id, []).append(f"domain:{domain}")
+    if profile != "pr-draft" or (
+        "ci-control" in domains and documentation_only
+    ):
+        for domain in domains:
+            for slice_id in domain_rules[domain]:
+                selected.add(slice_id)
+                reasons.setdefault(slice_id, []).append(f"domain:{domain}")
 
     force_all_rows = bool(profile_definition["all_rows"])
     if ("ci-control" in domains and not documentation_only) or "runner-infra" in domains:
@@ -777,10 +801,16 @@ def _validate_plan(plan: dict[str, Any], slices: dict[str, Any], packages: list[
             raise PlanError("main rust test matrix does not cover every workspace crate")
 
 
-def build_plan(payload: object, *, root: Path = ROOT) -> dict[str, Any]:
+def build_plan(
+    payload: object,
+    *,
+    root: Path = ROOT,
+    manifest_root: Path | None = None,
+) -> dict[str, Any]:
     input_data = _validate_input(payload)
-    ownership = _load_manifest(root / "ci" / "ownership.yml")
-    slices = _load_manifest(root / "ci" / "slices.yml")
+    manifest_source = root if manifest_root is None else manifest_root
+    ownership = _load_manifest(manifest_source / "ci" / "ownership.yml")
+    slices = _load_manifest(manifest_source / "ci" / "slices.yml")
     _validate_manifests(ownership, slices)
 
     profile = input_data["profile"]
@@ -870,9 +900,12 @@ def build_plan(payload: object, *, root: Path = ROOT) -> dict[str, Any]:
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--manifest-root", type=Path)
+    arguments = parser.parse_args()
     try:
         payload = json.load(sys.stdin)
-        plan = build_plan(payload)
+        plan = build_plan(payload, manifest_root=arguments.manifest_root)
     except (json.JSONDecodeError, PlanError) as error:
         print(f"ERROR: unable to build CI plan: {error}", file=sys.stderr)
         return 2

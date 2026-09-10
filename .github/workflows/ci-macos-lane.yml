@@ -140,6 +140,8 @@ jobs:
       force_hosted: ${{ fromJson(inputs.lane_plan_json).signals.runner_contract_required }}
       mode: ${{ (fromJson(inputs.lane_plan_json).profile == 'main' || fromJson(inputs.lane_plan_json).profile == 'manual-full') && 'full' || 'host-only' }}
       artifact_name: ci-sdk-swift
+      max_parallel: ${{ fromJson(inputs.lane_plan_json).budgets.macos_max_parallel }}
+      fail_fast: ${{ inputs.original_event_name == 'pull_request' }}
       retention_days: 1
       timeout_minutes: 90
 
@@ -153,6 +155,7 @@ jobs:
       architecture: ${{ fromJson(inputs.lane_plan_json).matrices.runtime_products[0].architecture }}
       sdk_matrix: ${{ toJson(fromJson(inputs.lane_plan_json).matrices.sdk) }}
       binary_target: target/release/mesh-llm
+      ui_artifact_name: ci-ui-dist-macos-${{ github.run_id }}
       swift_mode: ${{ (fromJson(inputs.lane_plan_json).profile == 'main' || fromJson(inputs.lane_plan_json).profile == 'manual-full') && 'full' || 'host-only' }}
     secrets:
       HF_TOKEN: ${{ inputs.original_event_name == 'push' && secrets.HF_TOKEN || '' }}

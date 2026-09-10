@@ -7,13 +7,11 @@ use std::{
     },
 };
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use skippy_protocol::LoadMode;
 use tokio::sync::Mutex;
 
-use crate::inference::skippy::materialization::{
-    inspect_stage_package, is_layer_package_ref, resolve_stage_load_package,
-};
+use crate::inference::skippy::materialization::{is_layer_package_ref, resolve_stage_load_package};
 
 use super::{
     SourceModelKind, StageInventoryRequest, StageLoadRequest, StagePackagePrefetcher,
@@ -27,16 +25,72 @@ pub(super) struct InventorySource {
     pub(super) bytes: Option<u64>,
     pub(super) layer_count: u32,
     pub(super) kind: SourceModelKind,
+    pub(super) sha256: Option<String>,
 }
 
 pub(super) fn resolve_inventory_source(request: &StageInventoryRequest) -> Option<InventorySource> {
-    if is_layer_package_ref(&request.package_ref) {
-        let info = inspect_stage_package(&request.package_ref).ok()?;
+    let local_source_required = crate::inference::skippy::effective_local_source_required(
+        &request.model_id,
+        request.runtime_profile.as_deref(),
+        request.local_source_required,
+    );
+    if local_source_required
+        && !crate::inference::skippy::is_content_addressed_gguf_ref(&request.package_ref)
+    {
+        return None;
+    }
+    if crate::inference::skippy::is_content_addressed_gguf_ref(&request.package_ref) {
+        let expected_sha256 = request.expected_source_model_sha256.as_deref()?;
+        let identity = crate::inference::skippy::verify_registered_content_source(
+            &request.model_id,
+            &request.package_ref,
+            &request.manifest_sha256,
+            expected_sha256,
+        )
+        .map_err(|error| {
+            tracing::debug!(
+                package_ref = request.package_ref,
+                error = %error,
+                "content-addressed GGUF inventory verification failed"
+            );
+            error
+        })
+        .ok()?;
+        let kind = if is_split_gguf_path(&identity.source_model_path) {
+            SourceModelKind::SplitGguf
+        } else {
+            SourceModelKind::PlainGguf
+        };
         return Some(InventorySource {
-            path: info.package_dir,
-            bytes: info.source_model_bytes,
-            layer_count: info.layer_count,
-            kind: SourceModelKind::LayerPackage,
+            path: identity.source_model_path,
+            bytes: Some(identity.source_model_bytes),
+            layer_count: identity.layer_count,
+            kind,
+            sha256: Some(identity.source_model_sha256),
+        });
+    }
+    if is_layer_package_ref(&request.package_ref) {
+        let identity = crate::inference::skippy::identity_from_layer_package(&request.package_ref)
+            .map_err(|error| {
+                tracing::debug!(
+                    package_ref = request.package_ref,
+                    error = %error,
+                    "package inventory verification failed"
+                );
+                error
+            })
+            .ok()?;
+        let kind = if is_split_gguf_path(&identity.source_model_path) {
+            SourceModelKind::SplitGguf
+        } else {
+            SourceModelKind::PlainGguf
+        };
+        return Some(InventorySource {
+            path: identity.source_model_path,
+            bytes: Some(identity.source_model_bytes),
+            layer_count: identity.layer_count,
+            kind,
+            sha256: Some(identity.source_model_sha256),
         });
     }
 
@@ -61,8 +115,7 @@ fn resolve_direct_gguf_inventory_source(candidate: &Path) -> Option<InventorySou
     };
     let source_path = source_paths.first()?.clone();
     let layer_count = crate::models::gguf::scan_gguf_compact_meta(&source_path)
-        .map(|meta| meta.layer_count)
-        .filter(|layer_count| *layer_count > 0)
+        .and_then(|meta| meta.executable_layer_count())
         .or_else(|| crate::inference::skippy::infer_layer_count(&source_path).ok())?;
     let bytes = source_paths
         .iter()
@@ -78,6 +131,7 @@ fn resolve_direct_gguf_inventory_source(candidate: &Path) -> Option<InventorySou
         bytes: Some(bytes),
         layer_count,
         kind,
+        sha256: None,
     })
 }
 
@@ -203,11 +257,24 @@ fn format_stage_prepare_error(error: &anyhow::Error, peer_prefetch_error: Option
     }
 }
 
-struct PrepareSourceResult {
+#[derive(Debug)]
+pub(super) struct PrepareSourceResult {
     bytes_total: Option<u64>,
 }
 
-async fn prepare_stage_source(load: &StageLoadRequest) -> Result<PrepareSourceResult> {
+pub(super) async fn prepare_stage_source(load: &StageLoadRequest) -> Result<PrepareSourceResult> {
+    let mut effective_load = load.clone();
+    let (effective_load, verified) = tokio::task::spawn_blocking(move || {
+        let verified = crate::inference::skippy::apply_verified_local_source(&mut effective_load)?;
+        anyhow::Ok((effective_load, verified))
+    })
+    .await
+    .context("join verify local-required stage source task")??;
+    if verified {
+        return Ok(PrepareSourceResult {
+            bytes_total: effective_load.source_model_bytes,
+        });
+    }
     if load.load_mode == LoadMode::LayerPackage || is_layer_package_ref(&load.package_ref) {
         let load = load.clone();
         let package = tokio::task::spawn_blocking(move || resolve_stage_load_package(&load))

@@ -27,6 +27,7 @@ class ReusableWorkflowRunnerTrustTests(unittest.TestCase):
             "hf-download-smoke.yml",
             "smoke.yml",
             "scripted-binary-smoke.yml",
+            "product-integration-smoke.yml",
             "sdk-smoke.yml",
         ):
             with self.subTest(workflow=name):
@@ -105,7 +106,7 @@ class ReusableWorkflowRunnerTrustTests(unittest.TestCase):
 
         The protected reusable lanes are deliberately split across several
         workflows, so a future slice can otherwise accidentally omit the
-        exact-ref/SHA gate while still looking like it uses the central
+        bounded global gate while still looking like it uses the central
         selector.  Keep this census explicit: credential-bearing smoke
         consumers and the GPU exception are intentionally outside it.
         """
@@ -133,8 +134,8 @@ class ReusableWorkflowRunnerTrustTests(unittest.TestCase):
         selector = (
             ROOT / ".github" / "actions" / "select-ci-runners" / "action.yml"
         ).read_text(encoding="utf-8")
-        self.assertIn("INPUT_PR_APPROVED_REF", selector)
-        self.assertIn("INPUT_PR_APPROVED_SHA", selector)
+        self.assertNotIn("INPUT_PR_APPROVED_REF", selector)
+        self.assertNotIn("INPUT_PR_APPROVED_SHA", selector)
         self.assertIn('depot_pr_exception_expires="2026-09-14"', selector)
 
         for name in eligible:
@@ -338,6 +339,7 @@ class ReusableWorkflowRunnerTrustTests(unittest.TestCase):
             "hf-download-smoke.yml",
             "smoke.yml",
             "scripted-binary-smoke.yml",
+            "product-integration-smoke.yml",
             "sdk-smoke.yml",
         ):
             with self.subTest(workflow=name):

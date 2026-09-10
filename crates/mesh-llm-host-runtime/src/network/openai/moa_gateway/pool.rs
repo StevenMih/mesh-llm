@@ -6,6 +6,7 @@
 //! calls [`assemble_worker_pool`] and [`compute_actor_candidates`] here.
 
 use super::context_selection;
+use super::self_fill::self_fill_from_extra_instances;
 use super::workers::{LocalModelBackend, RemoteModelBackend};
 use crate::inference::election;
 use crate::mesh;
@@ -65,6 +66,65 @@ fn tier_for(name: &str, sizes: &HashMap<String, f64>) -> SizeTier {
         Some(b) if *b >= SMALL_TIER_MAX_B => SizeTier::Big,
         _ => SizeTier::Small,
     }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum AvailabilityRank {
+    Healthy,
+    Deprioritized,
+}
+
+/// Best currently routable health and advertised throughput for each canonical
+/// model. A local model is healthy by definition; paused remote peers are not
+/// routable and therefore do not contribute.
+async fn model_routing_hints(
+    node: &mesh::Node,
+) -> HashMap<String, (AvailabilityRank, Option<u64>)> {
+    use crate::proto::node::InferenceAdmissionState;
+
+    let mut hints = HashMap::new();
+    for local in node.hosted_models().await {
+        hints.insert(
+            canonical_base_name(&local),
+            (AvailabilityRank::Healthy, None),
+        );
+    }
+    for peer in node.peers().await {
+        let availability = match peer.inference_admission_state {
+            Some(InferenceAdmissionState::RemotePaused | InferenceAdmissionState::AllPaused) => {
+                continue;
+            }
+            Some(InferenceAdmissionState::AcceptingDeprioritized) => {
+                AvailabilityRank::Deprioritized
+            }
+            _ => AvailabilityRank::Healthy,
+        };
+        for model in peer.http_routable_models() {
+            let model_base = canonical_base_name(&model);
+            let throughput = peer
+                .advertised_model_throughput
+                .iter()
+                .filter(|hint| canonical_base_name(&hint.model_name) == model_base)
+                .map(|hint| hint.avg_tokens_per_second_milli)
+                .max();
+            hints
+                .entry(model_base)
+                .and_modify(|(best_availability, best_throughput)| {
+                    match availability.cmp(best_availability) {
+                        std::cmp::Ordering::Less => {
+                            *best_availability = availability;
+                            *best_throughput = throughput;
+                        }
+                        std::cmp::Ordering::Equal => {
+                            *best_throughput = (*best_throughput).max(throughput);
+                        }
+                        std::cmp::Ordering::Greater => {}
+                    }
+                })
+                .or_insert((availability, throughput));
+        }
+    }
+    hints
 }
 
 /// Try each alias in `aliases` until one resolves to a backend, then stop.
@@ -227,21 +287,26 @@ async fn add_worker_backend(
         }
     }
 
-    // Otherwise find a remote host. hosts_for_model returns peers in
-    // hash-preferred order; prefer hosts with enough advertised context.
-    let remote_hosts = resolution.node.hosts_for_model(name).await;
-    if let Some(peer_id) = context_selection::select_remote_host(
+    // Otherwise find ranked remote replicas. The backend retains one standby
+    // so a draft/reducer call is not pinned to a single peer for the life of
+    // the committee. `hosts_for_model` is origin-stable rendezvous order and
+    // the context filter preserves that order, so failover does not create a
+    // static herd on one large replica.
+    let remote_hosts = context_selection::eligible_remote_hosts(
         resolution.node,
         name,
         resolution.required_tokens,
-        remote_hosts,
+        resolution.node.hosts_for_model(name).await,
     )
-    .await
-    {
+    .await;
+    if !remote_hosts.is_empty() {
         let backend_idx = backends.len();
         backends.push(std::sync::Arc::new(RemoteModelBackend {
             node: resolution.node.clone(),
-            peer_id,
+            peer_ids: remote_hosts
+                .into_iter()
+                .take(super::workers::MAX_REMOTE_REPLICAS_PER_WORKER)
+                .collect(),
         }));
         models.push(
             moa::ModelEntry::new(name, backend_idx)
@@ -261,6 +326,7 @@ pub(super) async fn assemble_worker_pool(
     targets: Option<&election::ModelTargets>,
     required_tokens: Option<u32>,
     http: &reqwest::Client,
+    affinity: Option<&crate::network::affinity::AffinityRouter>,
 ) -> (
     Vec<std::sync::Arc<dyn moa::ModelBackend>>,
     Vec<moa::ModelEntry>,
@@ -302,13 +368,24 @@ pub(super) async fn assemble_worker_pool(
         .await;
     }
 
-    // Admission control: a weak worker must not drag down a pool that already
-    // has a stronger one. Aggregation is sensitive to proposal quality
-    // (Self-MoA, arXiv:2502.00674), so an 8B draft added to a 24-32B pool is
-    // expected noise-to-harm. When tiers are mixed, keep only big-tier workers;
-    // an all-small or all-big pool is untouched. A lone big model then remains
-    // a one-worker Mesh gateway.
-    apply_admission_control(&mut backends, &mut models, &sizes);
+    // Admission control preserves its measured quality rule while healthy big
+    // capacity exists. If fewer than two big models are currently healthy,
+    // retain small/local workers as spillover rather than deleting the only
+    // responsive route.
+    let routing_hints = model_routing_hints(node).await;
+    let healthy_big_count = models
+        .iter()
+        .filter(|model| tier_for(&model.name, &sizes) == SizeTier::Big)
+        .filter(|model| {
+            routing_hints
+                .get(&canonical_base_name(&model.name))
+                .map(|(availability, _)| *availability == AvailabilityRank::Healthy)
+                .unwrap_or(true)
+        })
+        .count();
+    if healthy_big_count >= 2 {
+        apply_admission_control(&mut backends, &mut models, &sizes);
+    }
 
     // Same-model fill: if only one model resolved but it is served by >=2
     // DISTINCT physical endpoints, form a committee from them. Self-MoA shows
@@ -324,6 +401,7 @@ pub(super) async fn assemble_worker_pool(
             http,
             &mut backends,
             &mut models,
+            affinity,
         )
         .await;
     }
@@ -438,19 +516,36 @@ async fn cap_committee(
     if models.len() <= cap {
         return;
     }
+    let routing_hints = model_routing_hints(node).await;
     // Rank by verified size, NOT the tool-actor ranking. The committee serves
     // ordinary answer turns where `tool_use` is irrelevant; ranking by it
     // (i386 P1) could evict a 32B/70B model with `tool_use=None` in favour of
     // four small models whose metadata advertises tool use — the opposite of
     // the admission goal. Keep the largest verified models; a model with no
     // verified size ranks as weakest, and stable index breaks ties.
+    //
+    // Availability sorts *within* a tier, never across one. Admission control
+    // already ran, so this is the last stage that can drop a worker: without
+    // the availability term, enough deprioritized bases of the same tier fill
+    // the cap by index alone and evict the only healthy worker, leaving
+    // `compute_actor_candidates` to rank a pool with nothing healthy left in
+    // it. Keeping it below the tier key preserves the measured admission rule
+    // — a healthy small model still never displaces a big one.
     let mut ranked: Vec<usize> = (0..models.len()).collect();
     ranked.sort_by(|&a, &b| {
-        let key = |i: usize| match tier_for(&models[i].name, &sizes) {
+        let tier_key = |i: usize| match tier_for(&models[i].name, &sizes) {
             SizeTier::Big => 0,
             SizeTier::Small => 1,
         };
-        key(a).cmp(&key(b)).then_with(|| a.cmp(&b))
+        let availability = |i: usize| {
+            routing_hints
+                .get(&canonical_base_name(&models[i].name))
+                .map_or(AvailabilityRank::Healthy, |(rank, _)| *rank)
+        };
+        tier_key(a)
+            .cmp(&tier_key(b))
+            .then_with(|| availability(a).cmp(&availability(b)))
+            .then_with(|| a.cmp(&b))
     });
     let keep: std::collections::HashSet<usize> = ranked.into_iter().take(cap).collect();
 
@@ -470,89 +565,6 @@ async fn cap_committee(
     }
     *backends = kept_backends;
     *models = kept_models;
-}
-
-/// Cap on same-model instances added by self-fill. Two is enough to switch a
-/// single-model mesh from solo to a working committee; beyond that the extra
-/// draft's marginal value falls and it is just latency/cost.
-const SELF_FILL_TARGET_WORKERS: usize = 2;
-
-/// When only one model resolved, add extra reachable *nodes* serving that same
-/// model as additional workers, up to [`SELF_FILL_TARGET_WORKERS`].
-///
-/// Only genuinely distinct remote endpoints are added — never the local backend
-/// again and never the same peer twice — so each added worker is real capacity
-/// from a node that joined the mesh. This is what makes a same-model mesh get
-/// MoA at all; without it `build_moa_config` returns None for such a mesh.
-async fn self_fill_from_extra_instances(
-    node: &mesh::Node,
-    targets: Option<&election::ModelTargets>,
-    required_tokens: Option<u32>,
-    http: &reqwest::Client,
-    backends: &mut Vec<std::sync::Arc<dyn moa::ModelBackend>>,
-    models: &mut Vec<moa::ModelEntry>,
-) {
-    let Some(existing) = models.first().cloned() else {
-        return;
-    };
-    let name = existing.name.clone();
-
-    // Rebuild the pool from DISTINCT physical endpoints serving this model:
-    // the local skippy port (if this node serves it and context fits) plus
-    // each distinct remote peer. `hosts_for_model` returns distinct peers, and
-    // the local endpoint is a different physical box from any of them, so no
-    // endpoint can appear twice.
-    //
-    // Iron law: a single physical endpoint must NEVER become a fake 2-worker
-    // committee. If fewer than two distinct endpoints serve the model, leave
-    // the pool as a genuine one-worker Mesh gateway.
-    let mut endpoints: Vec<std::sync::Arc<dyn moa::ModelBackend>> = Vec::new();
-
-    if let Some(port) = targets.and_then(|t| {
-        t.targets.get(&name).and_then(|tv| {
-            tv.iter().find_map(|t| match t {
-                election::InferenceTarget::Local(p) => Some(*p),
-                _ => None,
-            })
-        })
-    }) {
-        let context_length = node.local_model_context_length(&name).await;
-        if context_selection::context_can_satisfy(required_tokens, context_length) {
-            endpoints.push(std::sync::Arc::new(LocalModelBackend {
-                port,
-                http: http.clone(),
-            }));
-        }
-    }
-
-    for peer_id in node.hosts_for_model(&name).await {
-        if endpoints.len() >= SELF_FILL_TARGET_WORKERS {
-            break;
-        }
-        endpoints.push(std::sync::Arc::new(RemoteModelBackend {
-            node: node.clone(),
-            peer_id,
-        }));
-    }
-
-    if endpoints.len() < 2 {
-        return; // single physical endpoint -> stay single-model (iron law)
-    }
-    endpoints.truncate(SELF_FILL_TARGET_WORKERS);
-
-    tracing::info!(
-        "MoA: self-fill formed a {}-worker committee for {name} from distinct endpoints",
-        endpoints.len()
-    );
-    *backends = endpoints;
-    // Every entry is the same model on a different endpoint, so they all carry
-    // the size the original entry resolved.
-    *models = (0..backends.len())
-        .map(|i| moa::ModelEntry {
-            backend_index: i,
-            ..existing.clone()
-        })
-        .collect();
 }
 
 /// Drop small-tier workers when any big-tier worker is present.
@@ -641,28 +653,45 @@ pub(super) async fn compute_actor_candidates(
             .or_insert(level);
     }
 
+    let routing_hints = model_routing_hints(node).await;
     let mut ranked: Vec<usize> = (0..models.len()).collect();
     ranked.sort_by(|&a, &b| {
         let ma = &models[a];
         let mb = &models[b];
+        let base_a = canonical_base_name(&ma.name);
+        let base_b = canonical_base_name(&mb.name);
         let tool_a = tool_use_by_base
-            .get(&canonical_base_name(&ma.name))
+            .get(&base_a)
             .copied()
             .unwrap_or(crate::models::CapabilityLevel::None);
         let tool_b = tool_use_by_base
-            .get(&canonical_base_name(&mb.name))
+            .get(&base_b)
             .copied()
             .unwrap_or(crate::models::CapabilityLevel::None);
+        let (availability_a, throughput_a) = routing_hints
+            .get(&base_a)
+            .copied()
+            .unwrap_or((AvailabilityRank::Healthy, None));
+        let (availability_b, throughput_b) = routing_hints
+            .get(&base_b)
+            .copied()
+            .unwrap_or((AvailabilityRank::Healthy, None));
         // 1) higher tool_use first
         tool_b
             .cmp(&tool_a)
-            // 2) big-tier before small-tier
+            // 2) healthy before explicitly deprioritized. This is deliberately
+            // ahead of size so a healthy local/small model can absorb spillover.
+            .then_with(|| availability_a.cmp(&availability_b))
+            // 3) big-tier before small-tier when health is equal
             .then_with(|| {
                 let small_a = moa::entry_is_small_tier(ma);
                 let small_b = moa::entry_is_small_tier(mb);
                 small_a.cmp(&small_b) // false (big) sorts before true (small)
             })
-            // 3) stable index order
+            // 4) faster advertised service rate within the same health/tier.
+            // This is a historical capability hint, not live load pressure.
+            .then_with(|| throughput_b.cmp(&throughput_a))
+            // 5) stable index order
             .then_with(|| a.cmp(&b))
     });
     ranked

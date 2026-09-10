@@ -1,3 +1,4 @@
+use super::loading::stage_health_ticks;
 use super::recovery::{
     SplitLossRecoveryDecision, SplitWithdrawGraceAction,
     split_active_stage_nodes_pending_eligibility, split_connected_node_ids,
@@ -24,6 +25,7 @@ use crate::runtime::local_package::{
 use crate::runtime::survey;
 use anyhow::Result;
 use skippy_protocol::FlashAttentionType;
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::Duration;
 use std::time::Instant;
@@ -42,6 +44,9 @@ pub(super) struct SplitTopologyGeneration {
     pub(super) lease_until_unix_ms: u64,
     pub(super) participants: Vec<SplitParticipant>,
     pub(super) stages: Vec<RuntimeSliceStagePlan>,
+    pub(super) admissions: BTreeMap<String, skippy_protocol::StageAdmissionDescriptor>,
+    pub(super) activation_codec: skippy_protocol::StageActivationCodec,
+    pub(super) activation_codec_policy: skippy_protocol::StageActivationCodecPolicy,
 }
 
 impl SplitTopologyGeneration {
@@ -60,7 +65,44 @@ impl SplitTopologyGeneration {
             lease_until_unix_ms: split_coordinator_lease_until_unix_ms(),
             participants,
             stages,
+            admissions: BTreeMap::new(),
+            activation_codec: skippy_protocol::StageActivationCodec::default(),
+            // New split generations negotiate a lossless codec per realized
+            // activation frame. RawF32 remains the mandatory fallback, so
+            // frames only compact when their complete payload (including
+            // sidebands) round-trips exactly through BF16 or F16.
+            activation_codec_policy: skippy_protocol::StageActivationCodecPolicy::AutoLosslessV1,
         }
+    }
+
+    pub(super) fn with_admissions(
+        mut self,
+        admissions: Vec<skippy_protocol::StageAdmissionDescriptor>,
+    ) -> Result<Self> {
+        anyhow::ensure!(
+            admissions.len() == self.stages.len(),
+            "stage admission count differs from topology stage count"
+        );
+        for (stage, admission) in self.stages.iter().zip(admissions) {
+            anyhow::ensure!(
+                admission.layer_start == stage.layer_start
+                    && admission.layer_end == stage.layer_end,
+                "stage {} admission range differs from its topology placement",
+                stage.stage_id
+            );
+            let proto: skippy_protocol::proto::stage::StageAdmissionDescriptor =
+                admission.clone().into();
+            skippy_protocol::validate_stage_admission_descriptor(&proto)
+                .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+            anyhow::ensure!(
+                self.admissions
+                    .insert(stage.stage_id.clone(), admission)
+                    .is_none(),
+                "topology contains duplicate stage id {}",
+                stage.stage_id
+            );
+        }
+        Ok(self)
     }
 }
 
@@ -70,7 +112,10 @@ pub(super) struct SplitTopologyCoordinator {
     pub(super) model_name: String,
     pub(super) model_path: PathBuf,
     pub(super) model_ref: String,
+    pub(super) config_model_id: Option<String>,
+    pub(super) runtime_profile: String,
     pub(super) package: skippy::SkippyPackageIdentity,
+    pub(super) compact_meta: crate::models::gguf::GgufCompactMeta,
     pub(super) active: SplitTopologyGeneration,
     pub(super) projector_path: Option<String>,
     pub(super) ctx_size: u32,
@@ -81,7 +126,9 @@ pub(super) struct SplitTopologyCoordinator {
     pub(super) n_ubatch_override: Option<u32>,
     pub(super) flash_attention_override: FlashAttentionType,
     pub(super) openai_guardrail_policy: OpenAiGuardrailPolicyHandle,
+    pub(super) capacity_budget_bytes: Option<u64>,
     pub(super) pinned_gpu: Option<crate::runtime::StartupPinnedGpuTarget>,
+    pub(super) device_override: Option<String>,
     pub(super) slots: usize,
     pub(super) skippy_telemetry: skippy::SkippyTelemetryOptions,
     pub(super) survey_telemetry: survey::SurveyTelemetry,
@@ -92,6 +139,8 @@ pub(super) struct SplitTopologyCoordinator {
     /// A locked topology may be withdrawn after stage loss, but never replaced
     /// or collapsed to a local fallback.
     pub(super) topology_locked: bool,
+    pub(super) local_source_required: bool,
+    pub(super) health_interval: Duration,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -109,7 +158,7 @@ pub(super) fn spawn_split_topology_coordinator(
 impl SplitTopologyCoordinator {
     async fn run(mut self) {
         let mut peer_rx = self.node.peer_change_rx.clone();
-        let mut health_tick = tokio::time::interval(Duration::from_secs(30));
+        let mut health_tick = stage_health_ticks(self.health_interval);
         health_tick.tick().await;
         tracing::info!(
             model_ref = self.model_ref,
@@ -154,14 +203,20 @@ impl SplitTopologyCoordinator {
     }
 
     async fn evaluate_replan(&mut self, reason: &'static str) -> bool {
+        let local_capacity_override = split_replan_local_capacity_override(
+            self.capacity_budget_bytes,
+            self.pinned_gpu
+                .as_ref()
+                .map(|gpu| gpu.allocatable_vram_bytes()),
+        );
         let snapshot = collect_split_participants(
             &self.node,
             &self.model_name,
             &self.model_ref,
+            &self.runtime_profile,
             &self.package,
-            self.pinned_gpu
-                .as_ref()
-                .map(|gpu| gpu.allocatable_vram_bytes()),
+            local_capacity_override,
+            self.local_source_required,
         )
         .await;
         let connected_node_ids = split_connected_node_ids(&self.node).await;
@@ -573,7 +628,7 @@ impl SplitTopologyCoordinator {
         let resources = SplitTopologyResourceInputs {
             ctx_size_override: Some(self.ctx_size),
             parallel_override: Some(self.slots),
-            ..self.topology_resources
+            ..self.topology_resources.clone()
         };
         let planned = plan_runtime_slice_topology_with_resources(
             &topology_id,
@@ -583,27 +638,31 @@ impl SplitTopologyCoordinator {
             &[],
             resources,
         )?;
+        let admissions = super::realize_split_stage_admissions(
+            &self.model_path,
+            &self.model_ref,
+            &self.package,
+            &planned,
+            &self.runtime_profile,
+        )?;
         let stages = planned.stages;
         let participants = split_participants_for_stages(planned_participants, &stages);
         anyhow::ensure!(
             split_stages_meet_minimum(&stages),
             "split runtime needs at least two stage participants"
         );
-        Ok(SplitTopologyGeneration::new(
-            topology_id,
-            run_id,
-            generation,
-            participants,
-            stages,
-        ))
+        SplitTopologyGeneration::new(topology_id, run_id, generation, participants, stages)
+            .with_admissions(admissions)
     }
 
     fn local_model_fits(&self) -> bool {
-        let local_capacity = self
-            .pinned_gpu
-            .as_ref()
-            .map(|gpu| gpu.allocatable_vram_bytes())
-            .unwrap_or_else(|| self.node.vram_bytes());
+        let local_capacity = split_replan_local_capacity_override(
+            self.capacity_budget_bytes,
+            self.pinned_gpu
+                .as_ref()
+                .map(|gpu| gpu.allocatable_vram_bytes()),
+        )
+        .unwrap_or_else(|| self.node.vram_bytes());
         // Use the package's source model bytes when available — layer-package
         // refs use `hf://` pseudo-paths that `total_model_bytes` cannot stat.
         let model_bytes = if self.package.source_model_bytes > 0 {
@@ -624,11 +683,15 @@ impl SplitTopologyCoordinator {
             node: &self.node,
             mesh_config: &self.mesh_config,
             model_ref: &self.model_ref,
+            config_model_id: self.config_model_id.as_deref(),
+            runtime_profile: &self.runtime_profile,
             model_path: &self.model_path,
             package: &self.package,
             generation: &candidate,
             projector_path: self.projector_path.clone(),
             ctx_size: self.ctx_size,
+            compact_meta: &self.compact_meta,
+            capacity_budget_bytes: self.capacity_budget_bytes,
             cache_type_k_override: self.cache_type_k_override.as_deref(),
             cache_type_v_override: self.cache_type_v_override.as_deref(),
             n_batch_override: self.n_batch_override,
@@ -636,10 +699,12 @@ impl SplitTopologyCoordinator {
             flash_attention_override: self.flash_attention_override,
             openai_guardrail_policy: self.openai_guardrail_policy.clone(),
             pinned_gpu: self.pinned_gpu.as_ref(),
+            device_override: self.device_override.as_deref(),
             slots: self.slots,
             skippy_telemetry: self.skippy_telemetry.clone(),
             survey_telemetry: self.survey_telemetry.clone(),
             serving_hooks_factory: None,
+            local_source_required: self.local_source_required,
         })
         .await?;
         let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
@@ -723,6 +788,15 @@ impl SplitTopologyCoordinator {
             Err(_) => anyhow::bail!("runtime loop dropped split topology withdrawal ack"),
         }
     }
+}
+
+pub(super) fn split_replan_local_capacity_override(
+    capacity_budget_bytes: Option<u64>,
+    pinned_gpu_capacity_bytes: Option<u64>,
+) -> Option<u64> {
+    capacity_budget_bytes
+        .filter(|bytes| *bytes > 0)
+        .or(pinned_gpu_capacity_bytes)
 }
 
 fn split_candidate_stage0_is_local(

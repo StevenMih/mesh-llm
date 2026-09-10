@@ -122,6 +122,7 @@ mod tests {
                 status_code: 200,
                 usage: None,
                 output_digests: Default::default(),
+                cache_cost: None,
             },
             RouteAttemptResult::RetryableTimeout,
             RouteAttemptResult::RetryableUnavailable,

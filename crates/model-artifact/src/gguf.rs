@@ -251,6 +251,29 @@ fn read_gguf_value_as_bool(f: &mut std::fs::File, typ: GgufType) -> std::io::Res
     Ok(read_gguf_value_as_u32(f, typ)?.map(|value| value != 0))
 }
 
+fn read_gguf_value_as_bool_list(
+    f: &mut std::fs::File,
+    typ: GgufType,
+) -> std::io::Result<Option<Vec<bool>>> {
+    if typ != GgufType::Array {
+        return Ok(read_gguf_value_as_bool(f, typ)?.map(|value| vec![value]));
+    }
+
+    let elem_type = GgufType::from_u32(read_u32(f)?)
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "bad array type"))?;
+    let count = read_bounded_len(f, MAX_GGUF_ARRAY_ELEMENTS, "array")?;
+    let mut values = Vec::with_capacity(count);
+    let mut supported = true;
+    for _ in 0..count {
+        match read_gguf_value_as_bool(f, elem_type)? {
+            Some(value) if supported => values.push(value),
+            Some(_) => {}
+            None => supported = false,
+        }
+    }
+    Ok(supported.then_some(values))
+}
+
 fn read_gguf_value_as_string_opt(
     f: &mut std::fs::File,
     typ: GgufType,
@@ -278,6 +301,17 @@ pub struct GgufCompactMeta {
     pub feed_forward_length: u32,
     pub key_length: u32,
     pub value_length: u32,
+    /// Per-head key width used by sliding-window-attention layers
+    /// (`<arch>.attention.key_length_swa`), when the GGUF carries one.
+    /// llama.cpp's `n_embd_head_k(il)` returns this width for SWA layers and
+    /// the full width otherwise, and the quantised-KV block-alignment check
+    /// runs per layer — so both widths must be aligned for a quantised
+    /// cache to load. `0` means the key was absent (llama.cpp then uses the
+    /// full width for SWA layers too).
+    pub key_length_swa: u32,
+    /// Per-head value width used by SWA layers
+    /// (`<arch>.attention.value_length_swa`); see `key_length_swa`.
+    pub value_length_swa: u32,
     pub kv_lora_rank: u32,
     pub tokenizer_model_name: String,
     pub rope_scale: f32,
@@ -285,6 +319,12 @@ pub struct GgufCompactMeta {
     pub expert_count: u32,
     pub expert_used_count: u32,
     pub nextn_predict_layers: u32,
+    pub ssm_conv_kernel: u32,
+    pub ssm_inner_size: u32,
+    pub ssm_state_size: u32,
+    pub ssm_group_count: u32,
+    pub recurrent_layers: Vec<bool>,
+    pub full_attention_interval: u32,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -294,6 +334,16 @@ pub struct GgufProjectorMeta {
 }
 
 impl GgufCompactMeta {
+    /// Number of decoder layers executed by the primary model graph.
+    ///
+    /// GGUF `block_count` includes appended NextN/MTP draft blocks, while
+    /// llama.cpp's `n_layer()` excludes them. Stage ranges must use the same
+    /// executable trunk count as llama.cpp.
+    pub fn executable_layer_count(&self) -> Option<u32> {
+        let layer_count = self.layer_count.checked_sub(self.nextn_predict_layers)?;
+        (layer_count > 0).then_some(layer_count)
+    }
+
     pub fn effective_kv_head_count(&self) -> Option<u32> {
         if self.kv_head_count > 0 {
             Some(self.kv_head_count)
@@ -306,6 +356,119 @@ impl GgufCompactMeta {
         } else {
             None
         }
+    }
+
+    /// Whether metadata proves that every layer is recurrent and allocates no
+    /// attention KV cache.
+    ///
+    /// Zero head counts alone are not enough: malformed dense GGUF metadata
+    /// can omit the same fields. Require positive recurrent state allocation,
+    /// a complete all-recurrent layer mask, and no residual attention widths
+    /// or MLA rank before topology planning may price KV bytes as zero.
+    pub fn has_only_recurrent_layers_without_kv_cache(&self) -> bool {
+        let layer_count = self.layer_count as usize;
+        if layer_count == 0
+            || self.ssm_inner_size == 0
+            || (self.ssm_state_size == 0 && self.ssm_conv_kernel <= 1)
+            || self.head_count != 0
+            || self.kv_head_count != 0
+            || self.kv_head_counts.iter().any(|count| *count != 0)
+            || self.key_length != 0
+            || self.value_length != 0
+            || self.kv_lora_rank != 0
+        {
+            return false;
+        }
+
+        let recurrent_layers = self.recurrent_layer_mask();
+        let recurrent_bytes = self.recurrent_bytes_per_configured_lane_by_layer();
+        recurrent_layers.len() == layer_count
+            && recurrent_layers.into_iter().all(|recurrent| recurrent)
+            && recurrent_bytes.len() == layer_count
+            && recurrent_bytes.into_iter().all(|bytes| bytes > 0)
+    }
+
+    /// F32 recurrent-state bytes allocated for one native sequence, per layer.
+    ///
+    /// Skippy enables two rollback snapshots for recurrent/hybrid runtimes, so
+    /// each live native sequence owns three state planes (current + two
+    /// snapshots). Attention-only layers report zero.
+    pub fn recurrent_bytes_per_native_sequence_by_layer(&self) -> Vec<u64> {
+        const F32_BYTES: u64 = 4;
+        const RECURRENT_STATE_PLANES: u64 = 3;
+
+        let conv_width = u64::from(self.ssm_conv_kernel.saturating_sub(1));
+        let inner = u64::from(self.ssm_inner_size);
+        let state = u64::from(self.ssm_state_size);
+        let groups = u64::from(self.ssm_group_count);
+        let rolling = conv_width
+            .saturating_mul(inner.saturating_add(groups.saturating_mul(state).saturating_mul(2)));
+        let state = state.saturating_mul(inner);
+        let bytes = rolling
+            .saturating_add(state)
+            .saturating_mul(F32_BYTES)
+            .saturating_mul(RECURRENT_STATE_PLANES);
+
+        self.recurrent_layer_mask()
+            .into_iter()
+            .map(|recurrent| if recurrent { bytes } else { 0 })
+            .collect()
+    }
+
+    /// Recurrent bytes charged by topology planning for one configured lane.
+    /// Native recurrent runtimes reserve two sequence slots per lane.
+    pub fn recurrent_bytes_per_configured_lane_by_layer(&self) -> Vec<u64> {
+        const NATIVE_SEQUENCES_PER_LANE: u64 = 2;
+        self.recurrent_bytes_per_native_sequence_by_layer()
+            .into_iter()
+            .map(|bytes| bytes.saturating_mul(NATIVE_SEQUENCES_PER_LANE))
+            .collect()
+    }
+
+    fn recurrent_layer_mask(&self) -> Vec<bool> {
+        let layer_count = self.layer_count as usize;
+        if self.recurrent_layers.len() == layer_count {
+            return self.recurrent_layers.clone();
+        }
+
+        let has_recurrent_state = self.ssm_conv_kernel > 0
+            || self.ssm_inner_size > 0
+            || self.ssm_state_size > 0
+            || self.ssm_group_count > 0;
+        if !has_recurrent_state {
+            return vec![false; layer_count];
+        }
+
+        // Hybrid GGUFs can expose a per-layer KV-head count. Recurrent layers
+        // have no attention KV heads, so this is an architecture-independent
+        // state mask.
+        if self.kv_head_counts.len() == layer_count {
+            let mask = self
+                .kv_head_counts
+                .iter()
+                .map(|count| *count == 0)
+                .collect::<Vec<_>>();
+            if mask.iter().any(|recurrent| *recurrent) {
+                return mask;
+            }
+        }
+
+        // Some models expose a generic full-attention cadence rather than an
+        // explicit mask. Mirror llama.cpp's `%s.full_attention_interval`
+        // contract: layers are one-based at the cadence boundary, so every
+        // `interval`th layer is full attention and the intervening layers are
+        // recurrent. This is metadata-driven and does not name model families.
+        if self.full_attention_interval > 0 {
+            let interval = self.full_attention_interval as usize;
+            return (0..layer_count)
+                .map(|layer| (layer + 1) % interval != 0)
+                .collect();
+        }
+
+        // With recurrent state dimensions but no layer-level discriminator,
+        // charge every layer. Overestimating resource use is safer than
+        // silently omitting native recurrent state.
+        vec![true; layer_count]
     }
 }
 
@@ -431,9 +594,17 @@ pub fn scan_gguf_compact_meta(path: &Path) -> Option<GgufCompactMeta> {
             if let Ok(Some(v)) = read_gguf_value_as_u32(&mut f, vtype) {
                 meta.key_length = v;
             }
+        } else if key.ends_with(".attention.key_length_swa") {
+            if let Ok(Some(v)) = read_gguf_value_as_u32(&mut f, vtype) {
+                meta.key_length_swa = v;
+            }
         } else if key.ends_with(".attention.value_length") {
             if let Ok(Some(v)) = read_gguf_value_as_u32(&mut f, vtype) {
                 meta.value_length = v;
+            }
+        } else if key.ends_with(".attention.value_length_swa") {
+            if let Ok(Some(v)) = read_gguf_value_as_u32(&mut f, vtype) {
+                meta.value_length_swa = v;
             }
         } else if key.ends_with(".attention.kv_lora_rank") {
             if let Ok(Some(v)) = read_gguf_value_as_u32(&mut f, vtype) {
@@ -462,6 +633,30 @@ pub fn scan_gguf_compact_meta(path: &Path) -> Option<GgufCompactMeta> {
         } else if key.ends_with(".nextn_predict_layers") {
             if let Ok(Some(v)) = read_gguf_value_as_u32(&mut f, vtype) {
                 meta.nextn_predict_layers = v;
+            }
+        } else if key.ends_with(".ssm.conv_kernel") {
+            if let Ok(Some(v)) = read_gguf_value_as_u32(&mut f, vtype) {
+                meta.ssm_conv_kernel = v;
+            }
+        } else if key.ends_with(".ssm.inner_size") {
+            if let Ok(Some(v)) = read_gguf_value_as_u32(&mut f, vtype) {
+                meta.ssm_inner_size = v;
+            }
+        } else if key.ends_with(".ssm.state_size") {
+            if let Ok(Some(v)) = read_gguf_value_as_u32(&mut f, vtype) {
+                meta.ssm_state_size = v;
+            }
+        } else if key.ends_with(".ssm.group_count") {
+            if let Ok(Some(v)) = read_gguf_value_as_u32(&mut f, vtype) {
+                meta.ssm_group_count = v;
+            }
+        } else if key.ends_with(".attention.recurrent_layers") {
+            if let Ok(Some(values)) = read_gguf_value_as_bool_list(&mut f, vtype) {
+                meta.recurrent_layers = values;
+            }
+        } else if key.ends_with(".full_attention_interval") {
+            if let Ok(Some(v)) = read_gguf_value_as_u32(&mut f, vtype) {
+                meta.full_attention_interval = v;
             }
         } else {
             skip_gguf_value(&mut f, vtype).ok()?;
@@ -868,6 +1063,13 @@ mod tests {
         bytes.push(u8::from(value));
     }
 
+    fn push_bool_array_kv(bytes: &mut Vec<u8>, key: &str, values: &[bool]) {
+        push_gguf_string(bytes, key);
+        bytes.extend_from_slice(&(GgufType::Array as u32).to_le_bytes());
+        push_array_header(bytes, GgufType::Bool, values.len() as u64);
+        bytes.extend(values.iter().map(|value| u8::from(*value)));
+    }
+
     fn push_u32_array_kv(bytes: &mut Vec<u8>, key: &str, values: &[u32]) {
         push_gguf_string(bytes, key);
         bytes.extend_from_slice(&(GgufType::Array as u32).to_le_bytes());
@@ -875,6 +1077,153 @@ mod tests {
         for value in values {
             bytes.extend_from_slice(&value.to_le_bytes());
         }
+    }
+
+    #[test]
+    fn compact_meta_prices_recurrent_state_per_layer_and_native_lane_multiplier() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"GGUF");
+        bytes.extend_from_slice(&2u32.to_le_bytes());
+        bytes.extend_from_slice(&0i64.to_le_bytes());
+        bytes.extend_from_slice(&7i64.to_le_bytes());
+        push_gguf_string(&mut bytes, "general.architecture");
+        bytes.extend_from_slice(&(GgufType::String as u32).to_le_bytes());
+        push_gguf_string(&mut bytes, "qwen3next");
+        push_u32_kv(&mut bytes, "qwen3next.block_count", 4);
+        push_u32_kv(&mut bytes, "qwen3next.ssm.conv_kernel", 4);
+        push_u32_kv(&mut bytes, "qwen3next.ssm.inner_size", 2048);
+        push_u32_kv(&mut bytes, "qwen3next.ssm.state_size", 128);
+        push_u32_kv(&mut bytes, "qwen3next.ssm.group_count", 16);
+        push_bool_array_kv(
+            &mut bytes,
+            "qwen3next.attention.recurrent_layers",
+            &[true, true, true, false],
+        );
+
+        let path = write_bytes("model-artifact-gguf-recurrent", &bytes);
+        let meta = scan_gguf_compact_meta(&path).expect("should parse recurrent metadata");
+        let native = meta.recurrent_bytes_per_native_sequence_by_layer();
+        let base_elements = 3u64 * (2048 + 2 * 16 * 128) + 128 * 2048;
+        let expected = base_elements * 4 * 3;
+        assert_eq!(native, vec![expected, expected, expected, 0]);
+        assert_eq!(
+            meta.recurrent_bytes_per_configured_lane_by_layer(),
+            vec![expected * 2, expected * 2, expected * 2, 0]
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn recurrent_mask_uses_per_layer_metadata_for_unknown_architecture() {
+        let meta = GgufCompactMeta {
+            architecture: "future_hybrid_arch".to_string(),
+            layer_count: 4,
+            kv_head_counts: vec![0, 8, 0, 8],
+            ssm_inner_size: 128,
+            ..Default::default()
+        };
+
+        assert_eq!(meta.recurrent_layer_mask(), vec![true, false, true, false]);
+    }
+
+    #[test]
+    fn recurrent_mask_does_not_treat_scalar_kv_heads_as_a_layer_discriminator() {
+        let composite = GgufCompactMeta {
+            architecture: "future_composite_arch".to_string(),
+            layer_count: 4,
+            kv_head_count: 8,
+            kv_head_counts: vec![8; 4],
+            ssm_state_size: 64,
+            ..Default::default()
+        };
+
+        assert_eq!(composite.recurrent_layer_mask(), vec![true; 4]);
+    }
+
+    #[test]
+    fn recurrent_mask_fails_safe_without_family_knowledge() {
+        let recurrent = GgufCompactMeta {
+            architecture: "future_recurrent_arch".to_string(),
+            layer_count: 3,
+            ssm_state_size: 64,
+            ..Default::default()
+        };
+        let dense = GgufCompactMeta {
+            architecture: "future_dense_arch".to_string(),
+            layer_count: 3,
+            ..Default::default()
+        };
+
+        assert_eq!(recurrent.recurrent_layer_mask(), vec![true; 3]);
+        assert_eq!(dense.recurrent_layer_mask(), vec![false; 3]);
+    }
+
+    #[test]
+    fn pure_recurrent_metadata_proves_zero_kv_without_family_knowledge() {
+        let pure_recurrent = GgufCompactMeta {
+            architecture: "future_recurrent_arch".to_string(),
+            layer_count: 3,
+            ssm_conv_kernel: 4,
+            ssm_inner_size: 1536,
+            ssm_state_size: 16,
+            ..Default::default()
+        };
+        let dense_missing_heads = GgufCompactMeta {
+            architecture: "future_dense_arch".to_string(),
+            layer_count: 3,
+            ..Default::default()
+        };
+        let hybrid = GgufCompactMeta {
+            architecture: "future_hybrid_arch".to_string(),
+            layer_count: 3,
+            head_count: 8,
+            kv_head_count: 2,
+            key_length: 64,
+            value_length: 64,
+            ssm_conv_kernel: 4,
+            ssm_inner_size: 1536,
+            ssm_state_size: 16,
+            recurrent_layers: vec![true, false, true],
+            ..Default::default()
+        };
+
+        assert!(pure_recurrent.has_only_recurrent_layers_without_kv_cache());
+        assert!(!dense_missing_heads.has_only_recurrent_layers_without_kv_cache());
+        assert!(!hybrid.has_only_recurrent_layers_without_kv_cache());
+    }
+
+    #[test]
+    fn zero_kv_proof_rejects_residual_attention_metadata() {
+        let mut meta = GgufCompactMeta {
+            architecture: "future_recurrent_arch".to_string(),
+            layer_count: 3,
+            ssm_conv_kernel: 4,
+            ssm_inner_size: 1536,
+            ssm_state_size: 16,
+            ..Default::default()
+        };
+
+        meta.key_length = 64;
+        assert!(!meta.has_only_recurrent_layers_without_kv_cache());
+        meta.key_length = 0;
+        meta.kv_head_counts = vec![0, 1, 0];
+        assert!(!meta.has_only_recurrent_layers_without_kv_cache());
+    }
+
+    #[test]
+    fn recurrent_mask_uses_llama_one_based_full_attention_cadence() {
+        let meta = GgufCompactMeta {
+            architecture: "future_hybrid_arch".to_string(),
+            layer_count: 6,
+            full_attention_interval: 3,
+            ssm_state_size: 64,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            meta.recurrent_layer_mask(),
+            vec![true, true, false, true, true, false]
+        );
     }
 
     fn push_tokenizer_inventory_kvs(bytes: &mut Vec<u8>) {
@@ -1012,6 +1361,52 @@ mod tests {
     }
 
     #[test]
+    fn scan_gguf_compact_meta_records_swa_head_widths() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"GGUF");
+        bytes.extend_from_slice(&2u32.to_le_bytes());
+        bytes.extend_from_slice(&0i64.to_le_bytes());
+        bytes.extend_from_slice(&8i64.to_le_bytes());
+        push_u32_kv(&mut bytes, "llama.embedding_length", 4096);
+        push_u32_kv(&mut bytes, "llama.attention.head_count", 32);
+        push_u32_kv(&mut bytes, "llama.attention.head_count_kv", 8);
+        push_u32_kv(&mut bytes, "llama.block_count", 24);
+        push_u32_kv(&mut bytes, "llama.attention.key_length", 128);
+        push_u32_kv(&mut bytes, "llama.attention.value_length", 128);
+        push_u32_kv(&mut bytes, "llama.attention.key_length_swa", 96);
+        push_u32_kv(&mut bytes, "llama.attention.value_length_swa", 96);
+
+        let path = write_bytes("model-artifact-gguf-swa-widths", &bytes);
+        let meta = scan_gguf_compact_meta(&path).expect("should parse GGUF");
+        assert_eq!(meta.key_length, 128);
+        assert_eq!(meta.value_length, 128);
+        assert_eq!(meta.key_length_swa, 96);
+        assert_eq!(meta.value_length_swa, 96);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn scan_gguf_compact_meta_swa_widths_absent_by_default() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"GGUF");
+        bytes.extend_from_slice(&2u32.to_le_bytes());
+        bytes.extend_from_slice(&0i64.to_le_bytes());
+        bytes.extend_from_slice(&6i64.to_le_bytes());
+        push_u32_kv(&mut bytes, "llama.embedding_length", 4096);
+        push_u32_kv(&mut bytes, "llama.attention.head_count", 32);
+        push_u32_kv(&mut bytes, "llama.attention.head_count_kv", 8);
+        push_u32_kv(&mut bytes, "llama.block_count", 24);
+        push_u32_kv(&mut bytes, "llama.attention.key_length", 128);
+        push_u32_kv(&mut bytes, "llama.attention.value_length", 128);
+
+        let path = write_bytes("model-artifact-gguf-no-swa", &bytes);
+        let meta = scan_gguf_compact_meta(&path).expect("should parse GGUF");
+        assert_eq!(meta.key_length_swa, 0);
+        assert_eq!(meta.value_length_swa, 0);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
     fn scan_gguf_compact_meta_preserves_kv_lora_rank() {
         let mut bytes = Vec::new();
         bytes.extend_from_slice(b"GGUF");
@@ -1087,16 +1482,19 @@ mod tests {
         bytes.extend_from_slice(b"GGUF");
         bytes.extend_from_slice(&2u32.to_le_bytes());
         bytes.extend_from_slice(&0i64.to_le_bytes());
-        bytes.extend_from_slice(&2i64.to_le_bytes());
+        bytes.extend_from_slice(&3i64.to_le_bytes());
         push_gguf_string(&mut bytes, "general.architecture");
         bytes.extend_from_slice(&(GgufType::String as u32).to_le_bytes());
         push_gguf_string(&mut bytes, "deepseek2");
+        push_u32_kv(&mut bytes, "deepseek2.block_count", 53);
         push_u32_kv(&mut bytes, "deepseek2.nextn_predict_layers", 1);
 
         let path = write_bytes("model-artifact-gguf-nextn", &bytes);
         let meta = scan_gguf_compact_meta(&path).expect("should parse GGUF");
         assert_eq!(meta.architecture, "deepseek2");
+        assert_eq!(meta.layer_count, 53);
         assert_eq!(meta.nextn_predict_layers, 1);
+        assert_eq!(meta.executable_layer_count(), Some(52));
         let _ = std::fs::remove_file(path);
     }
 

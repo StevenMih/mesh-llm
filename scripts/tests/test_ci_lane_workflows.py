@@ -123,6 +123,13 @@ class CiLaneWorkflowTests(unittest.TestCase):
                     workflow,
                 )
 
+    def test_macos_runtime_configures_lld_before_building_packaged_tools(self) -> None:
+        workflow = self.workflow("ci-macos-runtime-slice.yml")
+        setup = "uses: ./.github/actions/setup-macos-lld"
+        prepare = "uses: ./.github/actions/prepare-native-runtime-input"
+        self.assertIn(setup, workflow)
+        self.assertLess(workflow.index(setup), workflow.index(prepare))
+
     def test_dispatched_lanes_pass_source_sha_only_to_product_workflows(
         self,
     ) -> None:
@@ -162,6 +169,7 @@ class CiLaneWorkflowTests(unittest.TestCase):
             "swift-sdk-artifact.yml",
             "smoke.yml",
             "scripted-binary-smoke.yml",
+            "product-integration-smoke.yml",
             "sdk-smoke.yml",
             "hf-download-smoke.yml",
         )
@@ -171,7 +179,10 @@ class CiLaneWorkflowTests(unittest.TestCase):
                 self.assertIn("source_sha:", workflow)
                 checkout_ref = (
                     "ref: ${{ inputs.source_sha }}"
-                    if workflow_name == "ci-windows-runtime-slice.yml"
+                    if workflow_name in (
+                        "ci-windows-runtime-slice.yml",
+                        "product-integration-smoke.yml",
+                    )
                     else "ref: ${{ inputs.source_sha || github.sha }}"
                 )
                 self.assertIn(
@@ -203,6 +214,40 @@ class CiLaneWorkflowTests(unittest.TestCase):
             self.assertIn(f'echo "{output}=$', action)
         for platform in ("linux", "macos", "windows"):
             self.assertIn(f'select(.platform == "{platform}")', action)
+        self.assertIn(
+            'smoke: [.matrices.smoke[] | select(.id != "metal-model-load")]',
+            action,
+        )
+        self.assertIn(
+            'smoke: [.matrices.smoke[] | select(.id == "metal-model-load")]',
+            action,
+        )
+
+    def test_pr_planner_uses_only_immutable_source_manifests(self) -> None:
+        action = (ROOT / ".github/actions/plan-ci/action.yml").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('[[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]', action)
+        self.assertIn('mktemp -d "$RUNNER_TEMP/mesh-ci-manifests.XXXXXX"', action)
+        self.assertIn(
+            'git archive --format=tar "$SOURCE_SHA" -- ci/ownership.yml ci/slices.yml',
+            action,
+        )
+        self.assertIn(
+            'git show "$SOURCE_SHA:ci/slices.yml" | cmp -s - ci/slices.yml',
+            action,
+        )
+        self.assertIn(
+            'git show "$SOURCE_SHA:ci/ownership.yml" | cmp -s - ci/ownership.yml',
+            action,
+        )
+        self.assertIn(
+            'python3 scripts/plan-ci.py --manifest-root "$manifest_root"',
+            action,
+        )
+        self.assertNotIn("git checkout", action)
+        self.assertNotIn('git archive --format=tar "$SOURCE_SHA" -- .', action)
 
     def test_topic_lane_projections_are_valid_jq(self) -> None:
         action = (ROOT / ".github/actions/plan-ci/action.yml").read_text(
@@ -271,12 +316,18 @@ class CiLaneWorkflowTests(unittest.TestCase):
         smoke_workflows = {
             "ci-linux-product-smoke-slice.yml": (
                 "core",
-                "core-cuda",
                 "two-node-client",
                 "two-node-split",
+                "product-integration-cpu",
+                "product-integration-cuda",
+                "qwen-recurrent-gate",
+                "core-cuda",
                 "model-download",
             ),
-            "ci-macos-product-smoke-slice.yml": ("metal-model-load",),
+            "ci-macos-product-smoke-slice.yml": (
+                "metal-model-load",
+                "product-integration-metal",
+            ),
         }
         for workflow_name, smoke_ids in smoke_workflows.items():
             workflow = self.workflow(workflow_name)

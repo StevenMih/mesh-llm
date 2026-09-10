@@ -369,6 +369,8 @@ publish_crates=(
     mesh-llm-skills
     mesh-llm-gpu-bench
     skippy-ffi
+    skippy-package-format
+    skippy-model
     skippy-protocol
     skippy-coordinator
     skippy-topology
@@ -395,6 +397,7 @@ publish_crates=(
     mesh-llm-native-runtime
     mesh-llm-hardware-profile
     skippy-runtime
+    skippy-scheduler
     openai-frontend
     skippy-server
     mesh-native-serving-plugin-host

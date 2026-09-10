@@ -4,6 +4,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/lib/cuda-toolkit.sh"
+
 BUILD=0
 OUT_DIR="$REPO_ROOT/dist/native-runtimes"
 BACKEND="${LLAMA_STAGE_BACKEND:-${SKIPPY_LLAMA_BACKEND:-cpu}}"
@@ -29,6 +32,8 @@ Environment:
   LLAMA_STAGE_AMDGPU_TARGETS / SKIPPY_AMDGPU_TARGETS
   LLAMA_STAGE_BUILD_DIR
   MESH_NATIVE_RUNTIME_TARGET
+  MESH_NATIVE_RUNTIME_MODEL_PACKAGE_TOOL (non-Windows test/packaging override)
+  MESH_CUDA_VERSION / MESH_LLM_CUDA_TOOLKIT_MAJOR (validated against the selected compiler)
   MESH_LLM_LLAMA_PIN_SHA
 EOF
 }
@@ -136,11 +141,15 @@ backend_flavor() {
     local cuda_major
     case "$BACKEND" in
         cuda)
-            cuda_major="$(cuda_toolkit_major)"
+            if ! cuda_major="$(cuda_toolkit_major)"; then
+                return 1
+            fi
             printf 'cuda%s\n' "$cuda_major"
             ;;
         cuda-blackwell)
-            cuda_major="$(cuda_toolkit_major)"
+            if ! cuda_major="$(cuda_toolkit_major)"; then
+                return 1
+            fi
             printf 'cuda%s-sm120\n' "$cuda_major"
             ;;
         rocm|hip) printf 'rocm\n' ;;
@@ -149,23 +158,12 @@ backend_flavor() {
 }
 
 cuda_toolkit_major() {
-    if [[ -n "${MESH_LLM_CUDA_TOOLKIT_MAJOR:-}" ]]; then
-        if [[ ! "$MESH_LLM_CUDA_TOOLKIT_MAJOR" =~ ^[0-9]+$ ]]; then
-            echo "MESH_LLM_CUDA_TOOLKIT_MAJOR must be digits-only (for example: 12)" >&2
-            exit 1
+    if [[ -z "$_mesh_cuda_toolkit_manifest_major_cache" ]]; then
+        if ! _mesh_cuda_toolkit_manifest_major_cache="$(cuda_toolkit_manifest_major)"; then
+            return 1
         fi
-        printf '%s\n' "$MESH_LLM_CUDA_TOOLKIT_MAJOR"
-        return 0
     fi
-    if [[ -n "${MESH_CUDA_VERSION:-}" ]]; then
-        printf '%s\n' "${MESH_CUDA_VERSION%%.*}"
-        return 0
-    fi
-    if [[ "$BACKEND" == "cuda-blackwell" ]]; then
-        printf '13\n'
-    else
-        printf '12\n'
-    fi
+    printf '%s\n' "$_mesh_cuda_toolkit_manifest_major_cache"
 }
 
 build_backend() {
@@ -260,6 +258,10 @@ gpu_benchmark_tool_path() {
     fi
 }
 
+model_package_tool_path() {
+    printf 'tools/skippy-model-package\n'
+}
+
 hip_offload_arch_args() {
     local raw arch
     local -a arches=()
@@ -289,7 +291,7 @@ build_gpu_benchmark_tool() {
 
     case "$BACKEND" in
         cuda|cuda-blackwell)
-            compiler="${NVCC:-${CUDACXX:-nvcc}}"
+            compiler="$(cuda_selected_compiler)"
             "$compiler" -O3 -std=c++17 "$source_root/cuda/membench-fingerprint.cu" -o "$tool_path"
             ;;
         rocm|hip)
@@ -312,6 +314,82 @@ build_gpu_benchmark_tool() {
     case "$runtime_os" in
         linux) patchelf --set-rpath "\$ORIGIN/../lib" "$tool_path" ;;
         macos) install_name_tool -add_rpath '@loader_path/../lib' "$tool_path" ;;
+    esac
+    chmod +x "$tool_path"
+    tool_paths+=("$tool_rel")
+}
+
+build_model_package_tool() {
+    # The package tool links against the staged Skippy DLLs. Windows native
+    # runtime producers do not have a robust import-library path for that
+    # dynamic link, and the current consumers do not need this offline tool.
+    # Keep Windows runtime artifacts limited to the established DLL producer
+    # path until an import-library mechanism is available.
+    if [[ "$runtime_os" == "windows" ]]; then
+        return 0
+    fi
+
+    local tool_rel tool_path source_path configured cargo_target_dir
+    local -a cargo_env=(
+        "LLAMA_STAGE_LINK_MODE=dynamic"
+        "LLAMA_STAGE_LIB_DIR=$stage_dir/lib"
+        "LLAMA_STAGE_BUILD_DIR=$LLAMA_STAGE_BUILD_DIR"
+        "LLAMA_STAGE_BACKEND=$(build_backend)"
+    )
+    tool_rel="$(model_package_tool_path)"
+    tool_path="$stage_dir/$tool_rel"
+    configured="${MESH_NATIVE_RUNTIME_MODEL_PACKAGE_TOOL:-}"
+    mkdir -p "$(dirname "$tool_path")"
+
+    if [[ -n "$configured" ]]; then
+        if [[ ! -x "$configured" ]]; then
+            echo "configured model package tool is not executable: $configured" >&2
+            exit 1
+        fi
+        source_path="$configured"
+    else
+        if [[ "$runtime_os" == "macos" ]]; then
+            if command -v ld64.lld >/dev/null 2>&1; then
+                # Cargo's encoded flags override the checked-in target
+                # rustflags, whose absolute `-fuse-ld=/path/to/ld64.lld`
+                # form is rejected by Apple clang. Prefer the portable LLD
+                # driver name when the producer installed it.
+                cargo_env+=("CARGO_ENCODED_RUSTFLAGS=-Clink-arg=-fuse-ld=lld")
+            else
+                # Protected reusable workflows may not include the repository
+                # setup action. An explicitly empty encoded flag set still
+                # overrides the non-portable checked-in target rustflags and
+                # lets Apple clang use the system linker.
+                cargo_env+=("CARGO_ENCODED_RUSTFLAGS=")
+            fi
+        fi
+        env "${cargo_env[@]}" \
+            cargo build --release --locked --target "$TARGET_TRIPLE" \
+                -p skippy-model-package
+        cargo_target_dir="$(
+            cargo metadata --no-deps --format-version 1 |
+                "$(python_bin)" -c 'import json, sys; print(json.load(sys.stdin)["target_directory"])'
+        )"
+        source_path="$cargo_target_dir/$TARGET_TRIPLE/release/$(basename "$tool_rel")"
+        if [[ ! -x "$source_path" ]]; then
+            echo "model package tool build did not produce $source_path" >&2
+            exit 1
+        fi
+    fi
+
+    cp "$source_path" "$tool_path"
+    case "$runtime_os" in
+        linux)
+            patchelf --set-rpath "\$ORIGIN/../lib" "$tool_path"
+            ;;
+        macos)
+            if ! otool -l "$tool_path" | awk '
+                $1 == "cmd" && $2 == "LC_RPATH" { in_rpath = 1; next }
+                in_rpath && $1 == "path" { print $2; in_rpath = 0 }
+            ' | grep -qx '@loader_path/../lib'; then
+                install_name_tool -add_rpath '@loader_path/../lib' "$tool_path"
+            fi
+            ;;
     esac
     chmod +x "$tool_path"
     tool_paths+=("$tool_rel")
@@ -436,7 +514,9 @@ fi
 platform="$(target_platform "$TARGET_TRIPLE")"
 runtime_os="$(target_runtime_os "$TARGET_TRIPLE")"
 runtime_arch="$(target_runtime_arch "$TARGET_TRIPLE")"
-flavor="$(backend_flavor)"
+if ! flavor="$(backend_flavor)"; then
+    exit 1
+fi
 artifact_id="meshllm-native-runtime-${platform}-${flavor}"
 stage_dir="$OUT_DIR/$artifact_id"
 
@@ -470,7 +550,11 @@ for library in "${runtime_libraries[@]}"; do
     library_paths+=("lib/$name")
 done
 
+rewrite_macos_runtime_paths
+rewrite_linux_runtime_paths
+
 build_gpu_benchmark_tool
+build_model_package_tool
 
 if [[ "$runtime_os" == "windows" ]]; then
     dependency_args=()
@@ -532,14 +616,18 @@ if [[ "$runtime_os" == "windows" ]]; then
     library_paths+=("lib/$primary_name")
 fi
 
-rewrite_macos_runtime_paths
-rewrite_linux_runtime_paths
-
 primary_library="lib/$primary_name"
 primary_sha="$(sha256_file "$stage_dir/$primary_library")"
 mesh_version="$(workspace_version)"
 abi_version="$(skippy_abi_version)"
-cuda_major="$(cuda_toolkit_major)"
+cuda_major=""
+case "$BACKEND" in
+    cuda|cuda-blackwell)
+        if ! cuda_major="$(cuda_toolkit_major)"; then
+            exit 1
+        fi
+        ;;
+esac
 
 patched_sha=""
 upstream_sha=""
@@ -679,7 +767,7 @@ EOF
 
 mkdir -p "$OUT_DIR"
 archive="$OUT_DIR/$artifact_id.tar.gz"
-tar -C "$OUT_DIR" -czf "$archive" "$artifact_id"
+COPYFILE_DISABLE=1 tar -C "$OUT_DIR" -czf "$archive" "$artifact_id"
 archive_sha="$(sha256_file "$archive")"
 printf '%s  %s\n' "$archive_sha" "$(basename "$archive")" > "$archive.sha256"
 

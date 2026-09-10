@@ -350,8 +350,6 @@ def inventory(args: argparse.Namespace) -> list[dict[str, Any]]:
                 "local_path": str(path) if path else None,
                 "download": "" if path else download_command(entry),
                 "notes": entry.get("notes", ""),
-                "wire_dtype": entry.get("wire_dtype"),
-                "wire_dtypes": entry.get("wire_dtypes"),
             }
             row["priority"] = row_priority(row, priorities)
             if path:
@@ -389,7 +387,9 @@ def print_table(rows: list[dict[str, Any]]) -> None:
         )
 
 
-def validate_inventory(rows: list[dict[str, Any]]) -> int:
+def validate_inventory(
+    rows: list[dict[str, Any]], llama_src: Path | None = None
+) -> int:
     failures = 0
     missing = [row for row in rows if row.get("status") == "missing_candidate"]
     if missing:
@@ -405,6 +405,7 @@ def validate_inventory(rows: list[dict[str, Any]]) -> int:
         "certified",
         "certified_package_only",
         "implementation_base",
+        "needs_boundary_registration",
         "needs_candidate",
         "needs_runtime_slice_support",
         "no_public_gguf_candidate",
@@ -426,85 +427,554 @@ def validate_inventory(rows: list[dict[str, Any]]) -> int:
                 file=sys.stderr,
             )
 
-    failures += validate_stage_abi_allowlist()
+    failures += validate_runtime_slice_admission()
+    failures += validate_boundary_registration(
+        rows, boundary_registered_models(llama_src)
+    )
+    failures += validate_model_pins(rows)
+    failures += validate_pin_manifest_join(rows)
 
     return failures
 
 
-def validate_stage_abi_allowlist() -> int:
-    llama_src = ROOT / ".deps/llama.cpp/src"
-    skippy_cpp = llama_src / "skippy.cpp"
-    arch_cpp = llama_src / "llama-arch.cpp"
-    models_dir = llama_src / "models"
-    if not skippy_cpp.exists() or not arch_cpp.exists() or not models_dir.is_dir():
-        return 0
+def validate_pin_manifest_join(rows: list[dict[str, Any]]) -> int:
+    """A parity model_pin must join an identical family-certified artifact.
 
-    def normalized(name: str) -> str:
-        return name.replace("_", "").replace("-", "")
-
-    arch_names: dict[str, str] = {}
-    for match in re.finditer(
-        r'\{\s*LLM_ARCH_([A-Z0-9_]+),\s+"([^"]+)"\s*\}',
-        arch_cpp.read_text(encoding="utf-8"),
-    ):
-        arch_names[match.group(1).lower()] = match.group(2)
-
-    allowed = {
-        arch_names.get(match.group(1).lower(), match.group(1).lower())
-        for match in re.finditer(
-            r"model->arch != LLM_ARCH_([A-Z0-9_]+)",
-            skippy_cpp.read_text(encoding="utf-8"),
-        )
-    }
-    if "gpt-oss" in allowed:
-        allowed.add("openai-moe")
-
-    stage_hooked = set()
-    for path in models_dir.glob("*.cpp"):
-        text = path.read_text(encoding="utf-8", errors="ignore")
-        if "skippy_graph_get_filter" in text and "stage_boundary" in text:
-            stage_hooked.add(path.stem)
-
-    # llama.cpp dispatches these architectures through another staged graph, or
-    # uses a model file name that differs from the architecture string.
-    stage_hooked.update(
-        {
-            "gpt-oss",
-            "deepseek2-ocr",
-            "mamba2",
-            "granite_moe",
-            "hunyuan_dense",
-            "phimoe",
-            "glm-dsa",
-            "lfm2moe",
-            "minicpm",
-            "mistral4",
-            "nemotron_h_moe",
-        }
-    )
-
-    allowed_by_norm = {normalized(name): name for name in allowed}
-    hooked_by_norm = {normalized(name): name for name in stage_hooked}
-    allowed_without_hook = sorted(set(allowed_by_norm) - set(hooked_by_norm))
-    hooked_but_not_allowed = sorted(set(hooked_by_norm) - set(allowed_by_norm))
+    The family-certified manifest's `file_integrity` is the certification
+    source of truth; a parity row that pins a model the certification
+    manifest does not know about (or disagrees with on repo, revision,
+    file, size, or blob sha256) fails closed. This keeps the two manifests
+    from drifting apart on the same immutable model.
+    """
+    certified_path = ROOT / "ci/llama-canary/family-certified.json"
+    try:
+        certified = json.loads(certified_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        print(f"cannot read {certified_path}: {error}", file=sys.stderr)
+        return 1
+    # (repo, revision, file) -> (selector, size_bytes, blob_sha256)
+    certified_index: dict[tuple[str, str, str], tuple[str, int, str]] = {}
+    for model in certified.get("models", []):
+        artifact = model.get("artifact") or {}
+        integrity = artifact.get("file_integrity") or {}
+        for file_name, record in integrity.items():
+            key = (artifact.get("repo", ""), artifact.get("revision", ""), file_name)
+            certified_index[key] = (
+                artifact.get("selector", ""),
+                record.get("size_bytes", -1),
+                record.get("blob_id", ""),
+            )
 
     failures = 0
-    if allowed_without_hook:
-        failures += len(allowed_without_hook)
+    for row in rows:
+        pin = row.get("model_pin")
+        if pin is None:
+            continue
+        key = (pin.get("repo", ""), pin.get("revision", ""), pin.get("file", ""))
+        record = certified_index.get(key)
+        if record is None:
+            failures += 1
+            print(
+                f"model_pin for {row['llama_model']} does not join any "
+                f"family-certified.json artifact: {key[0]}@{key[1][:12]} {key[2]}",
+                file=sys.stderr,
+            )
+            continue
+        selector, size, blob = record
+        if (
+            pin.get("selector") != selector
+            or pin.get("size_bytes") != size
+            or pin.get("blob_sha256") != blob
+        ):
+            failures += 1
+            print(
+                f"model_pin for {row['llama_model']} disagrees with "
+                f"family-certified.json selector/integrity for {key[2]}",
+                file=sys.stderr,
+            )
+    return failures
+
+
+def boundary_registered_models(llama_src: Path | None) -> set[str]:
+    """Model implementations that register stage block boundaries.
+
+    A model file counts as registered only when its comment-stripped
+    executable source contains real `begin_block(...)` and `end_block(...)`
+    call patterns (the per-layer boundary pair is always added in the same
+    edit per the llama-patch-changes skill). Bare name mentions — comments,
+    docs, or strings — cannot certify a family, and a file with only one
+    half of the pair cannot certify either.
+    """
+    source = llama_src or ROOT / ".deps/llama.cpp"
+    models_dir = source / "src/models"
+    if not models_dir.is_dir():
+        return set()
+    registered: set[str] = set()
+    for path in models_dir.glob("*.cpp"):
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        executable_text = executable_cpp(text)
+        if re.search(r"\bbegin_block\s*\(", executable_text) and re.search(
+            r"\bend_block\s*\(", executable_text
+        ):
+            registered.add(path.stem)
+    return registered
+
+
+def validate_model_pins(rows: list[dict[str, Any]]) -> int:
+    """Pinned model rows must be immutable — no floating refs.
+
+    A row that carries a `model_pin` (added when the repair lane registers a
+    new family's smallest runnable GGUF) must pin repo, 40-hex revision,
+    file name, byte size, and a 64-hex blob sha256, mirroring the
+    `file_integrity` schema of `ci/llama-canary/family-certified.json`.
+    """
+    failures = 0
+    for row in rows:
+        pin = row.get("model_pin")
+        if pin is None:
+            continue
+        repo = pin.get("repo")
+        revision = pin.get("revision")
+        file_name = pin.get("file")
+        size = pin.get("size_bytes")
+        blob = pin.get("blob_sha256")
+        problems = []
+        if not isinstance(repo, str) or "/" not in repo:
+            problems.append("repo must be an org/name string")
+        if not isinstance(revision, str) or not re.fullmatch(r"[0-9a-f]{40}", revision):
+            problems.append("revision must be a 40-hex commit sha")
+        if not isinstance(file_name, str) or not file_name.endswith(".gguf"):
+            problems.append("file must name a .gguf")
+        if not isinstance(size, int) or size <= 0:
+            problems.append("size_bytes must be a positive integer")
+        if not isinstance(blob, str) or not re.fullmatch(r"[0-9a-f]{64}", blob):
+            problems.append("blob_sha256 must be 64-hex")
+        if problems:
+            failures += 1
+            print(f"invalid model_pin for {row['llama_model']}: {problems}", file=sys.stderr)
+    return failures
+
+
+def validate_boundary_registration(
+    rows: list[dict[str, Any]],
+    registered: set[str],
+) -> int:
+    """Fail closed when a runnable family lacks boundary registration.
+
+    Rows whose llama model does not register `begin_block`/`end_block` must
+    carry an explicit `unsupported_reason` so the gap is classified rather
+    than silently certified. Only a non-runnable classification may carry a
+    reason: a runnable row (`certified`, `candidate`, `candidate_stateful`)
+    with `unsupported_reason` is an ambiguous manifest error regardless of
+    hook state.
+    """
+    failures = 0
+    for row in rows:
+        status = row.get("status")
+        if status not in {"certified", "candidate", "candidate_stateful"}:
+            continue
+        if status in {"certified", "candidate", "candidate_stateful"} and row.get(
+            "unsupported_reason"
+        ):
+            failures += 1
+            print(
+                f"runnable row carries unsupported_reason ({status}): "
+                f"{row['llama_model']}",
+                file=sys.stderr,
+            )
+            continue
+        if row["llama_model"] in registered:
+            continue
+        reason = row.get("unsupported_reason")
+        if not reason:
+            failures += 1
+            print(
+                f"runnable family lacks boundary registration and no unsupported_reason: "
+                f"{row['llama_model']} ({status})",
+                file=sys.stderr,
+            )
+    return failures
+
+
+def needs_boundary_registration_rows(
+    rows: list[dict[str, Any]], registered: set[str]
+) -> list[str]:
+    """Models whose rows must move to `needs_boundary_registration`."""
+    return sorted(
+        row["llama_model"]
+        for row in rows
+        if row.get("status") in {"certified", "candidate", "candidate_stateful"}
+        and row["llama_model"] not in registered
+        and not row.get("unsupported_reason")
+    )
+
+
+def coverage_expansion_target(
+    rows: list[dict[str, Any]], registered: set[str], llama_src: Path | None = None
+) -> dict[str, str] | None:
+    """Deterministically select ONE needs_boundary_registration family.
+
+    Each llama-bump/manual-full canary run hands the battery repair agent a
+    single coverage-expansion target (family + source file) so the queue is
+    worked down one family per run — never fanned out. Selection is
+    lexicographic over the classified rows, so it is stable across runs and
+    advances as families graduate. Returns None when no gaps remain.
+    """
+    source = llama_src or ROOT / ".deps/llama.cpp"
+    pending = sorted(
+        (
+            row
+            for row in rows
+            if row.get("status") == "needs_boundary_registration"
+            and not row.get("unsupported_reason")
+            # Skip rows whose hooks have already landed but whose manifest
+            # status is stale — those are reclassification bugs, not
+            # coverage work, and validate flags them separately.
+            and row["llama_model"] not in registered
+        ),
+        key=lambda row: (row["llama_model"], row.get("family", "")),
+    )
+    if not pending:
+        return None
+    row = pending[0]
+    model = row["llama_model"]
+    source_file = str(source / "src/models" / f"{model}.cpp")
+    return {
+        "llama_model": model,
+        "family": row.get("family", model.replace("-", "_")),
+        "source_file": source_file,
+        "status": row["status"],
+    }
+
+
+def executable_cpp(
+    source: str, preserved_string_literals: tuple[str, ...] = ()
+) -> str:
+    masked = list(source)
+    state = "code"
+    index = 0
+    while index < len(source):
+        char = source[index]
+        next_char = source[index + 1] if index + 1 < len(source) else ""
+        if state == "line-comment":
+            if char == "\n":
+                state = "code"
+            else:
+                masked[index] = " "
+        elif state == "block-comment":
+            masked[index] = "\n" if char == "\n" else " "
+            if char == "*" and next_char == "/":
+                masked[index + 1] = " "
+                state = "code"
+                index += 1
+        elif char == "/" and next_char == "/":
+            masked[index] = masked[index + 1] = " "
+            state = "line-comment"
+            index += 1
+        elif char == "/" and next_char == "*":
+            masked[index] = masked[index + 1] = " "
+            state = "block-comment"
+            index += 1
+        else:
+            raw_match = None
+            if index == 0 or not (source[index - 1].isalnum() or source[index - 1] == "_"):
+                raw_match = re.match(
+                    r'(?:u8|u|U|L)?R"([^ ()\\\t\r\n]{0,16})\(', source[index:]
+                )
+            if raw_match is not None:
+                delimiter = raw_match.group(1)
+                close = f'){delimiter}"'
+                end = source.find(close, index + raw_match.end())
+                end = len(source) if end < 0 else end + len(close)
+                for mask_index in range(index, end):
+                    if source[mask_index] != "\n":
+                        masked[mask_index] = " "
+                index = end - 1
+            elif char in {"'", '"'}:
+                quote = char
+                end = index + 1
+                while end < len(source):
+                    if source[end] == "\\":
+                        end += 2
+                        continue
+                    end += 1
+                    if source[end - 1] == quote:
+                        break
+                literal = source[index:end]
+                preserve = quote == '"' and literal in preserved_string_literals
+                if not preserve:
+                    for mask_index in range(index, min(end, len(source))):
+                        if source[mask_index] != "\n":
+                            masked[mask_index] = " "
+                index = end - 1
+        index += 1
+    return "".join(masked)
+
+
+def _skip_balanced(text: str, index: int, open_char: str, close_char: str) -> int:
+    depth = 0
+    while index < len(text):
+        if text[index] == open_char:
+            depth += 1
+        elif text[index] == close_char:
+            depth -= 1
+            if depth == 0:
+                return index + 1
+        index += 1
+    return index
+
+
+def has_unbraced_control_statement(executable_source: str) -> bool:
+    """Detect a depth-0 control statement whose body is not a braced block.
+
+    Braced control bodies are opaque to the failure-path checks once nested
+    blocks are masked, so they cannot conditionally expose a failure path (the
+    production guards emit failure events through exactly such a block). An
+    unbraced control statement leaves its single statement visible to the
+    ordered failure-path match while keeping it conditionally executed, so a
+    guard like `if (false) llama_model_free(model); ...` must be rejected.
+    """
+    keyword_pattern = re.compile(r"\b(?:if|for|while|switch|catch|do|try|else)\b")
+    index = 0
+    while True:
+        match = keyword_pattern.search(executable_source, index)
+        if match is None:
+            return False
+        cursor = match.end()
+        if match.group(0) == "else" and executable_source[cursor:].lstrip().startswith(
+            "if"
+        ):
+            # `else if` is validated through the nested `if` match.
+            index = cursor
+            continue
+        if match.group(0) not in {"do", "try", "else"}:
+            while cursor < len(executable_source) and executable_source[cursor].isspace():
+                cursor += 1
+            if cursor < len(executable_source) and executable_source[cursor] == "(":
+                cursor = _skip_balanced(executable_source, cursor, "(", ")")
+        while cursor < len(executable_source) and executable_source[cursor].isspace():
+            cursor += 1
+        if cursor >= len(executable_source) or executable_source[cursor] != "{":
+            return True
+        index = _skip_balanced(executable_source, cursor, "{", "}")
+
+
+def mask_nested_blocks(source: str) -> str:
+    masked = list(source)
+    depth = 0
+    state = "code"
+    index = 0
+    while index < len(source):
+        char = source[index]
+        if state in {"single-quote", "double-quote"}:
+            if depth > 0 and char != "\n":
+                masked[index] = " "
+            if char == "\\":
+                index += 1
+                if index < len(source) and depth > 0 and source[index] != "\n":
+                    masked[index] = " "
+            elif (state == "single-quote" and char == "'") or (
+                state == "double-quote" and char == '"'
+            ):
+                state = "code"
+        elif char == "'":
+            state = "single-quote"
+            if depth > 0:
+                masked[index] = " "
+        elif char == '"':
+            state = "double-quote"
+            if depth > 0:
+                masked[index] = " "
+        elif char == "{":
+            depth += 1
+            masked[index] = " "
+        elif char == "}":
+            masked[index] = " "
+            depth = max(0, depth - 1)
+        elif depth > 0 and char != "\n":
+            masked[index] = " "
+        index += 1
+    return "".join(masked)
+
+
+def extract_braced_block(source: str, header_pattern: str) -> str | None:
+    executable_source = executable_cpp(source)
+    match = re.search(header_pattern + r"\s*\{", executable_source)
+    if match is None:
+        return None
+    open_brace = executable_source.find("{", match.start(), match.end())
+    depth = 0
+    index = open_brace
+    while index < len(source):
+        char = executable_source[index]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return source[open_brace + 1 : index]
+        index += 1
+    return None
+
+
+def validate_runtime_slice_admission(llama_root: Path | None = None) -> int:
+    llama_root = llama_root or ROOT / ".deps/llama.cpp"
+    model_loading = llama_root / "src/skippy/model_loading.cpp"
+    if not model_loading.exists():
+        return 0
+
+    source = model_loading.read_text(encoding="utf-8")
+    executable_source = executable_cpp(source)
+    # Match the admission function with or without internal-linkage
+    # qualifiers: upstream revisions have carried both spellings.
+    function_start = -1
+    for needle in (
+        "static enum skippy_status skippy_finish_model_open(",
+        "enum skippy_status skippy_finish_model_open(",
+    ):
+        function_start = executable_source.find(needle)
+        if function_start >= 0:
+            break
+    function_end = executable_source.find(
+        "enum skippy_status skippy_model_open_impl(", function_start
+    )
+    if function_start < 0 or function_end < 0:
+        print("Cannot locate Skippy runtime-slice admission function", file=sys.stderr)
+        return 1
+
+    admission = source[function_start:function_end]
+    if re.search(
+        r"(?m)^\s*#\s*(?:if|ifdef|ifndef|elif|else|endif)\b",
+        executable_cpp(admission),
+    ):
         print(
-            "Stage ABI allowlist contains architectures without detected staged graph support:",
+            "Runtime-slice admission contract must not use preprocessor branches",
             file=sys.stderr,
         )
-        for key in allowed_without_hook:
-            print(f"  - {allowed_by_norm[key]}", file=sys.stderr)
-    if hooked_but_not_allowed:
-        failures += len(hooked_but_not_allowed)
+        return 1
+    validation_end = admission.find("skippy_model * stage_model")
+    if validation_end < 0:
+        print("Cannot locate Skippy runtime-slice validation boundary", file=sys.stderr)
+        return 1
+    validation = admission[:validation_end]
+    executable_validation = executable_cpp(validation)
+    architecture_guards = sorted(
+        set(
+            re.findall(
+                r"model->arch\s*[!=]=\s*LLM_ARCH_([A-Z0-9_]+)",
+                executable_validation,
+            )
+        )
+    )
+    failures = 0
+    if architecture_guards:
+        failures += len(architecture_guards)
         print(
-            "Staged graph implementations are missing from the stage ABI allowlist:",
+            "Runtime-slice admission must not depend on a model-architecture allowlist:",
             file=sys.stderr,
         )
-        for key in hooked_but_not_allowed:
-            print(f"  - {hooked_by_norm[key]}", file=sys.stderr)
+        for architecture in architecture_guards:
+            print(f"  - {architecture}", file=sys.stderr)
+
+    invalid_argument_contracts = (
+        (
+            "layer_end range",
+            r"if\s*\(\s*config->layer_end\s*>\s*n_layer\s*\)",
+            "layer_end exceeds model layer count",
+        ),
+        (
+            "embedding ownership",
+            r"if\s*\(\s*config->include_embeddings\s*&&\s*"
+            r"config->layer_start\s*!=\s*0\s*&&\s*!config->include_output\s*\)",
+            "only the first runtime slice may include token embeddings",
+        ),
+        (
+            "first-slice embeddings",
+            r"if\s*\(\s*config->layer_start\s*==\s*0\s*&&\s*"
+            r"!config->include_embeddings\s*\)",
+            "the first runtime slice must include token embeddings",
+        ),
+        (
+            "output ownership",
+            r"if\s*\(\s*config->include_output\s*&&\s*"
+            r"config->layer_end\s*!=\s*n_layer\s*\)",
+            "only the final runtime slice may include output tensors",
+        ),
+    )
+    missing_checks = []
+    for name, guard, message in invalid_argument_contracts:
+        body = extract_braced_block(admission, guard)
+        executable_body = (
+            executable_cpp(body, (f'"{message}"',)) if body is not None else ""
+        )
+        masked_body = mask_nested_blocks(executable_body) if body is not None else ""
+        required_failure_path = (
+            r"llama_model_free\s*\(\s*model\s*\)\s*;"
+            r"[\s\S]*?const\s+char\s*\*\s*message\s*=\s*"
+            + re.escape(f'"{message}"')
+            + r"\s*;[\s\S]*?skippy_set_error\s*\(\s*out_error\s*,\s*"
+            r"SKIPPY_STATUS_INVALID_ARGUMENT\s*,\s*message\s*\)\s*;"
+            r"[\s\S]*?return\s+SKIPPY_STATUS_INVALID_ARGUMENT\s*;"
+        )
+        failure_match = re.search(required_failure_path, masked_body)
+        first_return = re.search(r"\breturn\b", masked_body)
+        expected_return = re.search(
+            r"return\s+SKIPPY_STATUS_INVALID_ARGUMENT\s*;", masked_body
+        )
+        if (
+            body is None
+            or failure_match is None
+            or first_return is None
+            or expected_return is None
+            or first_return.start() != expected_return.start()
+            or has_unbraced_control_statement(executable_body)
+        ):
+            missing_checks.append(name)
+
+    boundary_contracts = (
+        (
+            "output activation boundary",
+            r"if\s*\(\s*!stage_model->ctx->get_activation_boundary\s*\([^)]*\)\s*\)",
+            "stage graph did not expose a stable output activation boundary",
+        ),
+        (
+            "input activation boundary",
+            r"if\s*\(\s*!stage_model->ctx->get_input_activation_boundary\s*\([^)]*\)\s*\)",
+            "stage graph did not expose a stable input activation boundary",
+        ),
+    )
+    for name, guard, message in boundary_contracts:
+        body = extract_braced_block(admission, guard)
+        executable_body = (
+            executable_cpp(body, (f'"{message}"',)) if body is not None else ""
+        )
+        masked_body = mask_nested_blocks(executable_body) if body is not None else ""
+        failure_path = (
+            r"return\s+fail_boundary_load\s*\(\s*"
+            + re.escape(f'"{message}"')
+            + r"\s*\)\s*;"
+        )
+        failure_match = re.search(failure_path, masked_body)
+        first_return = re.search(r"\breturn\b", masked_body)
+        if (
+            body is None
+            or failure_match is None
+            or first_return is None
+            or first_return.start() != failure_match.start()
+            or has_unbraced_control_statement(executable_body)
+        ):
+            missing_checks.append(name)
+    if missing_checks:
+        failures += len(missing_checks)
+        print(
+            "Runtime-slice admission is missing realized-contract checks:",
+            file=sys.stderr,
+        )
+        for check in missing_checks:
+            print(f"  - {check}", file=sys.stderr)
 
     return failures
 
@@ -559,10 +1029,6 @@ def run_certifications(args: argparse.Namespace, rows: list[dict[str, Any]]) -> 
             str(ctx_size),
             "--n-gpu-layers",
             str(args.n_gpu_layers if args.n_gpu_layers is not None else defaults.get("n_gpu_layers", 999)),
-            "--wire-dtype",
-            str(row.get("wire_dtype") or defaults.get("wire_dtype", "f16")),
-            "--wire-dtypes",
-            str(row.get("wire_dtypes") or defaults.get("wire_dtypes", "f32,f16,q8")),
             "--prompt",
             str(defaults.get("prompt", "Hello")),
             "--run-id",
@@ -591,8 +1057,6 @@ def run_certifications(args: argparse.Namespace, rows: list[dict[str, Any]]) -> 
             cmd.append("--skip-build")
         if args.skip_state:
             cmd.append("--skip-state")
-        if args.skip_dtype:
-            cmd.append("--skip-dtype")
         state_payload_kind = args.state_payload_kind
         if not state_payload_kind and args.prefix_token_count:
             state_payload_kind = (
@@ -644,6 +1108,18 @@ def main() -> int:
 
     sub.add_parser("validate", help="fail if the pinned llama.cpp inventory is not fully classified")
 
+    coverage = sub.add_parser(
+        "next-boundary-target",
+        help="print ONE deterministic needs_boundary_registration family for this run's repair agent",
+    )
+    coverage.add_argument("--json", action="store_true")
+
+    classify = sub.add_parser(
+        "classify-boundaries",
+        help="list runnable families lacking boundary registration (repair queue)",
+    )
+    classify.add_argument("--json", action="store_true")
+
     run_parser = sub.add_parser("run", help="run family-certify for local candidates")
     run_parser.add_argument("--status", action="append")
     run_parser.add_argument("--family", action="append")
@@ -653,7 +1129,6 @@ def main() -> int:
     run_parser.add_argument("--dry-run", action="store_true")
     run_parser.add_argument("--skip-build", action="store_true")
     run_parser.add_argument("--skip-state", action="store_true")
-    run_parser.add_argument("--skip-dtype", action="store_true")
     run_parser.add_argument("--state-payload-kind")
     run_parser.add_argument("--prefix-token-count", type=int)
     run_parser.add_argument("--cache-hit-repeats", type=int)
@@ -699,7 +1174,26 @@ def main() -> int:
             print(command)
         return 0
     if args.command == "validate":
-        return 1 if validate_inventory(rows) else 0
+        return 1 if validate_inventory(rows, args.llama_src) else 0
+    if args.command == "next-boundary-target":
+        target = coverage_expansion_target(
+            rows, boundary_registered_models(args.llama_src), args.llama_src
+        )
+        if args.json:
+            print(json.dumps(target, indent=2))
+        elif target:
+            print(f"{target['llama_model']}\t{target['family']}\t{target['source_file']}")
+        return 0
+    if args.command == "classify-boundaries":
+        pending = needs_boundary_registration_rows(
+            rows, boundary_registered_models(args.llama_src)
+        )
+        if args.json:
+            print(json.dumps(pending, indent=2))
+        else:
+            for model in pending:
+                print(model)
+        return 0
     if args.command == "run":
         return 1 if run_certifications(args, rows) else 0
     return 2

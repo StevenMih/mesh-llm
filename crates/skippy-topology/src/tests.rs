@@ -575,7 +575,7 @@ fn explicit_recurrent_transfer_policy_is_loud() {
 }
 
 #[test]
-fn qwen3_family_defaults_to_f16_and_records_q8_rejection() {
+fn qwen3_family_uses_f32_wire_payloads() {
     let request = TopologyPlanRequest {
         topology_id: "qwen3-wire".to_string(),
         model_id: "qwen3".to_string(),
@@ -590,14 +590,8 @@ fn qwen3_family_defaults_to_f16_and_records_q8_rejection() {
     assert_eq!(plan.family_id.as_deref(), Some("qwen3_dense"));
     assert_eq!(plan.boundaries.len(), 1);
     assert_eq!(plan.boundaries[0].decision, BoundaryDecision::Accepted);
-    assert_eq!(plan.boundaries[0].wire_dtype, WireDType::F16);
     assert_eq!(plan.boundaries[0].raw_activation_bytes_per_token, 4096);
-    assert_eq!(plan.boundaries[0].wire_payload_bytes_per_token, 2048);
-    assert!(
-        plan.boundaries[0]
-            .reason_codes
-            .contains(&PlanReasonCode::Q8WireRejected)
-    );
+    assert_eq!(plan.boundaries[0].wire_payload_bytes_per_token, 4096);
 }
 
 #[test]
@@ -627,7 +621,7 @@ fn accepted_dense_families_emit_exact_state_mobility_reason() {
 }
 
 #[test]
-fn untested_dense_family_blocks_q8_but_has_no_split_constraints() {
+fn dense_family_uses_f32_without_split_constraints() {
     let request = TopologyPlanRequest {
         topology_id: "olmo".to_string(),
         model_id: "olmo".to_string(),
@@ -641,45 +635,18 @@ fn untested_dense_family_blocks_q8_but_has_no_split_constraints() {
 
     assert_eq!(plan.family_id.as_deref(), Some("olmo"));
     assert_eq!(plan.boundaries[0].decision, BoundaryDecision::Accepted);
-    assert_eq!(plan.boundaries[0].wire_dtype, WireDType::F16);
-    assert!(
-        plan.boundaries[0]
-            .reason_codes
-            .contains(&PlanReasonCode::DefaultWireDtypeF16)
-    );
-    assert!(
-        !plan.boundaries[0]
-            .reason_codes
-            .contains(&PlanReasonCode::Q8WireValidated)
-    );
-    assert!(
-        !plan.boundaries[0]
-            .reason_codes
-            .contains(&PlanReasonCode::Q8WireRejected)
-    );
+    assert_eq!(plan.boundaries[0].wire_payload_bytes_per_token, 16384);
 }
 
 #[test]
-fn measured_dense_family_q8_policy_is_recorded() {
+fn dense_family_f32_wire_bytes_are_recorded() {
     let families = [
-        (
-            gemma2_capability(26, 2304),
-            PlanReasonCode::Q8WireValidated,
-            4608,
-        ),
-        (
-            gemma3_capability(26, 1152),
-            PlanReasonCode::Q8WireRejected,
-            2304,
-        ),
-        (
-            glm4_capability(40, 4096),
-            PlanReasonCode::Q8WireRejected,
-            8192,
-        ),
+        (gemma2_capability(26, 2304), 9216),
+        (gemma3_capability(26, 1152), 4608),
+        (glm4_capability(40, 4096), 16384),
     ];
 
-    for (family, expected_reason, expected_f16_wire_bytes) in families {
+    for (family, expected_f32_wire_bytes) in families {
         let request = TopologyPlanRequest {
             topology_id: family.family_id.clone(),
             model_id: family.family_id.clone(),
@@ -690,13 +657,10 @@ fn measured_dense_family_q8_policy_is_recorded() {
         };
 
         let plan = plan_even_contiguous(&request).expect("plan");
-
-        assert_eq!(plan.boundaries[0].wire_dtype, WireDType::F16);
         assert_eq!(
             plan.boundaries[0].wire_payload_bytes_per_token,
-            expected_f16_wire_bytes
+            expected_f32_wire_bytes
         );
-        assert!(plan.boundaries[0].reason_codes.contains(&expected_reason));
     }
 }
 
@@ -750,18 +714,12 @@ fn gemma4_e4b_accepts_validated_boundary_with_sideband() {
 
     assert_eq!(plan.boundaries[0].layer_boundary, 21);
     assert_eq!(plan.boundaries[0].decision, BoundaryDecision::Accepted);
-    assert_eq!(plan.boundaries[0].wire_dtype, WireDType::F16);
     assert_eq!(plan.boundaries[0].raw_activation_bytes_per_token, 10240);
-    assert_eq!(plan.boundaries[0].wire_payload_bytes_per_token, 5120);
+    assert_eq!(plan.boundaries[0].wire_payload_bytes_per_token, 10240);
     assert!(
         plan.boundaries[0]
             .reason_codes
             .contains(&PlanReasonCode::TokenSidebandRequired)
-    );
-    assert!(
-        plan.boundaries[0]
-            .reason_codes
-            .contains(&PlanReasonCode::Q8WireRejected)
     );
 }
 
@@ -779,9 +737,8 @@ fn rwkv7_boundary_accounts_for_v_first_sideband() {
     let plan = plan_even_contiguous(&request).expect("plan");
 
     assert_eq!(plan.boundaries[0].layer_boundary, 4);
-    assert_eq!(plan.boundaries[0].wire_dtype, WireDType::F16);
     assert_eq!(plan.boundaries[0].raw_activation_bytes_per_token, 6144);
-    assert_eq!(plan.boundaries[0].wire_payload_bytes_per_token, 3072);
+    assert_eq!(plan.boundaries[0].wire_payload_bytes_per_token, 6144);
     assert!(
         plan.boundaries[0]
             .reason_codes
@@ -850,8 +807,8 @@ fn gemma3n_requires_altup_sideband_and_reviewed_kv_boundary() {
             })
             .collect::<Vec<_>>(),
         vec![
-            (10, BoundaryDecision::Accepted, 32768, 16384),
-            (20, BoundaryDecision::Rejected, 32768, 16384)
+            (10, BoundaryDecision::Accepted, 32768, 32768),
+            (20, BoundaryDecision::Rejected, 32768, 32768)
         ]
     );
     assert!(even_plan.boundaries.iter().all(|boundary| {
@@ -918,8 +875,18 @@ fn infers_known_family_capabilities_from_model_identity() {
     )
     .expect("reviewed llama");
     assert_eq!(llama.family_id, "llama");
-    assert_eq!(llama.q8_wire_validation, WireValidation::Validated);
     assert_eq!(llama.exact_state_mobility, ExactStateMobility::Accepted);
+    let reviewed_width = llama.activation_width;
+    let mismatched_package_width = infer_family_capability(
+        "/Volumes/External/models/Llama-3.2-1B-Instruct-Q4_K_M.gguf",
+        16,
+        reviewed_width * 4,
+    )
+    .expect("reviewed llama with mismatched package estimate");
+    assert_eq!(
+        mismatched_package_width.activation_width, reviewed_width,
+        "package metadata must not replace a reviewed pre-load estimate"
+    );
 
     let laguna = infer_family_capability(
         "poolside/Laguna-S-2.1-GGUF@edd093522473dc7313b0738d8b4116b7f8b9745f/laguna-s-2.1-Q4_K_M.gguf",
@@ -928,8 +895,6 @@ fn infers_known_family_capabilities_from_model_identity() {
     )
     .expect("reviewed Poolside Laguna S 2.1 Q4_K_M");
     assert_eq!(laguna.family_id, "laguna");
-    assert_eq!(laguna.default_wire_dtype, WireDType::F16);
-    assert_eq!(laguna.q8_wire_validation, WireValidation::Untested);
 
     let gemma4_e4b = infer_family_capability(
             "unsloth/gemma-4-E4B-it-GGUF@315e03409eb1cdde302488d66e586dea1e82aad1/gemma-4-E4B-it-Q4_K_M.gguf",
@@ -938,7 +903,6 @@ fn infers_known_family_capabilities_from_model_identity() {
         )
         .expect("reviewed gemma4 e4b");
     assert_eq!(gemma4_e4b.family_id, "gemma4_e4b");
-    assert_eq!(gemma4_e4b.q8_wire_validation, WireValidation::Rejected);
     assert!(!gemma4_e4b.split_constraints.is_empty());
     assert!(!gemma4_e4b.sidebands.is_empty());
 
@@ -963,8 +927,6 @@ fn infers_known_family_capabilities_from_model_identity() {
     let inkling =
         infer_family_capability("meshllm/inkling-UD-Q2_K_XL-layers", 66, 6144).expect("inkling");
     assert_eq!(inkling.family_id, "inkling");
-    assert_eq!(inkling.default_wire_dtype, WireDType::F32);
-    assert_eq!(inkling.q8_wire_validation, WireValidation::Rejected);
     assert_eq!(
         inkling.exact_state_mobility,
         ExactStateMobility::RejectedTooLarge
@@ -977,7 +939,6 @@ fn infers_known_family_capabilities_from_model_identity() {
     let rwkv6 =
         infer_family_capability("latestissue/rwkv-6-finch-1b6-gguf:Q4_K", 24, 2048).expect("rwkv6");
     assert_eq!(rwkv6.family_id, "rwkv6");
-    assert_eq!(rwkv6.q8_wire_validation, WireValidation::Rejected);
     assert_eq!(
         rwkv6.exact_state_mobility,
         ExactStateMobility::RejectedTooLarge
@@ -1034,7 +995,6 @@ fn infers_known_family_capabilities_from_model_identity() {
     let qwen2moe = infer_family_capability("mradermacher/Qwen2-1.5B-2x-MoE-GGUF:Q4_K_S", 28, 1536)
         .expect("qwen2moe");
     assert_eq!(qwen2moe.family_id, "qwen2moe");
-    assert_eq!(qwen2moe.q8_wire_validation, WireValidation::Rejected);
     let qwen3moe = infer_family_capability(
         "mradermacher/Qwen3-MOE-4x0.6B-2.4B-Writing-Thunder-GGUF:Q4_K_M",
         28,
@@ -1042,7 +1002,6 @@ fn infers_known_family_capabilities_from_model_identity() {
     )
     .expect("qwen3moe");
     assert_eq!(qwen3moe.family_id, "qwen3moe");
-    assert_eq!(qwen3moe.q8_wire_validation, WireValidation::Validated);
     for identity in [
         "laguna",
         "poolside/Laguna-XS-2.1-GGUF:Q4_K_M",
@@ -1053,7 +1012,6 @@ fn infers_known_family_capabilities_from_model_identity() {
         let laguna = infer_family_capability(identity, 48, 3072)
             .unwrap_or_else(|| panic!("failed to infer {identity}"));
         assert_eq!(laguna.family_id, "laguna", "{identity}");
-        assert_eq!(laguna.q8_wire_validation, WireValidation::Untested);
         assert_eq!(laguna.exact_state_mobility, ExactStateMobility::Untested);
         assert!(laguna.recurrent_ranges.is_empty());
     }
@@ -1061,7 +1019,6 @@ fn infers_known_family_capabilities_from_model_identity() {
         infer_family_capability("ggml-org/gpt-oss-20b-GGUF:gpt-oss-20b-mxfp4", 24, 2880)
             .expect("openai_moe/gpt-oss");
     assert_eq!(openai_moe.family_id, "openai_moe");
-    assert_eq!(openai_moe.q8_wire_validation, WireValidation::Rejected);
     assert_eq!(
         openai_moe.exact_state_mobility,
         ExactStateMobility::Accepted
@@ -1073,7 +1030,6 @@ fn infers_known_family_capabilities_from_model_identity() {
     )
     .expect("llama4 package");
     assert_eq!(llama4.family_id, "llama4");
-    assert_eq!(llama4.q8_wire_validation, WireValidation::Untested);
     assert_eq!(llama4.exact_state_mobility, ExactStateMobility::Untested);
     let mistral4 = infer_family_capability(
         "bartowski/mistralai_Mistral-Small-4-119B-2603-GGUF:IQ2_XXS",
@@ -1082,7 +1038,6 @@ fn infers_known_family_capabilities_from_model_identity() {
     )
     .expect("mistral4 package");
     assert_eq!(mistral4.family_id, "mistral4");
-    assert_eq!(mistral4.q8_wire_validation, WireValidation::Untested);
     assert_eq!(mistral4.exact_state_mobility, ExactStateMobility::Untested);
     let qwen3_coder_package = infer_family_capability(
         "unsloth/Qwen3-Coder-480B-A35B-Instruct-GGUF:UD-Q4_K_XL",
@@ -1091,10 +1046,6 @@ fn infers_known_family_capabilities_from_model_identity() {
     )
     .expect("qwen3 coder package");
     assert_eq!(qwen3_coder_package.family_id, "qwen3moe");
-    assert_eq!(
-        qwen3_coder_package.q8_wire_validation,
-        WireValidation::Untested
-    );
     let qwen3_coder_30b =
         infer_family_capability("unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF:Q4_K_M", 48, 2048)
             .expect("qwen3 coder 30b");
@@ -1104,10 +1055,6 @@ fn infers_known_family_capabilities_from_model_identity() {
             .expect("exaone-moe package");
     assert_eq!(exaone_moe_package.family_id, "exaone_moe");
     assert_eq!(
-        exaone_moe_package.q8_wire_validation,
-        WireValidation::Untested
-    );
-    assert_eq!(
         exaone_moe_package.exact_state_mobility,
         ExactStateMobility::RejectedTooLarge
     );
@@ -1115,23 +1062,19 @@ fn infers_known_family_capabilities_from_model_identity() {
         infer_family_capability("lmstudio-community/gemma-3n-E2B-it-GGUF:Q4_K_M", 30, 2048)
             .expect("gemma3n");
     assert_eq!(gemma3n.family_id, "gemma3n");
-    assert_eq!(gemma3n.q8_wire_validation, WireValidation::Validated);
     assert_eq!(gemma3n.exact_state_mobility, ExactStateMobility::Accepted);
     assert_eq!(gemma3n.sidebands[0].kind, SidebandKind::Gemma3nAltup);
     let qwen2vl = infer_family_capability("bartowski/Qwen2-VL-2B-Instruct-GGUF:Q4_K_M", 28, 1536)
         .expect("qwen2vl");
     assert_eq!(qwen2vl.family_id, "qwen2vl");
-    assert_eq!(qwen2vl.q8_wire_validation, WireValidation::Rejected);
     assert_eq!(qwen2vl.exact_state_mobility, ExactStateMobility::Untested);
     let qwen3vl = infer_family_capability("Qwen/Qwen3-VL-2B-Instruct-GGUF:Q4_K_M", 28, 2048)
         .expect("qwen3vl");
     assert_eq!(qwen3vl.family_id, "qwen3vl");
-    assert_eq!(qwen3vl.q8_wire_validation, WireValidation::Validated);
     assert_eq!(qwen3vl.exact_state_mobility, ExactStateMobility::Untested);
     let deepseek2ocr =
         infer_family_capability("ggml-org/DeepSeek-OCR-GGUF:Q8_0", 12, 1280).expect("deepseek2ocr");
     assert_eq!(deepseek2ocr.family_id, "deepseek2ocr");
-    assert_eq!(deepseek2ocr.q8_wire_validation, WireValidation::Rejected);
     assert_eq!(
         deepseek2ocr.exact_state_mobility,
         ExactStateMobility::Accepted
@@ -1139,7 +1082,6 @@ fn infers_known_family_capabilities_from_model_identity() {
     let hunyuan_vl =
         infer_family_capability("ggml-org/HunyuanOCR-GGUF:Q8_0", 24, 1024).expect("hunyuan_vl");
     assert_eq!(hunyuan_vl.family_id, "hunyuan_vl");
-    assert_eq!(hunyuan_vl.q8_wire_validation, WireValidation::Untested);
     assert_eq!(
         hunyuan_vl.exact_state_mobility,
         ExactStateMobility::Untested
@@ -1151,7 +1093,6 @@ fn infers_known_family_capabilities_from_model_identity() {
     )
     .expect("qwen3vlmoe");
     assert_eq!(qwen3vlmoe.family_id, "qwen3vlmoe");
-    assert_eq!(qwen3vlmoe.q8_wire_validation, WireValidation::Rejected);
     assert_eq!(
         qwen3vlmoe.exact_state_mobility,
         ExactStateMobility::Accepted
@@ -1160,18 +1101,14 @@ fn infers_known_family_capabilities_from_model_identity() {
         infer_family_capability("unsloth/Apertus-8B-Instruct-2509-GGUF:UD-IQ2_M", 32, 4096)
             .expect("apertus");
     assert_eq!(apertus.family_id, "apertus");
-    assert_eq!(apertus.default_wire_dtype, WireDType::F32);
-    assert_eq!(apertus.q8_wire_validation, WireValidation::Rejected);
     let bitnet =
         infer_family_capability("Sarverott/bitnet_b1_58-large-Q4_K_M-GGUF:Q4_K_M", 24, 1536)
             .expect("bitnet");
     assert_eq!(bitnet.family_id, "bitnet");
-    assert_eq!(bitnet.q8_wire_validation, WireValidation::Validated);
     assert_eq!(bitnet.exact_state_mobility, ExactStateMobility::Accepted);
     let plamo =
         infer_family_capability("QuantFactory/plamo-13b-GGUF:Q2_K", 40, 5120).expect("plamo");
     assert_eq!(plamo.family_id, "plamo");
-    assert_eq!(plamo.q8_wire_validation, WireValidation::Validated);
     assert_eq!(plamo.exact_state_mobility, ExactStateMobility::Accepted);
     let starcoder = infer_family_capability(
         "RichardErkhov/bigcode_-_tiny_starcoder_py-gguf:Q2_K",
@@ -1180,23 +1117,19 @@ fn infers_known_family_capabilities_from_model_identity() {
     )
     .expect("starcoder");
     assert_eq!(starcoder.family_id, "starcoder");
-    assert_eq!(starcoder.q8_wire_validation, WireValidation::Validated);
     assert_eq!(starcoder.exact_state_mobility, ExactStateMobility::Accepted);
     let llada =
         infer_family_capability("mradermacher/LLaDA-1.5-Tiny-GGUF:Q2_K", 6, 512).expect("llada");
     assert_eq!(llada.family_id, "llada");
-    assert_eq!(llada.q8_wire_validation, WireValidation::Validated);
     assert_eq!(llada.exact_state_mobility, ExactStateMobility::Untested);
     let plamo2 = infer_family_capability("mmnga/plamo-2-1b-gguf:Q4_K_M", 16, 2048).expect("plamo2");
     assert_eq!(plamo2.family_id, "plamo2");
-    assert_eq!(plamo2.q8_wire_validation, WireValidation::Validated);
     assert_eq!(plamo2.exact_state_mobility, ExactStateMobility::Accepted);
     assert_eq!(plamo2.recurrent_ranges.len(), 1);
     let ernie4_5 =
         infer_family_capability("lmstudio-community/ERNIE-4.5-0.3B-GGUF:Q4_K_M", 18, 1024)
             .expect("ernie4_5");
     assert_eq!(ernie4_5.family_id, "ernie4_5");
-    assert_eq!(ernie4_5.q8_wire_validation, WireValidation::Validated);
     assert_eq!(ernie4_5.exact_state_mobility, ExactStateMobility::Accepted);
     let ernie4_5_moe = infer_family_capability(
         "lmstudio-community/ERNIE-4.5-21B-A3B-PT-GGUF:Q4_K_M",
@@ -1205,7 +1138,6 @@ fn infers_known_family_capabilities_from_model_identity() {
     )
     .expect("ernie4_5_moe");
     assert_eq!(ernie4_5_moe.family_id, "ernie4_5_moe");
-    assert_eq!(ernie4_5_moe.q8_wire_validation, WireValidation::Validated);
     assert_eq!(
         ernie4_5_moe.exact_state_mobility,
         ExactStateMobility::Accepted
@@ -1213,23 +1145,19 @@ fn infers_known_family_capabilities_from_model_identity() {
     let qwen =
         infer_family_capability("zhangtao103239/Qwen-1.8B-GGUF:q5_k_m", 24, 2048).expect("qwen");
     assert_eq!(qwen.family_id, "qwen");
-    assert_eq!(qwen.q8_wire_validation, WireValidation::Rejected);
     assert_eq!(qwen.exact_state_mobility, ExactStateMobility::Accepted);
     let jais = infer_family_capability("mradermacher/Jais-family-256m-GGUF:Q4_K_M", 14, 1088)
         .expect("jais");
     assert_eq!(jais.family_id, "jais");
-    assert_eq!(jais.q8_wire_validation, WireValidation::Rejected);
     assert_eq!(jais.exact_state_mobility, ExactStateMobility::Accepted);
     let jais2 =
         infer_family_capability("mradermacher/JAIS2-IT-0.3-GGUF:Q4_K_M", 32, 3328).expect("jais2");
     assert_eq!(jais2.family_id, "jais2");
-    assert_eq!(jais2.q8_wire_validation, WireValidation::Rejected);
     assert_eq!(jais2.exact_state_mobility, ExactStateMobility::Accepted);
     let nemotron_h =
         infer_family_capability("nvidia/NVIDIA-Nemotron-3-Nano-4B-GGUF:Q4_K_M", 42, 3136)
             .expect("nemotron_h");
     assert_eq!(nemotron_h.family_id, "nemotron_h");
-    assert_eq!(nemotron_h.q8_wire_validation, WireValidation::Rejected);
     assert_eq!(
         nemotron_h.exact_state_mobility,
         ExactStateMobility::RejectedTooLarge
@@ -1242,7 +1170,6 @@ fn infers_known_family_capabilities_from_model_identity() {
     )
     .expect("nemotron_h_moe package");
     assert_eq!(nemotron_h_moe.family_id, "nemotron_h_moe");
-    assert_eq!(nemotron_h_moe.q8_wire_validation, WireValidation::Untested);
     assert_eq!(
         nemotron_h_moe.exact_state_mobility,
         ExactStateMobility::RejectedTooLarge
@@ -1255,12 +1182,10 @@ fn infers_known_family_capabilities_from_model_identity() {
     )
     .expect("llada_moe");
     assert_eq!(llada_moe.family_id, "llada_moe");
-    assert_eq!(llada_moe.q8_wire_validation, WireValidation::Rejected);
     assert_eq!(llada_moe.exact_state_mobility, ExactStateMobility::Untested);
     let dream = infer_family_capability("mradermacher/DreamOn-v0-7B-i1-GGUF:IQ2_XS", 28, 3584)
         .expect("dream");
     assert_eq!(dream.family_id, "dream");
-    assert_eq!(dream.q8_wire_validation, WireValidation::Validated);
     assert_eq!(dream.exact_state_mobility, ExactStateMobility::Untested);
     let nemotron = infer_family_capability(
         "mradermacher/nemotron-3-8b-chat-4k-sft-hf-i1-GGUF:IQ2_XS",
@@ -1269,7 +1194,6 @@ fn infers_known_family_capabilities_from_model_identity() {
     )
     .expect("nemotron");
     assert_eq!(nemotron.family_id, "nemotron");
-    assert_eq!(nemotron.q8_wire_validation, WireValidation::Rejected);
     assert_eq!(nemotron.exact_state_mobility, ExactStateMobility::Accepted);
     let seed_oss = infer_family_capability(
         "lmstudio-community/Seed-OSS-36B-Instruct-GGUF:Q4_K_M",
@@ -1278,12 +1202,10 @@ fn infers_known_family_capabilities_from_model_identity() {
     )
     .expect("seed_oss package");
     assert_eq!(seed_oss.family_id, "seed_oss");
-    assert_eq!(seed_oss.q8_wire_validation, WireValidation::Untested);
     assert_eq!(seed_oss.exact_state_mobility, ExactStateMobility::Untested);
     let lfm2moe =
         infer_family_capability("noctrex/LFM2-8B-A1B-MXFP4_MOE-GGUF", 24, 2048).expect("lfm2moe");
     assert_eq!(lfm2moe.family_id, "lfm2moe");
-    assert_eq!(lfm2moe.q8_wire_validation, WireValidation::Validated);
     assert_eq!(lfm2moe.exact_state_mobility, ExactStateMobility::Accepted);
     assert_eq!(lfm2moe.recurrent_ranges.len(), 1);
     let kimi = infer_family_capability(
@@ -1293,7 +1215,6 @@ fn infers_known_family_capabilities_from_model_identity() {
     )
     .expect("kimi_linear");
     assert_eq!(kimi.family_id, "kimi_linear");
-    assert_eq!(kimi.q8_wire_validation, WireValidation::Validated);
     assert_eq!(
         kimi.exact_state_mobility,
         ExactStateMobility::RejectedTooLarge
@@ -1325,12 +1246,10 @@ fn infers_known_family_capabilities_from_model_identity() {
     let deepseek3 = infer_family_capability("unsloth/DeepSeek-V3.2-GGUF:UD-Q4_K_XL", 61, 7168)
         .expect("reviewed deepseek3");
     assert_eq!(deepseek3.family_id, "deepseek3");
-    assert_eq!(deepseek3.q8_wire_validation, WireValidation::Untested);
     assert_eq!(deepseek3.exact_state_mobility, ExactStateMobility::Accepted);
     let qwen35moe = infer_family_capability("unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_XL", 40, 2048)
         .expect("reviewed qwen35moe");
     assert_eq!(qwen35moe.family_id, "qwen35moe");
-    assert_eq!(qwen35moe.q8_wire_validation, WireValidation::Untested);
     assert_eq!(
         qwen35moe.exact_state_mobility,
         ExactStateMobility::RejectedTooLarge
@@ -1370,8 +1289,6 @@ fn infers_known_family_capabilities_from_model_identity() {
     let gemma =
         infer_family_capability("ggml-org/gemma-3-270m-it-GGUF:Q8_0", 18, 640).expect("gemma");
     assert_eq!(gemma.family_id, "gemma");
-    assert_eq!(gemma.default_wire_dtype, WireDType::F32);
-    assert_eq!(gemma.q8_wire_validation, WireValidation::Rejected);
     assert_eq!(
         infer_family_capability("google-gemma-4-26B-A4B-it", 30, 2816)
             .expect("gemma4a4b")
@@ -1391,31 +1308,33 @@ fn infers_known_family_capabilities_from_model_identity() {
         "minimax_m27"
     );
     assert!(infer_family_capability("unknown", 1, 1).is_none());
+    assert!(
+        infer_family_capability("glm-dsa", 78, 7168).is_none(),
+        "GLM-DSA must remain unadvertised until its native staged graph patch is restored"
+    );
 }
 
 #[test]
-fn every_stage_runtime_llama_architecture_has_family_inference() {
-    for expected in STAGE_RUNTIME_LLAMA_FAMILY_EXPECTATIONS {
-        let capability = infer_family_capability(expected.llama_architecture, 12, 768)
-            .unwrap_or_else(|| {
-                panic!(
-                    "missing family inference for {}",
-                    expected.llama_architecture
-                )
-            });
-
-        assert_eq!(
-            capability.family_id, expected.family_id,
-            "{}",
+fn stage_runtime_test_catalog_has_unique_architectures() {
+    for (index, expected) in TEST_LLAMA_ARCHITECTURE_CATALOG.iter().enumerate() {
+        assert!(
+            TEST_LLAMA_ARCHITECTURE_CATALOG[index + 1..]
+                .iter()
+                .all(|other| other.llama_architecture != expected.llama_architecture),
+            "duplicate architecture in test-only coverage catalog: {}",
             expected.llama_architecture
         );
-        assert_eq!(
-            !capability.recurrent_ranges.is_empty(),
-            expected.recurrent_or_hybrid,
-            "{}",
-            expected.llama_architecture
-        );
+        assert!(!expected.family_id.is_empty());
     }
+}
+
+#[test]
+#[allow(deprecated)]
+fn legacy_runtime_family_registry_stays_empty() {
+    assert!(
+        STAGE_RUNTIME_LLAMA_FAMILY_EXPECTATIONS.is_empty(),
+        "production family rows must not regain KV or topology authority"
+    );
 }
 
 #[derive(Debug, Deserialize)]
@@ -1441,7 +1360,7 @@ fn parity_candidate_manifest_covers_stage_runtime_architectures() {
         .map(|candidate| compact_identity(&candidate.llama_model))
         .collect();
 
-    for expected in STAGE_RUNTIME_LLAMA_FAMILY_EXPECTATIONS {
+    for expected in TEST_LLAMA_ARCHITECTURE_CATALOG {
         assert!(
             candidates.contains(&compact_identity(expected.llama_architecture)),
             "missing parity candidate row for {}",
@@ -1468,6 +1387,7 @@ fn parity_candidate_manifest_uses_known_statuses() {
                     | "certified_package_only"
                     | "implementation_base"
                     | "needs_candidate"
+                    | "needs_boundary_registration"
                     | "needs_runtime_slice_support"
                     | "no_public_gguf_candidate"
                     | "non_causal_aux"
@@ -1534,33 +1454,10 @@ fn reviewed_supported_families_smoke_plan_with_expected_policy_signals() {
             "unexpected boundary count for {identity}"
         );
         assert_eq!(
-            plan.boundaries[0].wire_dtype, family.default_wire_dtype,
-            "supported family default wire mismatch for {identity}"
+            plan.boundaries[0].wire_payload_bytes_per_token,
+            plan.boundaries[0].raw_activation_bytes_per_token,
+            "f32 wire payload mismatch for {identity}"
         );
-        if family.default_wire_dtype == WireDType::F16 {
-            assert!(
-                plan.boundaries[0]
-                    .reason_codes
-                    .contains(&PlanReasonCode::DefaultWireDtypeF16),
-                "missing f16 reason for {identity}"
-            );
-        }
-
-        match family.q8_wire_validation {
-            WireValidation::Validated => assert!(
-                plan.boundaries[0]
-                    .reason_codes
-                    .contains(&PlanReasonCode::Q8WireValidated),
-                "missing q8 validated signal for {identity}"
-            ),
-            WireValidation::Rejected => assert!(
-                plan.boundaries[0]
-                    .reason_codes
-                    .contains(&PlanReasonCode::Q8WireRejected),
-                "missing q8 rejected signal for {identity}"
-            ),
-            WireValidation::Untested => {}
-        }
 
         if family.recurrent_ranges.is_empty() {
             assert!(
@@ -1620,6 +1517,777 @@ fn reviewed_supported_families_smoke_plan_with_expected_policy_signals() {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+struct FrozenSupportedFamilySplit {
+    docs_family: &'static str,
+    family_id: &'static str,
+    layer_count: u32,
+    activation_width: u32,
+    boundaries: Option<&'static [u32]>,
+    wire_multiplier: u64,
+}
+
+const FROZEN_SUPPORTED_FAMILY_SPLITS: &[FrozenSupportedFamilySplit] = &[
+    FrozenSupportedFamilySplit {
+        docs_family: "Qwen3 dense",
+        family_id: "qwen3_dense",
+        layer_count: 28,
+        activation_width: 1024,
+        boundaries: Some(&[9, 18]),
+        wire_multiplier: 1,
+    },
+    FrozenSupportedFamilySplit {
+        docs_family: "Qwen2",
+        family_id: "qwen2",
+        layer_count: 24,
+        activation_width: 896,
+        boundaries: Some(&[8, 16]),
+        wire_multiplier: 1,
+    },
+    FrozenSupportedFamilySplit {
+        docs_family: "Qwen2-VL",
+        family_id: "qwen2vl",
+        layer_count: 28,
+        activation_width: 1536,
+        boundaries: Some(&[9, 18]),
+        wire_multiplier: 1,
+    },
+    FrozenSupportedFamilySplit {
+        docs_family: "Qwen3-VL",
+        family_id: "qwen3vl",
+        layer_count: 28,
+        activation_width: 2048,
+        boundaries: Some(&[9, 18]),
+        wire_multiplier: 1,
+    },
+    FrozenSupportedFamilySplit {
+        docs_family: "Llama",
+        family_id: "llama",
+        layer_count: 16,
+        activation_width: 2048,
+        boundaries: Some(&[5, 10]),
+        wire_multiplier: 1,
+    },
+    FrozenSupportedFamilySplit {
+        docs_family: "DeepSeek2",
+        family_id: "deepseek2",
+        layer_count: 27,
+        activation_width: 2048,
+        boundaries: Some(&[7, 14]),
+        wire_multiplier: 1,
+    },
+    FrozenSupportedFamilySplit {
+        docs_family: "DeepSeek LLM",
+        family_id: "deepseek",
+        layer_count: 30,
+        activation_width: 4096,
+        boundaries: Some(&[10, 20]),
+        wire_multiplier: 1,
+    },
+    FrozenSupportedFamilySplit {
+        docs_family: "DeepSeek3",
+        family_id: "deepseek3",
+        layer_count: 61,
+        activation_width: 7168,
+        boundaries: None,
+        wire_multiplier: 1,
+    },
+    FrozenSupportedFamilySplit {
+        docs_family: "GLM-4.7 Flash",
+        family_id: "glm47_flash",
+        layer_count: 47,
+        activation_width: 2048,
+        boundaries: Some(&[15, 31]),
+        wire_multiplier: 1,
+    },
+    FrozenSupportedFamilySplit {
+        docs_family: "GLM4-MoE",
+        family_id: "glm4_moe",
+        layer_count: 47,
+        activation_width: 2048,
+        boundaries: Some(&[15, 31]),
+        wire_multiplier: 1,
+    },
+    FrozenSupportedFamilySplit {
+        docs_family: "GLM4 9B",
+        family_id: "glm4",
+        layer_count: 40,
+        activation_width: 4096,
+        boundaries: Some(&[13, 27]),
+        wire_multiplier: 1,
+    },
+    FrozenSupportedFamilySplit {
+        docs_family: "Baichuan",
+        family_id: "baichuan",
+        layer_count: 32,
+        activation_width: 4096,
+        boundaries: Some(&[10, 21]),
+        wire_multiplier: 1,
+    },
+    FrozenSupportedFamilySplit {
+        docs_family: "Bloom",
+        family_id: "bloom",
+        layer_count: 24,
+        activation_width: 1024,
+        boundaries: Some(&[8, 16]),
+        wire_multiplier: 1,
+    },
+    FrozenSupportedFamilySplit {
+        docs_family: "GPT2",
+        family_id: "gpt2",
+        layer_count: 12,
+        activation_width: 768,
+        boundaries: Some(&[4, 8]),
+        wire_multiplier: 1,
+    },
+    FrozenSupportedFamilySplit {
+        docs_family: "GPT-NeoX",
+        family_id: "gptneox",
+        layer_count: 6,
+        activation_width: 512,
+        boundaries: Some(&[2, 4]),
+        wire_multiplier: 1,
+    },
+    FrozenSupportedFamilySplit {
+        docs_family: "Gemma4 A4B",
+        family_id: "gemma4_a4b",
+        layer_count: 30,
+        activation_width: 2816,
+        boundaries: Some(&[8, 15]),
+        wire_multiplier: 1,
+    },
+    FrozenSupportedFamilySplit {
+        docs_family: "Gemma4 E4B",
+        family_id: "gemma4_e4b",
+        layer_count: 42,
+        activation_width: 2560,
+        boundaries: Some(&[21]),
+        wire_multiplier: 1,
+    },
+    FrozenSupportedFamilySplit {
+        docs_family: "Gemma3",
+        family_id: "gemma3",
+        layer_count: 26,
+        activation_width: 1152,
+        boundaries: Some(&[9, 18]),
+        wire_multiplier: 1,
+    },
+    FrozenSupportedFamilySplit {
+        docs_family: "Gemma3n",
+        family_id: "gemma3n",
+        layer_count: 30,
+        activation_width: 2048,
+        boundaries: Some(&[10, 15]),
+        wire_multiplier: 4,
+    },
+    FrozenSupportedFamilySplit {
+        docs_family: "Gemma2",
+        family_id: "gemma2",
+        layer_count: 26,
+        activation_width: 2304,
+        boundaries: Some(&[9, 18]),
+        wire_multiplier: 1,
+    },
+    FrozenSupportedFamilySplit {
+        docs_family: "Phi2",
+        family_id: "phi2",
+        layer_count: 32,
+        activation_width: 2560,
+        boundaries: Some(&[10, 21]),
+        wire_multiplier: 1,
+    },
+    FrozenSupportedFamilySplit {
+        docs_family: "Granite",
+        family_id: "granite",
+        layer_count: 40,
+        activation_width: 2048,
+        boundaries: Some(&[13, 26]),
+        wire_multiplier: 1,
+    },
+    FrozenSupportedFamilySplit {
+        docs_family: "Granite-Hybrid",
+        family_id: "granite_hybrid",
+        layer_count: 32,
+        activation_width: 768,
+        boundaries: Some(&[10, 21]),
+        wire_multiplier: 1,
+    },
+    FrozenSupportedFamilySplit {
+        docs_family: "Granite-MoE",
+        family_id: "granite_moe",
+        layer_count: 6,
+        activation_width: 64,
+        boundaries: Some(&[2, 4]),
+        wire_multiplier: 1,
+    },
+    FrozenSupportedFamilySplit {
+        docs_family: "Hunyuan-Dense",
+        family_id: "hunyuan_dense",
+        layer_count: 32,
+        activation_width: 2048,
+        boundaries: Some(&[10, 21]),
+        wire_multiplier: 1,
+    },
+    FrozenSupportedFamilySplit {
+        docs_family: "Hunyuan-MoE",
+        family_id: "hunyuan_moe",
+        layer_count: 32,
+        activation_width: 4096,
+        boundaries: Some(&[10, 21]),
+        wire_multiplier: 1,
+    },
+    FrozenSupportedFamilySplit {
+        docs_family: "Hunyuan-VL / HunyuanOCR",
+        family_id: "hunyuan_vl",
+        layer_count: 24,
+        activation_width: 1024,
+        boundaries: Some(&[8, 16]),
+        wire_multiplier: 1,
+    },
+    FrozenSupportedFamilySplit {
+        docs_family: "LFM2",
+        family_id: "lfm2",
+        layer_count: 16,
+        activation_width: 1024,
+        boundaries: Some(&[5, 10]),
+        wire_multiplier: 1,
+    },
+    FrozenSupportedFamilySplit {
+        docs_family: "Jamba",
+        family_id: "jamba",
+        layer_count: 28,
+        activation_width: 2560,
+        boundaries: Some(&[9, 18]),
+        wire_multiplier: 1,
+    },
+    FrozenSupportedFamilySplit {
+        docs_family: "Kimi Linear",
+        family_id: "kimi_linear",
+        layer_count: 27,
+        activation_width: 2304,
+        boundaries: Some(&[9, 18]),
+        wire_multiplier: 1,
+    },
+    FrozenSupportedFamilySplit {
+        docs_family: "Laguna S 2.1",
+        family_id: "laguna",
+        layer_count: 48,
+        activation_width: 3072,
+        boundaries: Some(&[25, 39]),
+        wire_multiplier: 1,
+    },
+    FrozenSupportedFamilySplit {
+        docs_family: "Mamba",
+        family_id: "mamba",
+        layer_count: 24,
+        activation_width: 768,
+        boundaries: Some(&[8, 16]),
+        wire_multiplier: 1,
+    },
+    FrozenSupportedFamilySplit {
+        docs_family: "Mamba2",
+        family_id: "mamba2",
+        layer_count: 64,
+        activation_width: 2560,
+        boundaries: Some(&[21, 42]),
+        wire_multiplier: 1,
+    },
+    FrozenSupportedFamilySplit {
+        docs_family: "RWKV6",
+        family_id: "rwkv6",
+        layer_count: 24,
+        activation_width: 2048,
+        boundaries: Some(&[8, 16]),
+        wire_multiplier: 1,
+    },
+    FrozenSupportedFamilySplit {
+        docs_family: "RWKV7",
+        family_id: "rwkv7",
+        layer_count: 12,
+        activation_width: 768,
+        boundaries: Some(&[4, 8]),
+        wire_multiplier: 2,
+    },
+    FrozenSupportedFamilySplit {
+        docs_family: "Falcon-H1",
+        family_id: "falcon_h1",
+        layer_count: 24,
+        activation_width: 2048,
+        boundaries: Some(&[8, 16]),
+        wire_multiplier: 1,
+    },
+    FrozenSupportedFamilySplit {
+        docs_family: "Falcon",
+        family_id: "falcon",
+        layer_count: 32,
+        activation_width: 4544,
+        boundaries: Some(&[10, 21]),
+        wire_multiplier: 1,
+    },
+    FrozenSupportedFamilySplit {
+        docs_family: "InternLM2",
+        family_id: "internlm2",
+        layer_count: 24,
+        activation_width: 2048,
+        boundaries: Some(&[8, 16]),
+        wire_multiplier: 1,
+    },
+    FrozenSupportedFamilySplit {
+        docs_family: "Phi3",
+        family_id: "phi",
+        layer_count: 32,
+        activation_width: 3072,
+        boundaries: Some(&[10, 21]),
+        wire_multiplier: 1,
+    },
+    FrozenSupportedFamilySplit {
+        docs_family: "PhiMoE",
+        family_id: "phimoe",
+        layer_count: 32,
+        activation_width: 4096,
+        boundaries: Some(&[10, 21]),
+        wire_multiplier: 1,
+    },
+    FrozenSupportedFamilySplit {
+        docs_family: "OLMo",
+        family_id: "olmo",
+        layer_count: 32,
+        activation_width: 4096,
+        boundaries: Some(&[10, 21]),
+        wire_multiplier: 1,
+    },
+    FrozenSupportedFamilySplit {
+        docs_family: "OLMo2",
+        family_id: "olmo2",
+        layer_count: 32,
+        activation_width: 4096,
+        boundaries: Some(&[10, 21]),
+        wire_multiplier: 1,
+    },
+    FrozenSupportedFamilySplit {
+        docs_family: "OLMoE",
+        family_id: "olmoe",
+        layer_count: 16,
+        activation_width: 2048,
+        boundaries: Some(&[5, 10]),
+        wire_multiplier: 1,
+    },
+    FrozenSupportedFamilySplit {
+        docs_family: "Mistral3",
+        family_id: "mistral",
+        layer_count: 26,
+        activation_width: 3072,
+        boundaries: Some(&[8, 17]),
+        wire_multiplier: 1,
+    },
+    FrozenSupportedFamilySplit {
+        docs_family: "Qwen2-MoE",
+        family_id: "qwen2moe",
+        layer_count: 28,
+        activation_width: 1536,
+        boundaries: Some(&[9, 18]),
+        wire_multiplier: 1,
+    },
+    FrozenSupportedFamilySplit {
+        docs_family: "Qwen3-MoE",
+        family_id: "qwen3moe",
+        layer_count: 28,
+        activation_width: 1024,
+        boundaries: Some(&[9, 18]),
+        wire_multiplier: 1,
+    },
+    FrozenSupportedFamilySplit {
+        docs_family: "Qwen3-VL-MoE",
+        family_id: "qwen3vlmoe",
+        layer_count: 48,
+        activation_width: 2048,
+        boundaries: Some(&[16, 32]),
+        wire_multiplier: 1,
+    },
+    FrozenSupportedFamilySplit {
+        docs_family: "EXAONE",
+        family_id: "exaone",
+        layer_count: 30,
+        activation_width: 2560,
+        boundaries: Some(&[10, 20]),
+        wire_multiplier: 1,
+    },
+    FrozenSupportedFamilySplit {
+        docs_family: "EXAONE4",
+        family_id: "exaone4",
+        layer_count: 30,
+        activation_width: 2048,
+        boundaries: Some(&[10, 20]),
+        wire_multiplier: 1,
+    },
+    FrozenSupportedFamilySplit {
+        docs_family: "EXAONE-MoE",
+        family_id: "exaone_moe",
+        layer_count: 49,
+        activation_width: 6144,
+        boundaries: None,
+        wire_multiplier: 1,
+    },
+    FrozenSupportedFamilySplit {
+        docs_family: "Cohere2",
+        family_id: "cohere2",
+        layer_count: 32,
+        activation_width: 4096,
+        boundaries: Some(&[10, 21]),
+        wire_multiplier: 1,
+    },
+    FrozenSupportedFamilySplit {
+        docs_family: "MiniMax M2.7",
+        family_id: "minimax_m27",
+        layer_count: 62,
+        activation_width: 3072,
+        boundaries: Some(&[20, 41]),
+        wire_multiplier: 1,
+    },
+    FrozenSupportedFamilySplit {
+        docs_family: "Qwen3Next",
+        family_id: "qwen3next",
+        layer_count: 48,
+        activation_width: 2048,
+        boundaries: Some(&[16, 32]),
+        wire_multiplier: 1,
+    },
+    FrozenSupportedFamilySplit {
+        docs_family: "Arcee",
+        family_id: "arcee",
+        layer_count: 36,
+        activation_width: 2560,
+        boundaries: Some(&[12, 24]),
+        wire_multiplier: 1,
+    },
+    FrozenSupportedFamilySplit {
+        docs_family: "ChatGLM",
+        family_id: "chatglm",
+        layer_count: 28,
+        activation_width: 4096,
+        boundaries: Some(&[9, 18]),
+        wire_multiplier: 1,
+    },
+    FrozenSupportedFamilySplit {
+        docs_family: "CodeShell",
+        family_id: "codeshell",
+        layer_count: 42,
+        activation_width: 4096,
+        boundaries: Some(&[14, 28]),
+        wire_multiplier: 1,
+    },
+    FrozenSupportedFamilySplit {
+        docs_family: "Deci",
+        family_id: "deci",
+        layer_count: 32,
+        activation_width: 4096,
+        boundaries: Some(&[10, 21]),
+        wire_multiplier: 1,
+    },
+    FrozenSupportedFamilySplit {
+        docs_family: "Qwen3.5 recurrent",
+        family_id: "qwen35",
+        layer_count: 32,
+        activation_width: 2560,
+        boundaries: Some(&[10, 21]),
+        wire_multiplier: 1,
+    },
+    FrozenSupportedFamilySplit {
+        docs_family: "XVerse",
+        family_id: "xverse",
+        layer_count: 32,
+        activation_width: 4096,
+        boundaries: Some(&[10, 21]),
+        wire_multiplier: 1,
+    },
+    FrozenSupportedFamilySplit {
+        docs_family: "Maincoder",
+        family_id: "maincoder",
+        layer_count: 32,
+        activation_width: 1536,
+        boundaries: Some(&[10, 21]),
+        wire_multiplier: 1,
+    },
+    FrozenSupportedFamilySplit {
+        docs_family: "OpenELM",
+        family_id: "openelm",
+        layer_count: 16,
+        activation_width: 1280,
+        boundaries: Some(&[5, 10]),
+        wire_multiplier: 1,
+    },
+    FrozenSupportedFamilySplit {
+        docs_family: "MiniCPM",
+        family_id: "minicpm",
+        layer_count: 40,
+        activation_width: 2304,
+        boundaries: Some(&[13, 26]),
+        wire_multiplier: 1,
+    },
+    FrozenSupportedFamilySplit {
+        docs_family: "MiniCPM3",
+        family_id: "minicpm3",
+        layer_count: 40,
+        activation_width: 2304,
+        boundaries: Some(&[13, 26]),
+        wire_multiplier: 1,
+    },
+    FrozenSupportedFamilySplit {
+        docs_family: "Plamo3",
+        family_id: "plamo3",
+        layer_count: 24,
+        activation_width: 2560,
+        boundaries: Some(&[8, 16]),
+        wire_multiplier: 1,
+    },
+    FrozenSupportedFamilySplit {
+        docs_family: "PLM",
+        family_id: "plm",
+        layer_count: 24,
+        activation_width: 2048,
+        boundaries: Some(&[8, 16]),
+        wire_multiplier: 1,
+    },
+    FrozenSupportedFamilySplit {
+        docs_family: "Refact",
+        family_id: "refact",
+        layer_count: 32,
+        activation_width: 2048,
+        boundaries: Some(&[10, 21]),
+        wire_multiplier: 1,
+    },
+    FrozenSupportedFamilySplit {
+        docs_family: "SmallThinker",
+        family_id: "smallthinker",
+        layer_count: 36,
+        activation_width: 2048,
+        boundaries: Some(&[12, 24]),
+        wire_multiplier: 1,
+    },
+    FrozenSupportedFamilySplit {
+        docs_family: "SmolLM3",
+        family_id: "smollm3",
+        layer_count: 36,
+        activation_width: 2048,
+        boundaries: Some(&[12, 24]),
+        wire_multiplier: 1,
+    },
+    FrozenSupportedFamilySplit {
+        docs_family: "StableLM",
+        family_id: "stablelm",
+        layer_count: 32,
+        activation_width: 2560,
+        boundaries: Some(&[10, 21]),
+        wire_multiplier: 1,
+    },
+    FrozenSupportedFamilySplit {
+        docs_family: "StarCoder2",
+        family_id: "starcoder2",
+        layer_count: 30,
+        activation_width: 3072,
+        boundaries: Some(&[10, 20]),
+        wire_multiplier: 1,
+    },
+    FrozenSupportedFamilySplit {
+        docs_family: "MPT",
+        family_id: "mpt",
+        layer_count: 32,
+        activation_width: 4096,
+        boundaries: Some(&[10, 21]),
+        wire_multiplier: 1,
+    },
+    FrozenSupportedFamilySplit {
+        docs_family: "DeepSeek-OCR",
+        family_id: "deepseek2ocr",
+        layer_count: 12,
+        activation_width: 1280,
+        boundaries: Some(&[4, 8]),
+        wire_multiplier: 1,
+    },
+];
+
+fn reviewed_capability_for_frozen_family(
+    spec: FrozenSupportedFamilySplit,
+) -> FamilyCapabilityRecord {
+    let mut matches = reviewed_capability_records().into_iter().filter(|record| {
+        record.capability.family_id == spec.family_id
+            && record.capability.layer_count == spec.layer_count
+            && record.capability.activation_width == spec.activation_width
+    });
+    let record = matches.next().unwrap_or_else(|| {
+        panic!(
+            "missing reviewed capability for {} ({})",
+            spec.docs_family, spec.family_id
+        )
+    });
+    assert!(
+        matches.next().is_none(),
+        "multiple reviewed capabilities for {} ({})",
+        spec.docs_family,
+        spec.family_id
+    );
+    record.capability
+}
+
+#[test]
+fn frozen_supported_family_split_contract_matches_planner() {
+    assert_eq!(FROZEN_SUPPORTED_FAMILY_SPLITS.len(), 72);
+    let mut explicit_boundary_rows = 0;
+    let mut no_boundary_rows = 0;
+
+    for spec in FROZEN_SUPPORTED_FAMILY_SPLITS {
+        let family = reviewed_capability_for_frozen_family(*spec);
+        let request = TopologyPlanRequest {
+            topology_id: format!("frozen-{}", spec.family_id),
+            model_id: spec.family_id.to_string(),
+            layers: dense_attention_layers(spec.layer_count, 10),
+            nodes: nodes(3),
+            family: Some(family),
+            policy: PlannerPolicy::default(),
+        };
+
+        let Some(boundaries) = spec.boundaries else {
+            no_boundary_rows += 1;
+            let plan = plan_contiguous_with_splits(&request, &[])
+                .unwrap_or_else(|error| panic!("{} no-cut plan failed: {error}", spec.docs_family));
+            assert_eq!(plan.stages.len(), 1, "{}", spec.docs_family);
+            assert_eq!(
+                (plan.stages[0].layer_start, plan.stages[0].layer_end),
+                (0, spec.layer_count)
+            );
+            assert!(
+                plan.boundaries.is_empty(),
+                "{} invented a split",
+                spec.docs_family
+            );
+            continue;
+        };
+
+        explicit_boundary_rows += 1;
+        let plan = plan_contiguous_with_splits(&request, boundaries)
+            .unwrap_or_else(|error| panic!("{} split plan failed: {error}", spec.docs_family));
+        assert_eq!(
+            plan.family_id.as_deref(),
+            Some(spec.family_id),
+            "{}",
+            spec.docs_family
+        );
+        let mut expected_edges = Vec::with_capacity(boundaries.len() + 1);
+        expected_edges.push(0);
+        expected_edges.extend_from_slice(boundaries);
+        expected_edges.push(spec.layer_count);
+        let expected_ranges = expected_edges
+            .windows(2)
+            .map(|edge| (edge[0], edge[1]))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            plan.stages
+                .iter()
+                .map(|stage| (stage.layer_start, stage.layer_end))
+                .collect::<Vec<_>>(),
+            expected_ranges,
+            "{} stage ranges",
+            spec.docs_family
+        );
+        assert!(
+            plan.boundaries
+                .iter()
+                .all(|boundary| boundary.decision == BoundaryDecision::Accepted),
+            "{} has an unexpected rejected documented boundary",
+            spec.docs_family
+        );
+        let expected_payload_bytes = u64::from(spec.activation_width) * 4 * spec.wire_multiplier;
+        assert!(
+            plan.boundaries.iter().all(|boundary| {
+                boundary.raw_activation_bytes_per_token == expected_payload_bytes
+                    && boundary.wire_payload_bytes_per_token == expected_payload_bytes
+            }),
+            "{} F32 payload bytes",
+            spec.docs_family
+        );
+    }
+
+    assert_eq!(explicit_boundary_rows, 70);
+    assert_eq!(no_boundary_rows, 2);
+}
+
+#[test]
+fn frozen_supported_family_split_exceptions_remain_enforced() {
+    let gemma4_spec = FROZEN_SUPPORTED_FAMILY_SPLITS
+        .iter()
+        .find(|spec| spec.family_id == "gemma4_e4b")
+        .copied()
+        .expect("Gemma4 E4B contract");
+    let gemma4_request = TopologyPlanRequest {
+        topology_id: "frozen-gemma4-e4b-invalid".to_string(),
+        model_id: gemma4_spec.family_id.to_string(),
+        layers: dense_attention_layers(gemma4_spec.layer_count, 10),
+        nodes: nodes(2),
+        family: Some(reviewed_capability_for_frozen_family(gemma4_spec)),
+        policy: PlannerPolicy::default(),
+    };
+    for cut in [12, 14, 24, 28] {
+        let plan = plan_contiguous_with_splits(&gemma4_request, &[cut]).expect("Gemma4 plan");
+        assert_eq!(
+            plan.boundaries[0].decision,
+            BoundaryDecision::Rejected,
+            "cut {cut}"
+        );
+        assert!(
+            plan.boundaries[0]
+                .reason_codes
+                .contains(&PlanReasonCode::SharedKvRegionCut)
+        );
+    }
+
+    let gemma3n_spec = FROZEN_SUPPORTED_FAMILY_SPLITS
+        .iter()
+        .find(|spec| spec.family_id == "gemma3n")
+        .copied()
+        .expect("Gemma3n contract");
+    let gemma3n_request = TopologyPlanRequest {
+        topology_id: "frozen-gemma3n".to_string(),
+        model_id: gemma3n_spec.family_id.to_string(),
+        layers: dense_attention_layers(gemma3n_spec.layer_count, 10),
+        nodes: nodes(3),
+        family: Some(reviewed_capability_for_frozen_family(gemma3n_spec)),
+        policy: PlannerPolicy::default(),
+    };
+    let reviewed_chain =
+        plan_contiguous_with_splits(&gemma3n_request, &[10, 15]).expect("Gemma3n chain");
+    assert_eq!(
+        reviewed_chain
+            .stages
+            .iter()
+            .map(|stage| (stage.layer_start, stage.layer_end))
+            .collect::<Vec<_>>(),
+        vec![(0, 10), (10, 15), (15, 30)]
+    );
+    assert!(reviewed_chain.boundaries.iter().all(|boundary| {
+        boundary.decision == BoundaryDecision::Accepted
+            && boundary
+                .reason_codes
+                .contains(&PlanReasonCode::ActivationSidebandRequired)
+            && boundary.raw_activation_bytes_per_token == 32_768
+            && boundary.wire_payload_bytes_per_token == 32_768
+    }));
+    let rejected_final_slice =
+        plan_contiguous_with_splits(&gemma3n_request, &[10, 20]).expect("Gemma3n rejected chain");
+    assert_eq!(
+        rejected_final_slice.boundaries[0].decision,
+        BoundaryDecision::Accepted
+    );
+    assert_eq!(
+        rejected_final_slice.boundaries[1].decision,
+        BoundaryDecision::Rejected
+    );
+    assert!(
+        rejected_final_slice.boundaries[1]
+            .reason_codes
+            .contains(&PlanReasonCode::SharedKvRegionCut)
+    );
+}
+
 #[test]
 fn qwen35_series_inference_covers_qwen36_release_names() {
     // Qwen3.6 and Qwen3.8 load as llama.cpp `qwen35`/`qwen35moe`; there is no
@@ -1670,6 +2338,38 @@ fn qwen35_series_inference_covers_qwen36_release_names() {
             "qwen35 must expose a recurrent range for {identity}"
         );
     }
+}
+
+#[test]
+fn qwen4exp_flash_next_has_its_own_fail_closed_hybrid_policy() {
+    for identity in [
+        "qwen4exp",
+        "qwen4_exp",
+        "Qwen/Qwen3.8-Flash-Next",
+        "unsloth/Qwen3.8-Flash-Next-GGUF:UD-IQ1_S",
+    ] {
+        let family = infer_family_capability(identity, 48, 2560)
+            .unwrap_or_else(|| panic!("expected qwen4exp capability for {identity}"));
+        assert_eq!(family.family_id, "qwen4exp", "wrong family for {identity}");
+        assert_eq!(family.activation_width, 2560);
+        assert_eq!(
+            family.recurrent_ranges,
+            vec![LayerRange { start: 0, end: 48 }],
+            "QWEN4EXP state ownership stays sticky until per-layer certification"
+        );
+        assert_eq!(
+            family.exact_state_mobility,
+            ExactStateMobility::RejectedTooLarge,
+            "QWEN4EXP must not advertise recurrent/indexer state mobility"
+        );
+        assert_eq!(family.sidebands.len(), 1);
+        assert_eq!(family.sidebands[0].kind, SidebandKind::TokenIds);
+        assert_eq!(family.sidebands[0].first_required_layer, 1);
+    }
+
+    let legacy = infer_family_capability("unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_XL", 32, 2560)
+        .expect("legacy Qwen3.8 capability");
+    assert_eq!(legacy.family_id, "qwen35");
 }
 
 #[test]

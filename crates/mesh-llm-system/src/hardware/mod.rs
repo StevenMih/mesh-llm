@@ -123,6 +123,8 @@ impl std::error::Error for PinnedGpuResolverError {}
 #[derive(Default, Debug, Clone, PartialEq)]
 pub struct HardwareSurvey {
     pub vram_bytes: u64,
+    /// GPU name as reported by the OS/driver (e.g. Metal, nvidia-smi, ROCm).
+    /// Best-effort and OS-reported, not an independently verified measurement.
     pub gpu_name: Option<String>,
     pub gpu_count: u8,
     pub hostname: Option<String>,
@@ -187,9 +189,25 @@ fn read_system_ram_bytes() -> u64 {
     .unwrap_or(0)
 }
 
-#[cfg(all(target_os = "linux", any(feature = "skippy-devices", test)))]
-fn apply_cpu_only_runtime_budget(survey: &mut HardwareSurvey, metrics: &[Metric], system_ram: u64) {
-    if metrics.contains(&Metric::VramBytes) && system_ram > 0 {
+#[cfg(target_os = "windows")]
+fn read_system_ram_bytes() -> u64 {
+    read_windows_total_ram_bytes().unwrap_or(0)
+}
+
+#[cfg(all(
+    any(target_os = "linux", target_os = "windows"),
+    any(feature = "skippy-devices", test)
+))]
+fn apply_cpu_only_runtime_budget(
+    survey: &mut HardwareSurvey,
+    metrics: &[Metric],
+    system_ram: impl FnOnce() -> u64,
+) {
+    if !metrics.contains(&Metric::VramBytes) {
+        return;
+    }
+    let system_ram = system_ram();
+    if system_ram > 0 {
         survey.vram_bytes = (system_ram as f64 * 0.75) as u64;
     }
 }
@@ -256,6 +274,30 @@ fn read_windows_video_controllers() -> Vec<(String, u64)> {
     parse_windows_video_controller_json(&output)
 }
 
+/// Owns an Objective-C object retained via the "create rule" (e.g.
+/// `MTLCreateSystemDefaultDevice`, `NS_RETURNS_RETAINED`) and releases it on
+/// drop, so every return path -- including early `?`/null-check returns --
+/// balances the retain instead of leaking the object.
+#[cfg(target_os = "macos")]
+struct RetainedObjcObject(*mut std::ffi::c_void);
+
+#[cfg(target_os = "macos")]
+impl Drop for RetainedObjcObject {
+    /// Releases the retained object, balancing the "create rule" retain.
+    fn drop(&mut self) {
+        if self.0.is_null() {
+            return;
+        }
+        #[link(name = "objc")]
+        unsafe extern "C" {
+            fn objc_release(obj: *mut std::ffi::c_void);
+        }
+        unsafe { objc_release(self.0) };
+    }
+}
+
+/// Queries the Metal-recommended working-set size in bytes for the default
+/// device — best-effort, OS-reported, not a verified measurement.
 #[cfg(target_os = "macos")]
 fn query_metal_recommended_working_set_bytes() -> Option<u64> {
     use std::ffi::{c_char, c_void};
@@ -277,6 +319,7 @@ fn query_metal_recommended_working_set_bytes() -> Option<u64> {
         if device.is_null() {
             return None;
         }
+        let _device = RetainedObjcObject(device);
         let selector = c"recommendedMaxWorkingSetSize";
         let selector = sel_registerName(selector.as_ptr());
         if selector.is_null() {
@@ -284,6 +327,56 @@ fn query_metal_recommended_working_set_bytes() -> Option<u64> {
         }
         let bytes = objc_msgSend(device, selector) as u64;
         (bytes > 0).then_some(bytes)
+    }
+}
+
+/// Queries the GPU name as reported by the OS via `MTLDevice.name` (e.g.
+/// "Apple M4 Max" or "AMD Radeon Pro 5500M") — best-effort, not a verified
+/// measurement, but sourced from the GPU device rather than the CPU.
+#[cfg(target_os = "macos")]
+fn query_metal_device_name() -> Option<String> {
+    use std::ffi::{CStr, c_char, c_void};
+
+    // `objc_msgSend` is declared to return `usize` here (matching the other
+    // FFI declaration of the same linked symbol above) and the pointer
+    // results below are recovered with `as *mut/*const _` casts, to avoid a
+    // `clashing_extern_declarations` warning from two conflicting return
+    // types for one symbol.
+    #[link(name = "objc")]
+    unsafe extern "C" {
+        fn sel_registerName(name: *const c_char) -> *mut c_void;
+        fn objc_msgSend(receiver: *mut c_void, selector: *mut c_void, ...) -> usize;
+    }
+
+    unsafe {
+        let metal =
+            libloading::Library::new("/System/Library/Frameworks/Metal.framework/Versions/A/Metal")
+                .ok()?;
+        let create_device = metal
+            .get::<unsafe extern "C" fn() -> *mut c_void>(b"MTLCreateSystemDefaultDevice")
+            .ok()?;
+        let device = create_device();
+        if device.is_null() {
+            return None;
+        }
+        let _device = RetainedObjcObject(device);
+        let name_sel = sel_registerName(c"name".as_ptr());
+        if name_sel.is_null() {
+            return None;
+        }
+        let name_obj = objc_msgSend(device, name_sel) as *mut c_void;
+        if name_obj.is_null() {
+            return None;
+        }
+        let utf8_sel = sel_registerName(c"UTF8String".as_ptr());
+        if utf8_sel.is_null() {
+            return None;
+        }
+        let utf8_ptr = objc_msgSend(name_obj, utf8_sel) as *const c_char;
+        if utf8_ptr.is_null() {
+            return None;
+        }
+        Some(CStr::from_ptr(utf8_ptr).to_string_lossy().into_owned())
     }
 }
 
@@ -302,17 +395,59 @@ fn apply_skippy_backend_devices_to_survey(survey: &mut HardwareSurvey, metrics: 
         return false;
     }
 
-    let gpus = match skippy_devices::gpu_facts() {
+    apply_gpu_probe_outcome_to_survey(
+        survey,
+        metrics,
+        skippy_devices::gpu_facts(),
+        survey_system_ram,
+    )
+}
+
+/// System RAM the survey may credit (CPU-only budgets and the discrete-GPU
+/// RAM-offload credit). Real read on Linux and Windows; zero elsewhere, which
+/// leaves those platforms' VRAM budgets untouched.
+#[cfg(any(feature = "skippy-devices", test))]
+#[cfg_attr(
+    not(any(feature = "skippy-devices", target_os = "linux", target_os = "windows")),
+    allow(dead_code)
+)]
+fn survey_system_ram() -> u64 {
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    {
+        read_system_ram_bytes()
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    {
+        0
+    }
+}
+
+/// Applies a GPU probe outcome to the survey. The real probe (skippy device
+/// enumeration, /proc/meminfo, the Windows CIM query) stays in the callers so
+/// this decision can be exercised with injected values on every platform.
+/// The system RAM closure feeds the CPU-only fallback branches and the
+/// discrete-GPU RAM-offload credit; it runs only when VramBytes is requested,
+/// and never for a unified-memory survey, so probes that skip VramBytes never
+/// pay for it. Platform gating lives in the production RAM source
+/// (`survey_system_ram`), which keeps this seam platform-pure.
+#[cfg(any(feature = "skippy-devices", test))]
+fn apply_gpu_probe_outcome_to_survey<E>(
+    survey: &mut HardwareSurvey,
+    metrics: &[Metric],
+    probe: Result<Vec<GpuFacts>, E>,
+    system_ram: impl FnOnce() -> u64,
+) -> bool {
+    let gpus = match probe {
         Ok(gpus) => gpus,
         Err(_) => {
-            #[cfg(target_os = "linux")]
-            apply_cpu_only_runtime_budget(survey, metrics, read_system_ram_bytes());
+            #[cfg(any(target_os = "linux", target_os = "windows"))]
+            apply_cpu_only_runtime_budget(survey, metrics, system_ram);
             return true;
         }
     };
     if gpus.is_empty() {
-        #[cfg(target_os = "linux")]
-        apply_cpu_only_runtime_budget(survey, metrics, read_system_ram_bytes());
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
+        apply_cpu_only_runtime_budget(survey, metrics, system_ram);
         return true;
     }
 
@@ -323,22 +458,22 @@ fn apply_skippy_backend_devices_to_survey(survey: &mut HardwareSurvey, metrics: 
     if metrics.contains(&Metric::GpuCount) {
         survey.gpu_count = u8::try_from(gpus.len()).unwrap_or(u8::MAX);
     }
+    // Decided from the probe itself, not from the requested metrics: a
+    // VramBytes-only query must still route unified memory through the
+    // reserved-bytes path instead of crediting system RAM as offload.
+    let unified_memory = gpus.iter().any(|gpu| gpu.unified_memory);
     if metrics.contains(&Metric::IsSoc) {
-        survey.is_soc = gpus.iter().any(|gpu| gpu.unified_memory);
+        survey.is_soc = unified_memory;
     }
     if metrics.contains(&Metric::VramBytes) {
         survey.gpu_vram = gpus.iter().map(|gpu| gpu.vram_bytes).collect();
         survey.gpu_reserved = gpus.iter().map(|gpu| gpu.reserved_bytes).collect();
         let vram: u64 = survey.gpu_vram.iter().sum();
-        if survey.is_soc {
+        if unified_memory {
             let reserved: u64 = survey.gpu_reserved.iter().flatten().copied().sum();
             survey.vram_bytes = vram.saturating_sub(reserved);
         } else {
-            #[cfg(target_os = "linux")]
-            let system_ram = read_system_ram_bytes();
-            #[cfg(not(target_os = "linux"))]
-            let system_ram = 0u64;
-            let ram_offload = system_ram.saturating_sub(vram);
+            let ram_offload = system_ram().saturating_sub(vram);
             survey.vram_bytes = vram + (ram_offload as f64 * 0.90) as u64;
         }
     }
@@ -376,17 +511,8 @@ impl Collector for DefaultCollector {
                 survey.gpu_vram = vec![vram_bytes];
                 survey.gpu_reserved = vec![reserved_bytes];
             }
-            let macos_gpu_name = if metrics.contains(&Metric::GpuName) {
-                std::process::Command::new("sysctl")
-                    .args(["-n", "machdep.cpu.brand_string"])
-                    .output()
-                    .ok()
-                    .and_then(|out| String::from_utf8(out.stdout).ok())
-            } else {
-                None
-            };
-            if let Some(gpu_name) = macos_gpu_name {
-                survey.gpu_name = parse_macos_cpu_brand(&gpu_name);
+            if metrics.contains(&Metric::GpuName) {
+                survey.gpu_name = sanitize_macos_gpu_name(query_metal_device_name());
             }
             if metrics.contains(&Metric::GpuCount) {
                 survey.gpu_count = 1;

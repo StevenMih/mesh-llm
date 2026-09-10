@@ -1,10 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LLAMA_BUILD_DIR="${LLAMA_STAGE_BUILD_DIR:-.deps/llama-build/build-stage-abi-static}"
-MODEL_REPO="${MODEL_REPO:-jc-builds/SmolLM2-135M-Instruct-Q4_K_M-GGUF}"
-MODEL_FILE="${MODEL_FILE:-SmolLM2-135M-Instruct.Q4_K_M.gguf}"
-MODEL_SELECTOR="${MODEL_SELECTOR:-Q4_K_M}"
+MODEL_MANIFEST="${MODEL_MANIFEST:-$ROOT/ci/model-artifacts/manifests/openai-smoke.json}"
+MODEL_IDENTITY_OVERRIDDEN=0
+if [[ -n "${MODEL_REPO:-}" || -n "${MODEL_FILE:-}" || -n "${MODEL_SELECTOR:-}" || -n "${MODEL_REVISION:-}" || -n "${MODEL_PATH:-}" ]]; then
+  MODEL_IDENTITY_OVERRIDDEN=1
+fi
+MODEL_FIXTURE="$(python3 "$ROOT/scripts/resolve-test-model-manifest.py" "$MODEL_MANIFEST" --cadence manual)"
+MODEL_REPO="${MODEL_REPO:-$(jq -r '.repo' <<<"$MODEL_FIXTURE")}"
+MODEL_FILE="${MODEL_FILE:-$(jq -r '.file' <<<"$MODEL_FIXTURE")}"
+MODEL_SELECTOR="${MODEL_SELECTOR:-$(jq -r '.selector' <<<"$MODEL_FIXTURE")}"
+MODEL_REVISION="${MODEL_REVISION:-$(jq -r '.revision' <<<"$MODEL_FIXTURE")}"
 MODEL_ID="${MODEL_ID:-${MODEL_REPO}:${MODEL_SELECTOR}}"
 MODEL_PATH="${MODEL_PATH:-}"
 TOKENIZER="${TOKENIZER:-HuggingFaceTB/SmolLM2-135M-Instruct}"
@@ -59,7 +67,7 @@ if [[ -z "$MODEL_PATH" ]]; then
   else
     require_cmd hf
     echo "downloading ${MODEL_REPO}/${MODEL_FILE} into ${MODEL_CACHE_DIR}"
-    MODEL_PATH="$(hf download "$MODEL_REPO" "$MODEL_FILE" --local-dir "$MODEL_CACHE_DIR" | sed -n 's/^path=//p' | tail -n 1)"
+    MODEL_PATH="$(hf download "$MODEL_REPO" "$MODEL_FILE" --revision "$MODEL_REVISION" --local-dir "$MODEL_CACHE_DIR" | sed -n 's/^path=//p' | tail -n 1)"
     if [[ -z "$MODEL_PATH" ]]; then
       MODEL_PATH="${MODEL_CACHE_DIR}/${MODEL_FILE}"
     fi
@@ -69,6 +77,12 @@ fi
 if [[ ! -f "$MODEL_PATH" ]]; then
   echo "model path not found: $MODEL_PATH" >&2
   exit 1
+fi
+if [[ "$MODEL_IDENTITY_OVERRIDDEN" == "0" ]]; then
+  python3 "$ROOT/scripts/resolve-test-model-manifest.py" \
+    "$MODEL_MANIFEST" \
+    --cadence manual \
+    --verify-root "$(dirname "$MODEL_PATH")"
 fi
 
 echo "building skippy-server and skippy-model-package"
@@ -87,14 +101,20 @@ fi
 CONFIG_PATH="${WORK_DIR}/stage-openai-smoke.json"
 python3 - "$CONFIG_PATH" "$MODEL_ID" "$MODEL_PATH" "$LAYER_END" "$CTX_SIZE" <<'PY'
 import json
+import hashlib
 import sys
 
 config_path, model_id, model_path, layer_end, ctx_size = sys.argv[1:]
+model_digest = hashlib.sha256()
+with open(model_path, "rb") as model_file:
+    for chunk in iter(lambda: model_file.read(1024 * 1024), b""):
+        model_digest.update(chunk)
 config = {
     "run_id": "openai-smoke",
     "topology_id": "openai-smoke-single-stage",
     "model_id": model_id,
     "model_path": model_path,
+    "source_model_sha256": model_digest.hexdigest(),
     "stage_id": "stage-0",
     "stage_index": 0,
     "layer_start": 0,
@@ -121,11 +141,12 @@ fi
 
 SERVER_LOG="${WORK_DIR}/serve-openai.log"
 echo "starting serve-openai on ${BASE_URL}"
-LLAMA_STAGE_BUILD_DIR="$LLAMA_BUILD_DIR" \
+SKIPPY_TELEMETRY_STDERR=1 LLAMA_STAGE_BUILD_DIR="$LLAMA_BUILD_DIR" \
   target/debug/skippy-server serve-openai \
     --config "$CONFIG_PATH" \
     --bind-addr "${HOST}:${PORT}" \
     --default-max-tokens "$DEFAULT_MAX_TOKENS" \
+    --telemetry-level debug \
     >"$SERVER_LOG" 2>&1 &
 SERVER_PID="$!"
 
@@ -216,7 +237,7 @@ echo "probing unsupported sampling rejection"
 unsupported_sampling_request="$(jq -cn --arg model "$MODEL_ID" '{
   model: $model,
   messages: [{role: "user", content: "Say hi"}],
-  min_p: 0.1,
+  typical_p: 0.9,
   max_tokens: 2
 }')"
 unsupported_sampling_response="${WORK_DIR}/unsupported-sampling-response.json"
@@ -235,6 +256,12 @@ if [[ "$unsupported_sampling_status" != "400" ]]; then
 fi
 unsupported_sampling_json="$(cat "$unsupported_sampling_response")"
 echo "$unsupported_sampling_json" | jq -e '.error.code == "unsupported_model_feature"' >/dev/null
+
+if ! grep -q '"event":"stage.scheduler_iteration"' "$SERVER_LOG"; then
+  echo "default OpenAI request path did not emit scheduler iteration telemetry" >&2
+  tail -80 "$SERVER_LOG" >&2 || true
+  exit 1
+fi
 
 if [[ "$RUN_BENCHY" == "1" ]]; then
   require_cmd uvx

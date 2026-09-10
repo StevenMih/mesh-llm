@@ -16,13 +16,13 @@ use crate::inference::election;
 use crate::logging::OpenAiRouteObserver;
 use crate::mesh;
 use crate::network::openai::automatic;
+use crate::network::openai::client_stream::ClientStream;
 use crate::network::openai::transport as proxy;
 use mesh_llm_events::logging::events::TokenUsage;
 use mesh_mixture_of_agents as moa;
-use tokio::net::TcpStream;
 
 pub(crate) enum MoaDispatchResult {
-    Passthrough(TcpStream),
+    Passthrough(ClientStream),
     Responded(u16),
     RespondedWithUsage {
         status_code: u16,
@@ -45,7 +45,7 @@ async fn degrade_to_single_model(
     node: &mesh::Node,
     targets: Option<&election::ModelTargets>,
     required_tokens: Option<u32>,
-    tcp_stream: TcpStream,
+    tcp_stream: ClientStream,
     request: &mut proxy::BufferedHttpRequest,
     route_observer: OpenAiRouteObserver<'_>,
 ) -> MoaDispatchResult {
@@ -147,10 +147,17 @@ fn committee_admission(
     CommitteeAdmission::Admitted
 }
 
+/// Per-request routing inputs shared with ordinary single-model routing.
+pub struct MoaRoutingContext<'a> {
+    pub targets: Option<&'a election::ModelTargets>,
+    pub required_tokens: Option<u32>,
+    pub affinity: &'a crate::network::affinity::AffinityRouter,
+}
+
 /// Detect `model: "mesh"`, build a mesh-wide MoA config, run the turn,
 /// and write the HTTP response (JSON or SSE) directly to the stream.
 ///
-/// Return value carries the un-consumed `TcpStream` so the caller knows
+/// Return value carries the un-consumed `ClientStream` so the caller knows
 /// what to do next:
 ///
 /// * `Some(stream)` — the request is *not* MoA-shaped (effective model
@@ -163,11 +170,10 @@ fn committee_admission(
 ///   must *not* attempt to respond again.
 pub async fn try_handle_moa(
     node: &mesh::Node,
-    tcp_stream: TcpStream,
+    tcp_stream: ClientStream,
     request: &mut proxy::BufferedHttpRequest,
     effective_model: Option<&str>,
-    targets: Option<&election::ModelTargets>,
-    required_tokens: Option<u32>,
+    routing: MoaRoutingContext<'_>,
     route_observer: OpenAiRouteObserver<'_>,
 ) -> MoaDispatchResult {
     if !effective_model.is_some_and(automatic::is_directive) {
@@ -214,13 +220,20 @@ pub async fn try_handle_moa(
 
     let enable_thinking = effective_enable_thinking_for_moa(&body_json);
 
-    let Some(mut config) = admitted_gateway_config(node, targets, required_tokens).await else {
+    let Some(mut config) = admitted_gateway_config(
+        node,
+        routing.targets,
+        routing.required_tokens,
+        routing.affinity,
+    )
+    .await
+    else {
         // Zero admitted workers cannot produce a turn, so degrade through the
         // ordinary selector (which returns 503 if no model exists).
         return degrade_to_single_model(
             node,
-            targets,
-            required_tokens,
+            routing.targets,
+            routing.required_tokens,
             tcp_stream,
             request,
             route_observer,
@@ -242,6 +255,7 @@ pub async fn try_handle_moa(
 pub(in crate::network::openai) mod context_selection;
 mod pool;
 mod progress;
+mod self_fill;
 mod streaming;
 mod workers;
 
@@ -249,8 +263,9 @@ async fn admitted_gateway_config(
     node: &mesh::Node,
     targets: Option<&election::ModelTargets>,
     required_tokens: Option<u32>,
+    affinity: &crate::network::affinity::AffinityRouter,
 ) -> Option<moa::GatewayConfig> {
-    let config = build_moa_candidate_config(node, targets, required_tokens).await;
+    let config = build_moa_candidate_config(node, targets, required_tokens, affinity).await;
     let worker_count = config.models.len();
     if gateway_required(worker_count) {
         return Some(config);
@@ -278,7 +293,7 @@ fn gateway_required(worker_count: usize) -> bool {
 /// be derived from the finished `TurnResult`.
 /// Caller has already validated the request and built the config.
 async fn run_moa_turn(
-    tcp_stream: TcpStream,
+    tcp_stream: ClientStream,
     body_json: serde_json::Value,
     config: &moa::GatewayConfig,
     response_adapter: proxy::ResponseAdapter,
@@ -406,6 +421,7 @@ mod usage_tests {
             ),
             Some(TokenUsage {
                 prompt_tokens: Some(12),
+                cached_prompt_tokens: None,
                 completion_tokens: Some(7),
                 total_tokens: Some(19),
             })
@@ -416,6 +432,7 @@ mod usage_tests {
     fn moa_failure_status_discards_usage_and_remains_exact() {
         let usage = Some(TokenUsage {
             prompt_tokens: Some(12),
+            cached_prompt_tokens: None,
             completion_tokens: Some(7),
             total_tokens: Some(19),
         });
@@ -428,3 +445,15 @@ mod usage_tests {
         ));
     }
 }
+
+#[cfg(test)]
+#[path = "fleet_sim_tests.rs"]
+mod fleet_sim_tests;
+
+#[cfg(test)]
+#[path = "fleet_fairness_tests.rs"]
+mod fleet_fairness_tests;
+
+#[cfg(test)]
+#[path = "fleet_scale_tests.rs"]
+mod fleet_scale_tests;

@@ -46,11 +46,55 @@ fn relay_health_reconnects_degraded_relay_paths() {
                 kind: SelectedPathKind::Relay,
                 rtt_ms: Some(RELAY_DEGRADED_RTT_MS + 50),
             },
+            false,
             now,
             0,
             true,
         ),
         Some(RelayReconnectReason::RelayRttDegraded)
+    );
+}
+
+#[test]
+fn relay_health_rescues_known_direct_candidate_after_short_grace() {
+    let now = std::time::Instant::now();
+    let mut health = RelayPeerHealth::default();
+    health.observe(
+        RelayPathSnapshot {
+            kind: SelectedPathKind::Relay,
+            rtt_ms: Some(260),
+        },
+        now - std::time::Duration::from_secs(RELAY_ONLY_DIRECT_RESCUE_SECS + 1),
+    );
+
+    assert_eq!(
+        relay_reconnect_reason(
+            &health,
+            RelayPathSnapshot {
+                kind: SelectedPathKind::Relay,
+                rtt_ms: Some(260),
+            },
+            true,
+            now,
+            0,
+            true,
+        ),
+        Some(RelayReconnectReason::RelayOnlyTooLong)
+    );
+    assert_eq!(
+        relay_reconnect_reason(
+            &health,
+            RelayPathSnapshot {
+                kind: SelectedPathKind::Relay,
+                rtt_ms: Some(260),
+            },
+            false,
+            now,
+            0,
+            true,
+        ),
+        None,
+        "relay-only peers without a direct candidate keep the longer fallback grace"
     );
 }
 
@@ -73,6 +117,7 @@ fn relay_health_reconnects_long_lived_relay_paths() {
                 kind: SelectedPathKind::Relay,
                 rtt_ms: Some(260),
             },
+            false,
             now,
             0,
             true,
@@ -102,6 +147,7 @@ fn relay_health_respects_cooldown_and_inflight_requests() {
                 kind: SelectedPathKind::Relay,
                 rtt_ms: Some(RELAY_DEGRADED_RTT_MS + 10),
             },
+            false,
             now,
             0,
             true,
@@ -118,6 +164,7 @@ fn relay_health_respects_cooldown_and_inflight_requests() {
                 kind: SelectedPathKind::Relay,
                 rtt_ms: Some(RELAY_DEGRADED_RTT_MS + 10),
             },
+            false,
             now,
             1,
             true,
@@ -132,6 +179,7 @@ fn relay_health_respects_cooldown_and_inflight_requests() {
                 kind: SelectedPathKind::Relay,
                 rtt_ms: Some(RELAY_DEGRADED_RTT_MS + 10),
             },
+            false,
             now,
             0,
             false,
@@ -158,6 +206,7 @@ fn relay_reconnect_controller_prioritizes_degraded_rtt_over_aged_relay() {
                         kind: SelectedPathKind::Relay,
                         rtt_ms: Some(250),
                     },
+                    has_direct_candidate: false,
                 },
                 RelayPeerObservation {
                     peer_id: degraded_peer,
@@ -165,6 +214,7 @@ fn relay_reconnect_controller_prioritizes_degraded_rtt_over_aged_relay() {
                         kind: SelectedPathKind::Relay,
                         rtt_ms: Some(250),
                     },
+                    has_direct_candidate: false,
                 },
             ],
             initial,
@@ -183,6 +233,7 @@ fn relay_reconnect_controller_prioritizes_degraded_rtt_over_aged_relay() {
                         kind: SelectedPathKind::Relay,
                         rtt_ms: Some(250),
                     },
+                    has_direct_candidate: false,
                 },
                 RelayPeerObservation {
                     peer_id: degraded_peer,
@@ -190,6 +241,7 @@ fn relay_reconnect_controller_prioritizes_degraded_rtt_over_aged_relay() {
                         kind: SelectedPathKind::Relay,
                         rtt_ms: Some(RELAY_DEGRADED_RTT_MS + 25),
                     },
+                    has_direct_candidate: false,
                 },
             ],
             now,
@@ -257,6 +309,7 @@ fn relay_reconnect_controller_applies_cooldown_after_attempt_and_prunes_gone_pee
                     kind: SelectedPathKind::Relay,
                     rtt_ms: Some(RELAY_DEGRADED_RTT_MS + 10),
                 },
+                has_direct_candidate: false,
             }],
             now,
             0,
@@ -274,6 +327,7 @@ fn relay_reconnect_controller_applies_cooldown_after_attempt_and_prunes_gone_pee
                     kind: SelectedPathKind::Relay,
                     rtt_ms: Some(RELAY_DEGRADED_RTT_MS + 10),
                 },
+                has_direct_candidate: false,
             }],
             now + std::time::Duration::from_secs(RELAY_RECONNECT_COOLDOWN_SECS - 1),
             0,
@@ -290,6 +344,7 @@ fn relay_reconnect_controller_applies_cooldown_after_attempt_and_prunes_gone_pee
                 kind: SelectedPathKind::Direct,
                 rtt_ms: Some(15),
             },
+            has_direct_candidate: false,
         }],
         now + std::time::Duration::from_secs(RELAY_RECONNECT_COOLDOWN_SECS + 1),
         0,
@@ -339,7 +394,9 @@ fn peer_state_test_announcement(addr: EndpointAddr) -> super::PeerAnnouncement {
         artifact_transfer_supported: true,
         stage_protocol_generation_supported: true,
         stage_status_list_supported: true,
+        local_gguf_content_id_supported: true,
         advertised_model_throughput: vec![],
+        cache_affinity: None,
         latency_ms: None,
         latency_source: None,
         latency_age_ms: None,
@@ -964,7 +1021,9 @@ fn gossip_frame_roundtrip_preserves_scanned_model_metadata() {
         artifact_transfer_supported: false,
         stage_protocol_generation_supported: false,
         stage_status_list_supported: false,
+        local_gguf_content_id_supported: false,
         advertised_model_throughput: vec![],
+        cache_affinity: None,
         latency_ms: None,
         latency_source: None,
         latency_age_ms: None,
@@ -1324,7 +1383,9 @@ fn transitive_peer_update_refreshes_metadata_fields() {
         artifact_transfer_supported: true,
         stage_protocol_generation_supported: true,
         stage_status_list_supported: true,
+        local_gguf_content_id_supported: true,
         advertised_model_throughput: vec![],
+        cache_affinity: None,
         latency_ms: None,
         latency_source: None,
         latency_age_ms: None,
@@ -1416,7 +1477,9 @@ fn transitive_peer_merge_preserves_richer_direct_address() {
         artifact_transfer_supported: true,
         stage_protocol_generation_supported: true,
         stage_status_list_supported: true,
+        local_gguf_content_id_supported: true,
         advertised_model_throughput: vec![],
+        cache_affinity: None,
         latency_ms: None,
         latency_source: None,
         latency_age_ms: None,
@@ -1482,7 +1545,9 @@ fn transitive_peer_merge_preserves_richer_direct_address() {
         artifact_transfer_supported: true,
         stage_protocol_generation_supported: true,
         stage_status_list_supported: true,
+        local_gguf_content_id_supported: true,
         advertised_model_throughput: vec![],
+        cache_affinity: None,
         latency_ms: None,
         latency_source: None,
         latency_age_ms: None,

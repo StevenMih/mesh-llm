@@ -7,6 +7,11 @@ fn main() {
     println!("cargo:rerun-if-env-changed=SKIPPY_LLAMA_LINK_MODE");
     println!("cargo:rerun-if-env-changed=LLAMA_STAGE_BACKEND");
     println!("cargo:rerun-if-env-changed=SKIPPY_LLAMA_BACKEND");
+    println!("cargo:rerun-if-env-changed=LLAMA_STAGE_CUDA_ARCHITECTURES");
+    println!("cargo:rerun-if-env-changed=SKIPPY_CUDA_ARCHITECTURES");
+    println!("cargo:rerun-if-env-changed=LLAMA_STAGE_AMDGPU_TARGETS");
+    println!("cargo:rerun-if-env-changed=SKIPPY_AMDGPU_TARGETS");
+    println!("cargo:rerun-if-env-changed=MESH_LLM_LLAMA_BUILD_ROOT");
     println!("cargo:rerun-if-env-changed=SKIPPY_LLAMA_AUTO_BUILD");
     println!("cargo:rerun-if-env-changed=MESH_LLM_AUTO_BUILD_LLAMA");
     println!("cargo:rerun-if-env-changed=CUDA_PATH");
@@ -19,6 +24,29 @@ fn main() {
         return;
     }
 
+    let workspace_root = std::path::PathBuf::from(
+        std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is set"),
+    )
+    .join("../..");
+    println!(
+        "cargo:rerun-if-changed={}",
+        workspace_root.join("scripts/build-llama.sh").display()
+    );
+    let target = std::env::var("TARGET").unwrap_or_default();
+    let backend = std::env::var("LLAMA_STAGE_BACKEND")
+        .or_else(|_| std::env::var("SKIPPY_LLAMA_BACKEND"))
+        .unwrap_or_else(|_| default_backend(&target).to_string());
+    let build_dir = std::env::var("LLAMA_STAGE_BUILD_DIR")
+        .or_else(|_| std::env::var("SKIPPY_LLAMA_BUILD_DIR"))
+        .map(std::path::PathBuf::from)
+        .map(|path| {
+            if path.is_absolute() {
+                path
+            } else {
+                workspace_root.join(path)
+            }
+        })
+        .unwrap_or_else(|_| default_build_dir(&workspace_root, &backend));
     let link_mode =
         std::env::var("LLAMA_STAGE_LINK_MODE").or_else(|_| std::env::var("SKIPPY_LLAMA_LINK_MODE"));
     if link_mode.as_deref() == Ok("dynamic") {
@@ -30,28 +58,16 @@ fn main() {
         println!("cargo:rustc-link-lib=dylib=mtmd");
         println!("cargo:rustc-link-lib=dylib=llama-common");
         println!("cargo:rustc-link-lib=dylib=llama");
+        if target.contains("linux") && backend == "cuda" {
+            // Driverless builders use the toolkit's link-time driver stub.
+            // Resolve the same library CMake selected without embedding its
+            // directory in RPATH or copying it into the runtime package.
+            let cmake_cache = build_dir.join("CMakeCache.txt");
+            println!("cargo:rerun-if-changed={}", cmake_cache.display());
+            link_linux_lib_from_cache(&cmake_cache, "CUDA_cuda_driver_LIBRARY", "cuda");
+        }
         return;
     }
-
-    let workspace_root = std::path::PathBuf::from(
-        std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is set"),
-    )
-    .join("../..");
-    let target = std::env::var("TARGET").unwrap_or_default();
-    let build_dir = std::env::var("LLAMA_STAGE_BUILD_DIR")
-        .or_else(|_| std::env::var("SKIPPY_LLAMA_BUILD_DIR"))
-        .map(std::path::PathBuf::from)
-        .map(|path| {
-            if path.is_absolute() {
-                path
-            } else {
-                workspace_root.join(path)
-            }
-        })
-        .unwrap_or_else(|_| default_build_dir(&workspace_root, &target));
-    let backend = std::env::var("LLAMA_STAGE_BACKEND")
-        .or_else(|_| std::env::var("SKIPPY_LLAMA_BACKEND"))
-        .unwrap_or_else(|_| default_backend(&target).to_string());
     ensure_static_native_ready(&workspace_root, &build_dir, &target, &backend);
 
     let search_dirs = [
@@ -240,9 +256,35 @@ fn main() {
     }
 }
 
-fn default_build_dir(workspace_root: &std::path::Path, target: &str) -> std::path::PathBuf {
-    let suffix = default_backend(target);
-    workspace_root.join(format!(".deps/llama-build/build-stage-abi-static-{suffix}"))
+fn default_build_dir(workspace_root: &std::path::Path, backend: &str) -> std::path::PathBuf {
+    let script = workspace_root.join("scripts/build-llama.sh");
+    let output = std::process::Command::new("bash")
+        .arg(&script)
+        .arg("--print-build-dir")
+        .env("LLAMA_STAGE_BACKEND", backend)
+        .env("LLAMA_STAGE_LINK_MODE", "static")
+        .output()
+        .unwrap_or_else(|error| {
+            panic!(
+                "failed to ask {} for the canonical llama.cpp build directory: {error}",
+                script.display()
+            )
+        });
+    if !output.status.success() {
+        panic!(
+            "{} --print-build-dir failed: {}",
+            script.display(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    let path = String::from_utf8(output.stdout)
+        .expect("build-llama.sh --print-build-dir returned non-UTF-8 output");
+    let path = std::path::PathBuf::from(path.trim());
+    if path.is_absolute() {
+        path
+    } else {
+        workspace_root.join(path)
+    }
 }
 
 fn default_backend(target: &str) -> &'static str {
@@ -288,8 +330,8 @@ fn ensure_static_native_ready(
         );
     }
 
-    println!(
-        "cargo:warning=building patched llama.cpp ABI for mesh-llm SDK ({backend}) at {}",
+    eprintln!(
+        "building patched llama.cpp ABI for mesh-llm SDK ({backend}) at {}",
         build_dir.display()
     );
     run_native_script(

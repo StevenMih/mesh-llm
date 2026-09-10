@@ -3,13 +3,50 @@ use mesh_llm_types::mesh::{DEMAND_TTL_SECS, merge_demand};
 use serde_json::json;
 use std::net::SocketAddr;
 
+mod routing_telemetry;
 mod startup;
 
 pub use startup::detect_vram_bytes_capped;
 use startup::{
     bind_mesh_endpoint, init_owner_runtime, startup_secret_key, wait_for_endpoint_online,
 };
-pub(crate) use startup::{default_plugin_event_source, hardware_snapshot_for_start};
+pub(crate) use startup::{
+    default_plugin_event_source, hardware_snapshot_for_start, startup_transport_config,
+};
+
+/// Upper bound on how long shutdown waits for one iroh endpoint to close.
+///
+/// `Endpoint::close` queues connection-close frames and then waits for peers to
+/// acknowledge them, which iroh documents as up to roughly 3s when connectivity
+/// is bad or a peer has already gone away; it then waits for the endpoint and
+/// connection drivers to stop. Shutdown must stay bounded, so an unresponsive
+/// peer costs this budget and nothing more.
+const ENDPOINT_CLOSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Await `Endpoint::close` under [`ENDPOINT_CLOSE_TIMEOUT`].
+///
+/// Returning early on an already-closed endpoint keeps this idempotent, so a
+/// shutdown path may call it without tracking whether an earlier one did.
+///
+/// On timeout iroh has still *started* closing, which downgrades the drop-time
+/// `abort()` to a no-op, but the endpoint is not marked closed and the
+/// ungraceful-drop ERROR can still be logged. The warning is what tells those
+/// two cases apart in a log.
+async fn close_endpoint_gracefully(endpoint: &Endpoint, label: &str) {
+    if endpoint.is_closed() {
+        return;
+    }
+    if tokio::time::timeout(ENDPOINT_CLOSE_TIMEOUT, endpoint.close())
+        .await
+        .is_err()
+    {
+        tracing::warn!(
+            endpoint = label,
+            timeout_secs = ENDPOINT_CLOSE_TIMEOUT.as_secs(),
+            "iroh endpoint did not finish closing within the shutdown budget; peers may time its connections out instead of seeing them close"
+        );
+    }
+}
 
 /// Lightweight routing table for passive nodes (clients + standby GPU).
 /// Contains just enough info to route requests to the right host.
@@ -39,6 +76,9 @@ pub struct Node {
     pub(crate) owner_keypair: Option<crate::crypto::OwnerKeypair>,
     pub(crate) local_mesh_requirements: crate::MeshRequirements,
     pub(crate) state: Arc<Mutex<MeshState>>,
+    /// Relay-disabled same-identity endpoints that own recovered direct connections.
+    /// See [`super::direct_rescue`] for the ownership and shutdown rules.
+    pub(crate) direct_rescue_endpoints: super::direct_rescue::DirectRescueEndpoints,
     pub(crate) role: Arc<Mutex<NodeRole>>,
     pub(crate) host_role_claims: Arc<Mutex<HostRoleClaims>>,
     pub(crate) models: Arc<Mutex<Vec<String>>>,
@@ -76,13 +116,18 @@ pub struct Node {
     pub(crate) routing_metrics: crate::network::metrics::RoutingMetrics,
     pub(crate) routing_telemetry:
         Arc<std::sync::Mutex<Option<Arc<dyn crate::network::metrics::RoutingTelemetrySink>>>>,
+    pub(crate) cache_affinity_inventory:
+        Arc<std::sync::Mutex<mesh_llm_routing::cache_inventory::CacheInventory>>,
     pub(crate) swarm_capture: Arc<std::sync::Mutex<Option<crate::capture::SwarmCaptureRecorder>>>,
     pub(crate) local_request_metrics: Arc<LocalRequestMetricsSampler>,
     pub(crate) runtime_data_producer: crate::runtime_data::RuntimeDataProducer,
     pub(crate) tunnel_tx:
         tokio::sync::mpsc::Sender<(iroh::endpoint::SendStream, iroh::endpoint::RecvStream)>,
-    pub(crate) tunnel_http_tx:
-        tokio::sync::mpsc::Sender<(iroh::endpoint::SendStream, iroh::endpoint::RecvStream)>,
+    pub(crate) tunnel_http_tx: tokio::sync::mpsc::Sender<(
+        EndpointId,
+        iroh::endpoint::SendStream,
+        iroh::endpoint::RecvStream,
+    )>,
     pub(crate) stage_transport_tx: tokio::sync::mpsc::Sender<(
         EndpointId,
         iroh::endpoint::SendStream,
@@ -95,6 +140,8 @@ pub struct Node {
             >,
         >,
     >,
+    pub(crate) stage_control_lifecycle:
+        Arc<Mutex<Option<crate::inference::skippy::StageControlHandle>>>,
     pub(crate) stage_transport_bridges: Arc<Mutex<HashMap<String, StageTransportBridge>>>,
     pub(crate) stage_transport_aliases: Arc<Mutex<HashMap<String, String>>>,
     pub(crate) stage_topologies: Arc<Mutex<StageTopologyState>>,
@@ -555,78 +602,6 @@ impl Node {
         }
     }
 
-    pub fn record_inference_attempt(
-        &self,
-        model: Option<&str>,
-        target: &crate::inference::election::InferenceTarget,
-        queue_wait: std::time::Duration,
-        attempt_time: std::time::Duration,
-        outcome: crate::network::metrics::AttemptOutcome,
-        completion_tokens: Option<u64>,
-    ) {
-        let attempt_target = match target {
-            crate::inference::election::InferenceTarget::Local(port) => {
-                crate::network::metrics::AttemptTarget::Local(format!("127.0.0.1:{port}"))
-            }
-            crate::inference::election::InferenceTarget::Remote(peer_id) => {
-                crate::network::metrics::AttemptTarget::Remote(peer_id.fmt_short().to_string())
-            }
-            crate::inference::election::InferenceTarget::None => return,
-        };
-        self.routing_metrics.record_attempt(
-            model,
-            attempt_target.clone(),
-            queue_wait,
-            attempt_time,
-            outcome,
-            completion_tokens,
-        );
-        if let Some(sink) = self.routing_telemetry_sink() {
-            sink.record_route_attempt(model, &attempt_target, outcome);
-        }
-        self.publish_routing_runtime_snapshot();
-    }
-
-    pub fn record_endpoint_attempt(
-        &self,
-        model: Option<&str>,
-        endpoint: &str,
-        queue_wait: std::time::Duration,
-        attempt_time: std::time::Duration,
-        outcome: crate::network::metrics::AttemptOutcome,
-        completion_tokens: Option<u64>,
-    ) {
-        let model_ref = model.map(canonical_demand_model_ref);
-        let attempt_target = crate::network::metrics::AttemptTarget::Endpoint(endpoint.to_string());
-        self.routing_metrics.record_attempt(
-            model_ref.as_deref(),
-            attempt_target.clone(),
-            queue_wait,
-            attempt_time,
-            outcome,
-            completion_tokens,
-        );
-        if let Some(sink) = self.routing_telemetry_sink() {
-            sink.record_route_attempt(model_ref.as_deref(), &attempt_target, outcome);
-        }
-        self.publish_routing_runtime_snapshot();
-    }
-
-    pub fn record_routed_request(
-        &self,
-        model: Option<&str>,
-        attempts: usize,
-        outcome: crate::network::metrics::RequestOutcome,
-    ) {
-        let model_ref = model.map(canonical_demand_model_ref);
-        self.routing_metrics
-            .record_request(model_ref.as_deref(), attempts, outcome);
-        if let Some(sink) = self.routing_telemetry_sink() {
-            sink.record_model_request(model_ref.as_deref(), attempts, outcome);
-        }
-        self.publish_routing_runtime_snapshot();
-    }
-
     pub fn local_request_metrics_snapshot(&self) -> LocalRequestMetricsSnapshot {
         self.local_request_metrics.snapshot()
     }
@@ -656,8 +631,72 @@ impl Node {
                 .store(true, std::sync::atomic::Ordering::Release);
             lifecycle.shutdown.notify_waiters();
             let _ = lifecycle.task.await;
-            lifecycle.endpoint.close().await;
+            close_endpoint_gracefully(&lifecycle.endpoint, "owner-control").await;
         }
+        self.shutdown_stage_control().await;
+    }
+
+    async fn shutdown_stage_control(&self) {
+        *self.stage_control_tx.lock().await = None;
+        let lifecycle = self.stage_control_lifecycle.lock().await.take();
+        if let Some(lifecycle) = lifecycle
+            && let Err(error) = lifecycle.shutdown().await
+        {
+            tracing::warn!("stage control shutdown failed: {error:#}");
+        }
+    }
+
+    /// Close the main mesh QUIC endpoint as the last step of runtime shutdown.
+    ///
+    /// iroh only releases an endpoint gracefully when `Endpoint::close` is
+    /// awaited. Dropping it instead makes `EndpointInner::drop` log
+    ///
+    /// ```text
+    /// ERROR iroh::socket: Endpoint dropped without calling `Endpoint::close`. Aborting ungracefully.
+    /// ```
+    ///
+    /// and abort the socket, which also denies peers the connection-close
+    /// frames — they are left to time the connections out and report this node
+    /// as failed rather than as cleanly departed.
+    ///
+    /// Call this only after every subsystem that speaks over the mesh endpoint
+    /// (control listener, plugins, loaded models and their stage connections,
+    /// the final gossip updates) has finished. `accept_loop` observes the close
+    /// as `Endpoint::accept` returning `None` and exits on its own.
+    pub async fn close_endpoint(&self) {
+        // Closing the registry to new installs is what makes this drain
+        // complete: the relay-health monitor is an untracked task holding a
+        // `Node` clone, so without the flag it could park a fresh rescue
+        // endpoint after the drain had already passed, leaving it open and
+        // unowned for the process lifetime.
+        let rescue_endpoints = self.direct_rescue_endpoints.drain_for_shutdown().await;
+
+        // One shared budget for all rescue endpoints, not one each. These are
+        // per-peer, so a mesh with several rescued peers would otherwise add
+        // ENDPOINT_CLOSE_TIMEOUT per endpoint to shutdown before the main
+        // endpoint even starts closing.
+        if !rescue_endpoints.is_empty() {
+            let closes = rescue_endpoints
+                .iter()
+                .map(|endpoint| endpoint.close())
+                .collect::<Vec<_>>();
+            if tokio::time::timeout(
+                ENDPOINT_CLOSE_TIMEOUT,
+                futures_util::future::join_all(closes),
+            )
+            .await
+            .is_err()
+            {
+                tracing::warn!(
+                    endpoint = "direct-rescue",
+                    count = rescue_endpoints.len(),
+                    timeout_secs = ENDPOINT_CLOSE_TIMEOUT.as_secs(),
+                    "direct-rescue endpoints did not finish closing within the shutdown budget; peers may time those connections out instead of seeing them close"
+                );
+            }
+        }
+
+        close_endpoint_gracefully(&self.endpoint, "mesh").await;
     }
 
     #[expect(
@@ -775,6 +814,7 @@ impl Node {
                 requirement_rejected_peers: HashSet::new(),
                 recent_mesh_rejections: VecDeque::new(),
             })),
+            direct_rescue_endpoints: super::direct_rescue::DirectRescueEndpoints::default(),
             role: Arc::new(Mutex::new(role)),
             host_role_claims: Arc::new(Mutex::new(HostRoleClaims::default())),
             models: Arc::new(Mutex::new(Vec::new())),
@@ -807,6 +847,9 @@ impl Node {
             inflight_change_tx,
             routing_metrics: crate::network::metrics::RoutingMetrics::default(),
             routing_telemetry: Arc::new(std::sync::Mutex::new(None)),
+            cache_affinity_inventory: Arc::new(std::sync::Mutex::new(
+                mesh_llm_routing::cache_inventory::CacheInventory::default(),
+            )),
             swarm_capture: Arc::new(std::sync::Mutex::new(None)),
             local_request_metrics: Arc::new(LocalRequestMetricsSampler::default()),
             runtime_data_producer,
@@ -814,6 +857,7 @@ impl Node {
             tunnel_http_tx,
             stage_transport_tx,
             stage_control_tx: Arc::new(Mutex::new(None)),
+            stage_control_lifecycle: Arc::new(Mutex::new(None)),
             stage_transport_bridges: Arc::new(Mutex::new(HashMap::new())),
             stage_transport_aliases: Arc::new(Mutex::new(HashMap::new())),
             stage_topologies: Arc::new(Mutex::new(StageTopologyState::default())),
@@ -951,6 +995,7 @@ impl Node {
                 requirement_rejected_peers: HashSet::new(),
                 recent_mesh_rejections: VecDeque::new(),
             })),
+            direct_rescue_endpoints: super::direct_rescue::DirectRescueEndpoints::default(),
             role: Arc::new(Mutex::new(role)),
             host_role_claims: Arc::new(Mutex::new(HostRoleClaims::default())),
             models: Arc::new(Mutex::new(Vec::new())),
@@ -983,6 +1028,9 @@ impl Node {
             inflight_change_tx,
             routing_metrics: crate::network::metrics::RoutingMetrics::default(),
             routing_telemetry: Arc::new(std::sync::Mutex::new(None)),
+            cache_affinity_inventory: Arc::new(std::sync::Mutex::new(
+                mesh_llm_routing::cache_inventory::CacheInventory::default(),
+            )),
             swarm_capture: Arc::new(std::sync::Mutex::new(None)),
             local_request_metrics: Arc::new(LocalRequestMetricsSampler::default()),
             runtime_data_producer,
@@ -990,6 +1038,7 @@ impl Node {
             tunnel_http_tx,
             stage_transport_tx,
             stage_control_tx: Arc::new(Mutex::new(None)),
+            stage_control_lifecycle: Arc::new(Mutex::new(None)),
             stage_transport_bridges: Arc::new(Mutex::new(HashMap::new())),
             stage_transport_aliases: Arc::new(Mutex::new(HashMap::new())),
             stage_topologies: Arc::new(Mutex::new(StageTopologyState::default())),
@@ -1146,6 +1195,12 @@ impl Node {
     #[cfg(test)]
     pub async fn insert_test_peer(&self, peer: PeerInfo) {
         self.state.lock().await.peers.insert(peer.id, peer);
+    }
+
+    /// Drop a peer from the local mesh view, simulating churn.
+    #[cfg(test)]
+    pub async fn remove_test_peer(&self, id: EndpointId) {
+        self.state.lock().await.peers.remove(&id);
     }
 }
 impl Node {

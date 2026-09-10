@@ -19,6 +19,7 @@ set -euo pipefail
 MESH_LLM_REF="${MESH_LLM_REF:-main}"
 SOURCE_REVISION="${SOURCE_REVISION:-main}"
 SOURCE_QUANT="${SOURCE_QUANT:-}"
+: "${SOURCE_REPO:?SOURCE_REPO is required}"
 if [ -z "$SOURCE_QUANT" ] && [[ "${MODEL_ID:-}" == *:* ]]; then
     SOURCE_QUANT="${MODEL_ID##*:}"
 fi
@@ -170,6 +171,7 @@ rm -rf /var/lib/apt/lists/*
 
 echo "=== [2/9] Installing Rust ==="
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y > /dev/null 2>&1
+# shellcheck source=/dev/null
 source "${CARGO_HOME}/env"
 
 echo "=== [3/9] Cloning mesh-llm and building skippy-model-package ==="
@@ -237,19 +239,39 @@ cat > "$ARTIFACT_UPLOAD_SCRIPT" <<'PYTHON'
 from huggingface_hub import HfApi
 from pathlib import Path
 import os
+import time
 
 path = Path(os.environ["SKIPPY_PACKAGE_ARTIFACT_PATH"])
 relative = os.environ["SKIPPY_PACKAGE_ARTIFACT_RELATIVE_PATH"]
 target_repo = os.environ["TARGET_REPO"]
+max_attempts = int(os.environ.get("ARTIFACT_UPLOAD_ATTEMPTS", "4"))
 
 api = HfApi(token=os.environ["HF_TOKEN"])
-api.upload_file(
-    repo_id=target_repo,
-    path_or_fileobj=str(path),
-    path_in_repo=relative,
-    repo_type="model",
-    commit_message=f"Add package artifact {relative}",
-)
+last_error = None
+for attempt in range(1, max_attempts + 1):
+    try:
+        api.upload_file(
+            repo_id=target_repo,
+            path_or_fileobj=str(path),
+            path_in_repo=relative,
+            repo_type="model",
+            commit_message=f"Add package artifact {relative}",
+        )
+        last_error = None
+        break
+    except Exception as err:
+        last_error = err
+        if attempt == max_attempts:
+            break
+        delay = min(60, 5 * attempt)
+        print(
+            f"  Upload failed for {relative} on attempt {attempt}/{max_attempts}: {err}. "
+            f"Retrying in {delay}s...",
+            flush=True,
+        )
+        time.sleep(delay)
+if last_error is not None:
+    raise last_error
 size = path.stat().st_size
 path.unlink()
 print(f"  Uploaded and removed {relative} ({size} bytes)")
@@ -353,11 +375,11 @@ fi
 echo "  Finished write-package at $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 log_storage_snapshot "after write-package"
 
-SOURCE_PATH="$(python3 -c "import json, os; m=json.load(open(os.path.join(os.environ['PACKAGE_DIR'], 'model-package.json'))); print(m['source_model']['path'])")"
-echo "  Cached source: $SOURCE_PATH ($(du -h "$SOURCE_PATH" | cut -f1))"
+SOURCE_IDENTITY="$(python3 -c "import json, os; m=json.load(open(os.path.join(os.environ['PACKAGE_DIR'], 'model-package.json'))); s=m['source_model']; print(s.get('canonical_ref') or s.get('primary_file') or s['sha256'])")"
+echo "  Source identity: $SOURCE_IDENTITY"
 
 LAYER_COUNT="$(python3 -c "import json, os; m=json.load(open(os.path.join(os.environ['PACKAGE_DIR'], 'model-package.json'))); print(m['layer_count'])")"
-TOTAL_SIZE="$(python3 -c "import json, os; m=json.load(open(os.path.join(os.environ['PACKAGE_DIR'], 'model-package.json'))); print(sum(int(a.get('artifact_bytes') or 0) for a in list(m['shared'].values()) + m.get('layers', []) + m.get('projectors', [])))")"
+TOTAL_SIZE="$(python3 -c "import json, os; m=json.load(open(os.path.join(os.environ['PACKAGE_DIR'], 'model-package.json'))); print(sum(int(a['byte_size']) for a in m['artifact_catalog']['entries']))")"
 TOTAL_SIZE_LABEL="$(format_bytes "$TOTAL_SIZE")"
 echo "  ✓ Split into $LAYER_COUNT layers; artifacts uploaded incrementally (${TOTAL_SIZE_LABEL} total)"
 
@@ -371,16 +393,18 @@ from pathlib import Path
 
 manifest_path = Path(os.environ["PACKAGE_DIR"]) / "model-package.json"
 manifest = json.loads(manifest_path.read_text())
-required = [
-    manifest["shared"]["metadata"],
-    manifest["shared"]["embeddings"],
-    manifest["shared"]["output"],
-    *manifest.get("layers", []),
-    *manifest.get("projectors", []),
+required = manifest["artifact_catalog"]["entries"]
+missing = [
+    artifact
+    for artifact in required
+    if not artifact.get("id")
+    or not artifact.get("path")
+    or not artifact.get("sha256")
+    or not isinstance(artifact.get("byte_size"), int)
+    or artifact["byte_size"] <= 0
 ]
-missing = [artifact for artifact in required if not artifact.get("path") or not artifact.get("sha256")]
 if missing:
-    raise SystemExit(f"manifest contains {len(missing)} artifacts without path/checksum")
+    raise SystemExit(f"manifest contains {len(missing)} incomplete artifact catalog entries")
 print(f"  ✓ Manifest records {len(required)} uploaded artifacts")
 PYTHON
 

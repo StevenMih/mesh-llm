@@ -218,6 +218,61 @@ ngram_max_proposal_tokens = 6
     assert_eq!(model.verify_window_pipeline_depth, Some(3));
 }
 
+#[test]
+fn cli_checkpoint_overrides_are_canonical_and_take_precedence() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let imatrix = temp.path().join("test.imatrix");
+    std::fs::write(&imatrix, b"fixture").expect("write fixture");
+    let mut config: plugin::MeshConfig = toml::from_str(
+        r#"
+[defaults.hardware]
+checkpoint_quantization = "F16"
+checkpoint_imatrix = "old-default.dat"
+
+[[models]]
+model = "test/model"
+
+[models.hardware]
+checkpoint_quantization = "Q8_0"
+checkpoint_imatrix = "old-model.dat"
+"#,
+    )
+    .expect("config parses");
+
+    apply_runtime_cli_checkpoint_overrides(&mut config, Some("q4-k"), Some(&imatrix))
+        .expect("CLI overrides apply");
+
+    let canonical_imatrix = std::fs::canonicalize(&imatrix)
+        .expect("canonical imatrix")
+        .to_string_lossy()
+        .into_owned();
+    let defaults = config
+        .defaults
+        .as_ref()
+        .and_then(|defaults| defaults.hardware.as_ref())
+        .expect("default hardware");
+    assert_eq!(defaults.checkpoint_quantization.as_deref(), Some("Q4_K_M"));
+    assert_eq!(
+        defaults.checkpoint_imatrix.as_deref(),
+        Some(canonical_imatrix.as_str())
+    );
+    let model = config.models[0].hardware.as_ref().expect("model hardware");
+    assert_eq!(model.checkpoint_quantization.as_deref(), Some("Q4_K_M"));
+    assert_eq!(
+        model.checkpoint_imatrix.as_deref(),
+        Some(canonical_imatrix.as_str())
+    );
+}
+
+#[test]
+fn cli_checkpoint_override_rejects_unknown_recipe() {
+    let mut config = plugin::MeshConfig::default();
+    let error = apply_runtime_cli_checkpoint_overrides(&mut config, Some("Q4_FANTASY"), None)
+        .expect_err("unknown recipe must fail");
+
+    assert!(error.to_string().contains("invalid --quant"));
+}
+
 fn remote_catalog_layer_entry(
     variant_name: &str,
     curated_name: &str,
@@ -260,7 +315,9 @@ fn remote_catalog_layer_entry(
 fn startup_model_plan(model_ref: &str) -> StartupModelPlan {
     StartupModelPlan {
         declared_ref: model_ref.to_string(),
+        config_model_id: None,
         resolved_path: PathBuf::from("/tmp/model.gguf"),
+        preindexed_split_package: None,
         mmproj_path: None,
         ctx_size: None,
         gpu_id: None,
@@ -271,8 +328,130 @@ fn startup_model_plan(model_ref: &str) -> StartupModelPlan {
         n_batch: None,
         n_ubatch: None,
         flash_attention: FlashAttentionType::Auto,
+        local_source_required: false,
         profile: String::new(),
     }
+}
+
+fn write_identity_test_gguf(path: &std::path::Path, context_length: u32) {
+    fn push_string(bytes: &mut Vec<u8>, value: &str) {
+        bytes.extend_from_slice(&(value.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(value.as_bytes());
+    }
+    fn push_string_kv(bytes: &mut Vec<u8>, key: &str, value: &str) {
+        push_string(bytes, key);
+        bytes.extend_from_slice(&8_u32.to_le_bytes());
+        push_string(bytes, value);
+    }
+    fn push_u32_kv(bytes: &mut Vec<u8>, key: &str, value: u32) {
+        push_string(bytes, key);
+        bytes.extend_from_slice(&4_u32.to_le_bytes());
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"GGUF");
+    bytes.extend_from_slice(&2_u32.to_le_bytes());
+    bytes.extend_from_slice(&0_i64.to_le_bytes());
+    bytes.extend_from_slice(&8_i64.to_le_bytes());
+    push_string_kv(&mut bytes, "general.architecture", "llama");
+    push_string_kv(&mut bytes, "tokenizer.ggml.model", "gpt2");
+    push_u32_kv(&mut bytes, "llama.context_length", context_length);
+    push_u32_kv(&mut bytes, "llama.embedding_length", 4096);
+    push_u32_kv(&mut bytes, "llama.block_count", 24);
+    push_u32_kv(&mut bytes, "llama.attention.head_count", 32);
+    push_u32_kv(&mut bytes, "llama.attention.head_count_kv", 8);
+    push_u32_kv(&mut bytes, "llama.attention.key_length", 128);
+    std::fs::write(path, bytes).expect("write identity test GGUF");
+}
+
+fn direct_gguf_startup_spec(path: &std::path::Path, alias: Option<&str>) -> StartupModelSpec {
+    StartupModelSpec {
+        model_ref: path.to_path_buf(),
+        declared_ref: alias.map(str::to_string),
+        config_model_id: None,
+        mmproj_ref: None,
+        ctx_size: None,
+        gpu_id: None,
+        cli_device_override: false,
+        resolve_pinned_gpu: false,
+        parallel: None,
+        cache_type_k: None,
+        cache_type_v: None,
+        n_batch: None,
+        n_ubatch: None,
+        flash_attention: FlashAttentionType::Auto,
+        local_source_required: false,
+        profile: String::new(),
+    }
+}
+
+#[tokio::test]
+async fn bare_direct_gguf_startup_identity_is_full_content_hash_across_paths() {
+    let first_dir = tempfile::tempdir().expect("first tempdir");
+    let second_dir = tempfile::tempdir().expect("second tempdir");
+    let first_path = first_dir.path().join("first-name.gguf");
+    let second_path = second_dir.path().join("other-name.gguf");
+    write_identity_test_gguf(&first_path, 4096);
+    std::fs::copy(&first_path, &second_path).expect("copy identical GGUF");
+
+    let first = resolve_startup_models(&[direct_gguf_startup_spec(&first_path, None)], true)
+        .await
+        .expect("resolve first direct GGUF")
+        .remove(0);
+    let second = resolve_startup_models(&[direct_gguf_startup_spec(&second_path, None)], true)
+        .await
+        .expect("resolve second direct GGUF")
+        .remove(0);
+    let first_package = first
+        .preindexed_split_package
+        .as_ref()
+        .expect("direct GGUF package must be indexed at resolution");
+    let second_package = second
+        .preindexed_split_package
+        .as_ref()
+        .expect("second direct GGUF package must be indexed at resolution");
+
+    assert_eq!(first.declared_ref, second.declared_ref);
+    assert_eq!(
+        first.declared_ref,
+        format!("local-gguf/sha256-{}", first_package.source_model_sha256)
+    );
+    assert_eq!(first_package.source_model_sha256.len(), 64);
+    assert_eq!(first_package.package_ref, second_package.package_ref);
+    assert_ne!(first.resolved_path, second.resolved_path);
+}
+
+#[tokio::test]
+async fn direct_gguf_explicit_alias_wins_without_changing_content_identity() {
+    let first_dir = tempfile::tempdir().expect("first tempdir");
+    let second_dir = tempfile::tempdir().expect("second tempdir");
+    let first_path = first_dir.path().join("first.gguf");
+    let second_path = second_dir.path().join("second.gguf");
+    write_identity_test_gguf(&first_path, 4096);
+    std::fs::copy(&first_path, &second_path).expect("copy identical GGUF");
+
+    let first = resolve_startup_models(
+        &[direct_gguf_startup_spec(&first_path, Some("shared/model"))],
+        true,
+    )
+    .await
+    .expect("resolve first aliased GGUF")
+    .remove(0);
+    let second = resolve_startup_models(
+        &[direct_gguf_startup_spec(&second_path, Some("shared/model"))],
+        true,
+    )
+    .await
+    .expect("resolve second aliased GGUF")
+    .remove(0);
+
+    assert_eq!(first.declared_ref, "shared/model");
+    assert_eq!(second.declared_ref, "shared/model");
+    assert_eq!(
+        first.preindexed_split_package.unwrap().package_ref,
+        second.preindexed_split_package.unwrap().package_ref
+    );
 }
 
 #[test]
@@ -591,40 +770,8 @@ fn test_build_serving_list_keeps_synthetic_local_ref() {
     assert_eq!(result.len(), 1);
 }
 
-#[test]
-fn test_build_startup_model_specs_prefers_cli_models_over_config() {
-    let options = runtime_options_for_test(&[
-        "mesh-llm",
-        "--model",
-        "Qwen3-8B-Q4_K_M",
-        "--ctx-size",
-        "4096",
-    ]);
-    let config = plugin::MeshConfig {
-        models: vec![plugin::ModelConfigEntry {
-            model: "Ignored-Model".into(),
-            mmproj: Some("/tmp/ignored-mmproj.gguf".into()),
-            ctx_size: Some(8192),
-            gpu_id: None,
-            parallel: None,
-            cache_type_k: None,
-            cache_type_v: None,
-            batch: None,
-            ubatch: None,
-            flash_attention: None,
-            ..Default::default()
-        }],
-        ..plugin::MeshConfig::default()
-    };
-
-    let specs = build_startup_model_specs(&options, &config).unwrap();
-    assert_eq!(specs.len(), 1);
-    assert_eq!(specs[0].model_ref, PathBuf::from("Qwen3-8B-Q4_K_M"));
-    assert_eq!(specs[0].mmproj_ref, None);
-    assert_eq!(specs[0].ctx_size, Some(4096));
-    assert_eq!(specs[0].gpu_id, None);
-    assert!(!specs[0].config_owned);
-}
+mod cli_device_and_config_matching;
+mod local_required;
 
 #[tokio::test]
 async fn prepare_runtime_startup_defers_model_resolution_until_after_surfaces() {
@@ -695,14 +842,219 @@ fn test_build_startup_model_specs_uses_config_models_when_cli_is_empty() {
     assert_eq!(specs[0].model_ref, PathBuf::from("Qwen3-8B-Q4_K_M"));
     assert_eq!(specs[0].ctx_size, Some(4096));
     assert_eq!(specs[0].gpu_id, None);
-    assert!(specs[0].config_owned);
+    assert!(specs[0].resolve_pinned_gpu);
     assert_eq!(
         specs[1].mmproj_ref,
         Some(PathBuf::from("bartowski/Qwen2.5-VL/mmproj.gguf"))
     );
     assert_eq!(specs[1].ctx_size, Some(4096));
     assert_eq!(specs[1].gpu_id, None);
-    assert!(specs[1].config_owned);
+    assert!(specs[1].resolve_pinned_gpu);
+}
+
+#[test]
+fn configured_server_alias_becomes_the_served_model_identity() {
+    let options = runtime_options_for_test(&["mesh-llm"]);
+    let config: plugin::MeshConfig = toml::from_str(
+        r#"
+[defaults.advanced.server]
+alias = "default-model"
+
+[[models]]
+model = "canonical/default-model"
+
+[[models]]
+model = "canonical/override-model"
+
+[models.advanced.server]
+alias = "public-model"
+"#,
+    )
+    .expect("aliased model config parses");
+
+    let specs = build_startup_model_specs(&options, &config).expect("startup specs");
+
+    assert_eq!(specs[0].model_ref, PathBuf::from("canonical/default-model"));
+    assert_eq!(specs[0].declared_ref.as_deref(), Some("default-model"));
+    assert_eq!(
+        specs[0].config_model_id.as_deref(),
+        Some("canonical/default-model")
+    );
+    assert_eq!(
+        specs[1].model_ref,
+        PathBuf::from("canonical/override-model")
+    );
+    assert_eq!(specs[1].declared_ref.as_deref(), Some("public-model"));
+    assert_eq!(
+        specs[1].config_model_id.as_deref(),
+        Some("canonical/override-model")
+    );
+    assert!(specs.iter().all(|spec| spec.resolve_pinned_gpu));
+}
+
+#[test]
+fn ad_hoc_gguf_alias_preserves_existing_cli_model_overrides() {
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+    let model_path = temp_dir.path().join("model.gguf");
+    let projector_path = temp_dir.path().join("mmproj.gguf");
+    std::fs::write(&model_path, b"gguf").expect("write model");
+    std::fs::write(&projector_path, b"gguf").expect("write projector");
+    let options = runtime_options_for_test(&[
+        "mesh-llm",
+        "--gguf",
+        model_path.to_str().expect("model path"),
+        "--model",
+        "public-model",
+        "--mmproj",
+        projector_path.to_str().expect("projector path"),
+        "--ctx-size",
+        "8192",
+    ]);
+
+    let specs =
+        build_startup_model_specs(&options, &plugin::MeshConfig::default()).expect("startup specs");
+
+    assert_eq!(specs.len(), 1);
+    assert_eq!(specs[0].declared_ref.as_deref(), Some("public-model"));
+    assert_eq!(
+        specs[0].mmproj_ref.as_deref(),
+        Some(projector_path.as_path())
+    );
+    assert_eq!(specs[0].ctx_size, Some(8192));
+    assert!(!specs[0].resolve_pinned_gpu);
+}
+
+#[test]
+fn ad_hoc_model_inherits_applicable_config_defaults() {
+    let options = runtime_options_for_test(&["mesh-llm", "--model", "Qwen3-8B-Q4_K_M"]);
+    let config: plugin::MeshConfig = toml::from_str(
+        r#"
+[defaults.model_fit]
+ctx_size = 12288
+batch = 768
+ubatch = 192
+cache_type_k = "q8_0"
+cache_type_v = "q4_0"
+flash_attention = "enabled"
+
+[defaults.throughput]
+parallel = 3
+"#,
+    )
+    .expect("defaults config parses");
+
+    let specs = build_startup_model_specs(&options, &config).expect("startup specs");
+
+    assert_eq!(specs.len(), 1);
+    assert_eq!(specs[0].ctx_size, Some(12288));
+    assert_eq!(specs[0].parallel, Some(3));
+    assert_eq!(specs[0].cache_type_k.as_deref(), Some("q8_0"));
+    assert_eq!(specs[0].cache_type_v.as_deref(), Some("q4_0"));
+    assert_eq!(specs[0].n_batch, Some(768));
+    assert_eq!(specs[0].n_ubatch, Some(192));
+    assert_eq!(specs[0].flash_attention, FlashAttentionType::Enabled);
+    assert!(!specs[0].profile.is_empty());
+    assert!(!specs[0].resolve_pinned_gpu);
+}
+
+#[test]
+fn startup_profile_uses_full_model_over_defaults_merge() {
+    let options = runtime_options_for_test(&["mesh-llm"]);
+    let config: plugin::MeshConfig = toml::from_str(
+        r#"
+[defaults.hardware]
+repack = true
+
+[[models]]
+model = "Qwen3-8B-Q4_K_M"
+
+[models.hardware]
+repack = false
+"#,
+    )
+    .expect("profile config parses");
+    let model = &config.models[0];
+
+    let specs = build_startup_model_specs(&options, &config).expect("startup specs");
+    let expected_profile = model
+        .with_profile_defaults(config.defaults.as_ref())
+        .derived_profile();
+    let defaults_only_profile = plugin::ModelConfigEntry {
+        model: model.model.clone(),
+        ..plugin::ModelConfigEntry::default()
+    }
+    .with_profile_defaults(config.defaults.as_ref())
+    .derived_profile();
+
+    assert_eq!(specs[0].profile, expected_profile);
+    assert_ne!(specs[0].profile, defaults_only_profile);
+}
+
+#[test]
+fn ad_hoc_model_inherits_default_mmproj_unless_cli_overrides_it() {
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+    let inherited = temp_dir.path().join("inherited-mmproj.gguf");
+    let explicit = temp_dir.path().join("explicit-mmproj.gguf");
+    std::fs::write(&inherited, b"gguf").expect("write inherited projector");
+    std::fs::write(&explicit, b"gguf").expect("write explicit projector");
+    let config: plugin::MeshConfig = toml::from_str(&format!(
+        r#"
+[defaults.multimodal]
+mmproj = {:?}
+"#,
+        inherited.to_string_lossy()
+    ))
+    .expect("defaults config parses");
+
+    let inherited_options = runtime_options_for_test(&["mesh-llm", "--model", "Qwen3-VL"]);
+    let inherited_specs =
+        build_startup_model_specs(&inherited_options, &config).expect("inherited startup specs");
+    assert_eq!(
+        inherited_specs[0].mmproj_ref.as_deref(),
+        Some(inherited.as_path())
+    );
+
+    let explicit_options = runtime_options_for_test(&[
+        "mesh-llm",
+        "--model",
+        "Qwen3-VL",
+        "--mmproj",
+        explicit.to_str().expect("explicit projector path"),
+    ]);
+    let explicit_specs =
+        build_startup_model_specs(&explicit_options, &config).expect("explicit startup specs");
+    assert_eq!(
+        explicit_specs[0].mmproj_ref.as_deref(),
+        Some(explicit.as_path())
+    );
+}
+
+#[tokio::test]
+async fn configured_alias_keeps_canonical_model_id_through_resolution() {
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+    let model_path = temp_dir.path().join("model.gguf");
+    std::fs::write(&model_path, b"gguf").expect("write model");
+    let config: plugin::MeshConfig = toml::from_str(&format!(
+        r#"
+[[models]]
+model = "canonical/model"
+[models.hardware]
+model_path = {:?}
+[models.advanced.server]
+alias = "public-model"
+"#,
+        model_path.to_string_lossy()
+    ))
+    .expect("model config parses");
+
+    let specs = build_startup_model_specs(&runtime_options_for_test(&["mesh-llm"]), &config)
+        .expect("startup specs");
+    let plans = resolve_local_model_only_startup_models(&specs)
+        .await
+        .expect("startup plans");
+
+    assert_eq!(plans[0].declared_ref, "public-model");
+    assert_eq!(plans[0].config_model_id.as_deref(), Some("canonical/model"));
 }
 
 #[test]
@@ -718,11 +1070,24 @@ fn gguf_with_plain_model_name_binds_the_name_to_the_local_file() {
         "deepseek-v4-flash",
     ]);
 
-    let specs =
-        build_startup_model_specs(&options, &plugin::MeshConfig::default()).expect("startup specs");
+    let config = plugin::MeshConfig {
+        gpu: plugin::GpuConfig {
+            assignment: plugin::GpuAssignment::Pinned,
+            parallel: None,
+        },
+        models: vec![plugin::ModelConfigEntry {
+            model: "deepseek-v4-flash".into(),
+            gpu_id: Some("pci:0000:65:00.0".into()),
+            ..Default::default()
+        }],
+        ..plugin::MeshConfig::default()
+    };
+    let specs = build_startup_model_specs(&options, &config).expect("startup specs");
     assert_eq!(specs.len(), 1);
     assert_eq!(specs[0].model_ref, model_path);
     assert_eq!(specs[0].declared_ref.as_deref(), Some("deepseek-v4-flash"));
+    assert_eq!(specs[0].gpu_id, None);
+    assert!(!specs[0].resolve_pinned_gpu);
 }
 
 #[test]
@@ -753,7 +1118,7 @@ fn gguf_with_hugging_face_model_ref_still_serves_two_models() {
 async fn gguf_alias_resolves_without_catalog_lookup() {
     let temp_dir = tempfile::tempdir().expect("tempdir");
     let model_path = temp_dir.path().join("deepseek.gguf");
-    std::fs::write(&model_path, b"gguf").expect("write model");
+    write_identity_test_gguf(&model_path, 4096);
     let options = runtime_options_for_test(&[
         "mesh-llm",
         "--gguf",
@@ -781,21 +1146,22 @@ async fn config_hardware_model_path_loads_local_file_under_logical_model_identit
     let model_path = temp_dir.path().join("glm.gguf");
     std::fs::write(&model_path, b"gguf").expect("write model");
     let options = runtime_options_for_test(&["mesh-llm"]);
-    let config = plugin::MeshConfig {
-        models: vec![plugin::ModelConfigEntry {
-            model: "glm-4.7-flash".into(),
-            hardware: Some(plugin::HardwareConfig {
-                model_path: Some(model_path.to_string_lossy().into_owned()),
-                ..Default::default()
-            }),
-            ..Default::default()
-        }],
-        ..Default::default()
-    };
+    let config: plugin::MeshConfig = toml::from_str(&format!(
+        r#"
+[[models]]
+model = "glm-4.7-flash"
+[models.hardware]
+model_path = {:?}
+[models.advanced.server]
+alias = "public-glm"
+"#,
+        model_path.to_string_lossy()
+    ))
+    .expect("aliased local model config parses");
 
     let specs = build_startup_model_specs(&options, &config).expect("startup specs");
     assert_eq!(specs[0].model_ref, model_path);
-    assert_eq!(specs[0].declared_ref.as_deref(), Some("glm-4.7-flash"));
+    assert_eq!(specs[0].declared_ref.as_deref(), Some("public-glm"));
 
     let plans = resolve_local_model_only_startup_models(&specs)
         .await
@@ -804,7 +1170,8 @@ async fn config_hardware_model_path_loads_local_file_under_logical_model_identit
         plans[0].resolved_path,
         std::fs::canonicalize(&specs[0].model_ref).expect("canonical model path")
     );
-    assert_eq!(plans[0].declared_ref, "glm-4.7-flash");
+    assert_eq!(plans[0].declared_ref, "public-glm");
+    assert_eq!(plans[0].config_model_id.as_deref(), Some("glm-4.7-flash"));
 }
 
 #[tokio::test]
@@ -812,17 +1179,20 @@ async fn local_model_only_rejects_catalog_and_relative_model_refs() {
     let specs = [StartupModelSpec {
         model_ref: PathBuf::from("glm-4.7-flash"),
         declared_ref: None,
+        config_model_id: None,
         mmproj_ref: None,
         ctx_size: None,
         gpu_id: None,
+        cli_device_override: false,
         parallel: None,
         cache_type_k: None,
         cache_type_v: None,
         n_batch: None,
         n_ubatch: None,
         flash_attention: FlashAttentionType::Auto,
+        local_source_required: false,
         profile: "default".into(),
-        config_owned: false,
+        resolve_pinned_gpu: false,
     }];
 
     let error = resolve_local_model_only_startup_models(&specs)
@@ -959,9 +1329,11 @@ fn pinned_gpu_startup_preflight_uses_config_gpu_id() {
     let mut plans = vec![StartupModelPlan {
         declared_ref: "Qwen3-8B-Q4_K_M".into(),
         resolved_path: PathBuf::from("/tmp/Qwen3-8B-Q4_K_M.gguf"),
+        preindexed_split_package: None,
         mmproj_path: None,
         ctx_size: Some(8192),
         gpu_id: specs[0].gpu_id.clone(),
+        config_model_id: specs[0].config_model_id.clone(),
         pinned_gpu: None,
         parallel: None,
         cache_type_k: None,
@@ -969,6 +1341,7 @@ fn pinned_gpu_startup_preflight_uses_config_gpu_id() {
         n_batch: None,
         n_ubatch: None,
         flash_attention: FlashAttentionType::Auto,
+        local_source_required: false,
         profile: String::new(),
     }];
     let gpus = vec![
@@ -976,8 +1349,7 @@ fn pinned_gpu_startup_preflight_uses_config_gpu_id() {
         synthetic_gpu(1, Some("pci:0000:b3:00.0"), Some("CUDA1")),
     ];
 
-    preflight_config_owned_startup_models_with_gpus(&config, &specs, &mut plans, &gpus, None)
-        .unwrap();
+    preflight_pinned_startup_models_with_gpus(&config, &specs, &mut plans, &gpus, None).unwrap();
 
     assert_eq!(plans[0].gpu_id.as_deref(), Some("pci:0000:65:00.0"));
     assert_eq!(
@@ -1017,21 +1389,26 @@ fn pinned_gpu_startup_preflight_rejects_synthesized_backend_missing_from_probe()
     let specs = vec![StartupModelSpec {
         model_ref: PathBuf::from("Qwen3-8B-Q4_K_M"),
         declared_ref: None,
+        config_model_id: None,
         mmproj_ref: None,
         ctx_size: Some(4096),
         gpu_id: Some("pci:0000:b3:00.0".into()),
-        config_owned: true,
+        cli_device_override: false,
+        resolve_pinned_gpu: true,
         parallel: None,
         cache_type_k: None,
         cache_type_v: None,
         n_batch: None,
         n_ubatch: None,
         flash_attention: FlashAttentionType::Auto,
+        local_source_required: false,
         profile: String::new(),
     }];
     let mut plans = vec![StartupModelPlan {
         declared_ref: "Qwen3-8B-Q4_K_M".into(),
+        config_model_id: None,
         resolved_path: PathBuf::from("/tmp/Qwen3-8B-Q4_K_M.gguf"),
+        preindexed_split_package: None,
         mmproj_path: None,
         ctx_size: Some(4096),
         gpu_id: Some("pci:0000:b3:00.0".into()),
@@ -1042,6 +1419,7 @@ fn pinned_gpu_startup_preflight_rejects_synthesized_backend_missing_from_probe()
         n_batch: None,
         n_ubatch: None,
         flash_attention: FlashAttentionType::Auto,
+        local_source_required: false,
         profile: String::new(),
     }];
     let gpus = vec![synthetic_gpu(1, Some("pci:0000:b3:00.0"), Some("Vulkan1"))];
@@ -1051,7 +1429,7 @@ fn pinned_gpu_startup_preflight_rejects_synthesized_backend_missing_from_probe()
         available_devices: vec!["Vulkan0".into(), "CPU".into()],
     };
 
-    let err = preflight_config_owned_startup_models_with_gpus(
+    let err = preflight_pinned_startup_models_with_gpus(
         &config,
         &specs,
         &mut plans,
@@ -1078,21 +1456,26 @@ fn pinned_gpu_startup_preflight_canonicalizes_rocm_hip_alias_from_probe() {
     let specs = vec![StartupModelSpec {
         model_ref: PathBuf::from("Qwen3-8B-Q4_K_M"),
         declared_ref: None,
+        config_model_id: None,
         mmproj_ref: None,
         ctx_size: Some(4096),
         gpu_id: Some("pci:0000:b3:00.0".into()),
-        config_owned: true,
+        cli_device_override: false,
+        resolve_pinned_gpu: true,
         parallel: None,
         cache_type_k: None,
         cache_type_v: None,
         n_batch: None,
         n_ubatch: None,
         flash_attention: FlashAttentionType::Auto,
+        local_source_required: false,
         profile: String::new(),
     }];
     let mut plans = vec![StartupModelPlan {
         declared_ref: "Qwen3-8B-Q4_K_M".into(),
+        config_model_id: None,
         resolved_path: PathBuf::from("/tmp/Qwen3-8B-Q4_K_M.gguf"),
+        preindexed_split_package: None,
         mmproj_path: None,
         ctx_size: Some(4096),
         gpu_id: Some("pci:0000:b3:00.0".into()),
@@ -1103,6 +1486,7 @@ fn pinned_gpu_startup_preflight_canonicalizes_rocm_hip_alias_from_probe() {
         n_batch: None,
         n_ubatch: None,
         flash_attention: FlashAttentionType::Auto,
+        local_source_required: false,
         profile: String::new(),
     }];
     let gpus = vec![synthetic_gpu(1, Some("pci:0000:b3:00.0"), Some("ROCm1"))];
@@ -1112,7 +1496,7 @@ fn pinned_gpu_startup_preflight_canonicalizes_rocm_hip_alias_from_probe() {
         available_devices: vec!["HIP1".into(), "CPU".into()],
     };
 
-    preflight_config_owned_startup_models_with_gpus(
+    preflight_pinned_startup_models_with_gpus(
         &config,
         &specs,
         &mut plans,
@@ -1180,7 +1564,7 @@ fn skippy_telemetry_debug_keeps_debug_level_when_endpoint_is_set() {
 }
 
 #[test]
-fn pinned_gpu_startup_preflight_cli_models_bypass_config_gpu_id() {
+fn pinned_gpu_startup_preflight_unmatched_cli_models_bypass_config_gpu_id() {
     let options = runtime_options_for_test(&["mesh-llm", "--model", "Qwen3-8B-Q4_K_M"]);
     let config = plugin::MeshConfig {
         gpu: plugin::GpuConfig {
@@ -1206,9 +1590,11 @@ fn pinned_gpu_startup_preflight_cli_models_bypass_config_gpu_id() {
     let mut plans = vec![StartupModelPlan {
         declared_ref: "Qwen3-8B-Q4_K_M".into(),
         resolved_path: PathBuf::from("/tmp/Qwen3-8B-Q4_K_M.gguf"),
+        preindexed_split_package: None,
         mmproj_path: None,
         ctx_size: None,
         gpu_id: specs[0].gpu_id.clone(),
+        config_model_id: specs[0].config_model_id.clone(),
         pinned_gpu: None,
         parallel: None,
         cache_type_k: None,
@@ -1216,15 +1602,15 @@ fn pinned_gpu_startup_preflight_cli_models_bypass_config_gpu_id() {
         n_batch: None,
         n_ubatch: None,
         flash_attention: FlashAttentionType::Auto,
+        local_source_required: false,
         profile: String::new(),
     }];
     let gpus = vec![synthetic_gpu(0, Some("pci:0000:65:00.0"), Some("CUDA0"))];
 
-    preflight_config_owned_startup_models_with_gpus(&config, &specs, &mut plans, &gpus, None)
-        .unwrap();
+    preflight_pinned_startup_models_with_gpus(&config, &specs, &mut plans, &gpus, None).unwrap();
 
     assert_eq!(specs[0].gpu_id, None);
-    assert!(!specs[0].config_owned);
+    assert!(!specs[0].resolve_pinned_gpu);
     assert_eq!(plans[0].gpu_id, None);
     assert_eq!(plans[0].pinned_gpu, None);
 }
@@ -1241,21 +1627,26 @@ fn pinned_gpu_startup_preflight_missing_gpu_id_fails_closed() {
     let specs = vec![StartupModelSpec {
         model_ref: PathBuf::from("Qwen3-8B-Q4_K_M"),
         declared_ref: None,
+        config_model_id: None,
         mmproj_ref: None,
         ctx_size: None,
         gpu_id: None,
-        config_owned: true,
+        cli_device_override: false,
+        resolve_pinned_gpu: true,
         parallel: None,
         cache_type_k: None,
         cache_type_v: None,
         n_batch: None,
         n_ubatch: None,
         flash_attention: FlashAttentionType::Auto,
+        local_source_required: false,
         profile: String::new(),
     }];
     let mut plans = vec![StartupModelPlan {
         declared_ref: "Qwen3-8B-Q4_K_M".into(),
+        config_model_id: None,
         resolved_path: PathBuf::from("/tmp/Qwen3-8B-Q4_K_M.gguf"),
+        preindexed_split_package: None,
         mmproj_path: None,
         ctx_size: None,
         gpu_id: None,
@@ -1266,13 +1657,13 @@ fn pinned_gpu_startup_preflight_missing_gpu_id_fails_closed() {
         n_batch: None,
         n_ubatch: None,
         flash_attention: FlashAttentionType::Auto,
+        local_source_required: false,
         profile: String::new(),
     }];
     let gpus = vec![synthetic_gpu(0, Some("pci:0000:65:00.0"), Some("CUDA0"))];
 
-    let err =
-        preflight_config_owned_startup_models_with_gpus(&config, &specs, &mut plans, &gpus, None)
-            .unwrap_err();
+    let err = preflight_pinned_startup_models_with_gpus(&config, &specs, &mut plans, &gpus, None)
+        .unwrap_err();
     let message = format!("{err:#}");
 
     assert!(message.contains("failed pinned GPU preflight"));
@@ -1291,21 +1682,26 @@ fn pinned_gpu_startup_preflight_stores_resolved_pinned_target_in_plan() {
     let specs = vec![StartupModelSpec {
         model_ref: PathBuf::from("Qwen3-8B-Q4_K_M"),
         declared_ref: None,
+        config_model_id: None,
         mmproj_ref: None,
         ctx_size: Some(4096),
         gpu_id: Some("uuid:GPU-123".into()),
-        config_owned: true,
+        cli_device_override: false,
+        resolve_pinned_gpu: true,
         parallel: None,
         cache_type_k: None,
         cache_type_v: None,
         n_batch: None,
         n_ubatch: None,
         flash_attention: FlashAttentionType::Auto,
+        local_source_required: false,
         profile: String::new(),
     }];
     let mut plans = vec![StartupModelPlan {
         declared_ref: "Qwen3-8B-Q4_K_M".into(),
+        config_model_id: None,
         resolved_path: PathBuf::from("/tmp/Qwen3-8B-Q4_K_M.gguf"),
+        preindexed_split_package: None,
         mmproj_path: None,
         ctx_size: Some(4096),
         gpu_id: Some("uuid:GPU-123".into()),
@@ -1316,13 +1712,13 @@ fn pinned_gpu_startup_preflight_stores_resolved_pinned_target_in_plan() {
         n_batch: None,
         n_ubatch: None,
         flash_attention: FlashAttentionType::Auto,
+        local_source_required: false,
         profile: String::new(),
     }];
     let mut gpus = vec![synthetic_gpu(3, Some("uuid:GPU-123"), Some("CUDA3"))];
     gpus[0].reserved_bytes = Some(500_000_000);
 
-    preflight_config_owned_startup_models_with_gpus(&config, &specs, &mut plans, &gpus, None)
-        .unwrap();
+    preflight_pinned_startup_models_with_gpus(&config, &specs, &mut plans, &gpus, None).unwrap();
 
     let pinned_gpu = plans[0].pinned_gpu.as_ref().unwrap();
     assert_eq!(pinned_gpu.index, 3);
@@ -1344,21 +1740,26 @@ fn pinned_gpu_startup_preflight_rejects_resolved_gpu_without_backend_device() {
     let specs = vec![StartupModelSpec {
         model_ref: PathBuf::from("Qwen3-8B-Q4_K_M"),
         declared_ref: None,
+        config_model_id: None,
         mmproj_ref: None,
         ctx_size: Some(4096),
         gpu_id: Some("uuid:GPU-123".into()),
-        config_owned: true,
+        cli_device_override: false,
+        resolve_pinned_gpu: true,
         parallel: None,
         cache_type_k: None,
         cache_type_v: None,
         n_batch: None,
         n_ubatch: None,
         flash_attention: FlashAttentionType::Auto,
+        local_source_required: false,
         profile: String::new(),
     }];
     let mut plans = vec![StartupModelPlan {
         declared_ref: "Qwen3-8B-Q4_K_M".into(),
+        config_model_id: None,
         resolved_path: PathBuf::from("/tmp/Qwen3-8B-Q4_K_M.gguf"),
+        preindexed_split_package: None,
         mmproj_path: None,
         ctx_size: Some(4096),
         gpu_id: Some("uuid:GPU-123".into()),
@@ -1369,13 +1770,13 @@ fn pinned_gpu_startup_preflight_rejects_resolved_gpu_without_backend_device() {
         n_batch: None,
         n_ubatch: None,
         flash_attention: FlashAttentionType::Auto,
+        local_source_required: false,
         profile: String::new(),
     }];
     let gpus = vec![synthetic_gpu(3, Some("uuid:GPU-123"), None)];
 
-    let err =
-        preflight_config_owned_startup_models_with_gpus(&config, &specs, &mut plans, &gpus, None)
-            .unwrap_err();
+    let err = preflight_pinned_startup_models_with_gpus(&config, &specs, &mut plans, &gpus, None)
+        .unwrap_err();
     let message = format!("{err:#}");
 
     assert!(message.contains("failed pinned GPU preflight"));
@@ -1394,21 +1795,26 @@ fn pinned_gpu_startup_preflight_unresolvable_gpu_id_fails_closed() {
     let specs = vec![StartupModelSpec {
         model_ref: PathBuf::from("Qwen3-8B-Q4_K_M"),
         declared_ref: None,
+        config_model_id: None,
         mmproj_ref: None,
         ctx_size: None,
         gpu_id: Some("pci:0000:b3:00.0".into()),
-        config_owned: true,
+        cli_device_override: false,
+        resolve_pinned_gpu: true,
         parallel: None,
         cache_type_k: None,
         cache_type_v: None,
         n_batch: None,
         n_ubatch: None,
         flash_attention: FlashAttentionType::Auto,
+        local_source_required: false,
         profile: String::new(),
     }];
     let mut plans = vec![StartupModelPlan {
         declared_ref: "Qwen3-8B-Q4_K_M".into(),
+        config_model_id: None,
         resolved_path: PathBuf::from("/tmp/Qwen3-8B-Q4_K_M.gguf"),
+        preindexed_split_package: None,
         mmproj_path: None,
         ctx_size: None,
         gpu_id: Some("pci:0000:b3:00.0".into()),
@@ -1419,13 +1825,13 @@ fn pinned_gpu_startup_preflight_unresolvable_gpu_id_fails_closed() {
         n_batch: None,
         n_ubatch: None,
         flash_attention: FlashAttentionType::Auto,
+        local_source_required: false,
         profile: String::new(),
     }];
     let gpus = vec![synthetic_gpu(0, Some("pci:0000:65:00.0"), Some("CUDA0"))];
 
-    let err =
-        preflight_config_owned_startup_models_with_gpus(&config, &specs, &mut plans, &gpus, None)
-            .unwrap_err();
+    let err = preflight_pinned_startup_models_with_gpus(&config, &specs, &mut plans, &gpus, None)
+        .unwrap_err();
     let message = format!("{err:#}");
 
     assert!(message.contains("failed pinned GPU preflight"));
@@ -1450,16 +1856,19 @@ fn test_should_not_show_serve_config_help_when_models_are_present() {
     let startup_specs = vec![StartupModelSpec {
         model_ref: PathBuf::from("Qwen3-8B-Q4_K_M"),
         declared_ref: None,
+        config_model_id: None,
         mmproj_ref: None,
         ctx_size: None,
         gpu_id: None,
-        config_owned: false,
+        cli_device_override: false,
+        resolve_pinned_gpu: false,
         parallel: None,
         cache_type_k: None,
         cache_type_v: None,
         n_batch: None,
         n_ubatch: None,
         flash_attention: FlashAttentionType::Auto,
+        local_source_required: false,
         profile: String::new(),
     }];
 

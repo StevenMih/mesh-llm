@@ -482,6 +482,18 @@ pub struct Cli {
     #[arg(long, hide = true)]
     pub mmproj: Option<PathBuf>,
 
+    /// Quantize SafeTensors weights while loading.
+    #[arg(
+        long = "quant",
+        visible_alias = "checkpoint-quantization",
+        long_help = "Quantize SafeTensors weights while loading. The default is preserve.\n\nValid recipes: preserve, F32, F16, BF16, Q1_0, Q2_0, Q4_0, Q4_1, Q5_0, Q5_1, IQ2_XXS, IQ2_XS, IQ2_S, IQ2_M, IQ1_S, IQ1_M, TQ1_0, TQ2_0, Q2_K, Q2_K_S, IQ3_XS, IQ3_XXS, IQ3_S, IQ3_M, Q3_K_S, Q3_K_M, Q3_K_L, IQ4_NL, IQ4_XS, Q4_K_S, Q4_K_M, Q5_K_S, Q5_K_M, Q6_K, Q8_0, MXFP4_MOE. Some low-bit recipes require --checkpoint-imatrix."
+    )]
+    pub checkpoint_quantization: Option<String>,
+
+    /// Importance matrix for load-time checkpoint quantization.
+    #[arg(long, hide = true)]
+    pub checkpoint_imatrix: Option<PathBuf>,
+
     /// API port (default: 9337).
     #[arg(long, default_value = "9337")]
     pub port: u16,
@@ -773,6 +785,10 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Command {
+    /// Serve local models and join or publish a mesh.
+    Serve,
+    /// Run as a client-only mesh node with no local model required.
+    Client,
     /// Manage model storage, migration, and update checks.
     Models {
         #[command(subcommand)]
@@ -1242,6 +1258,40 @@ mod tests {
     }
 
     #[test]
+    fn serve_parses_checkpoint_quantization_overrides() {
+        let normalized = crate::parser::normalize_runtime_surface_args([
+            "mesh-llm",
+            "serve",
+            "--model",
+            "Qwen/Qwen2.5-Coder-7B-Instruct",
+            "--quant",
+            "IQ2_XS",
+            "--checkpoint-imatrix",
+            "/tmp/qwen.imatrix",
+        ]);
+        let cli = Cli::try_parse_from(normalized.normalized).expect("clap parse");
+
+        assert_eq!(cli.checkpoint_quantization.as_deref(), Some("IQ2_XS"));
+        assert_eq!(
+            cli.checkpoint_imatrix,
+            Some(PathBuf::from("/tmp/qwen.imatrix"))
+        );
+    }
+
+    #[test]
+    fn serve_accepts_explicit_checkpoint_quantization_alias() {
+        let normalized = crate::parser::normalize_runtime_surface_args([
+            "mesh-llm",
+            "serve",
+            "--checkpoint-quantization",
+            "Q4_K_M",
+        ]);
+        let cli = Cli::try_parse_from(normalized.normalized).expect("clap parse");
+
+        assert_eq!(cli.checkpoint_quantization.as_deref(), Some("Q4_K_M"));
+    }
+
+    #[test]
     fn serve_parses_standalone_suffix_strategy() {
         let normalized = crate::parser::normalize_runtime_surface_args([
             "mesh-llm",
@@ -1453,6 +1503,8 @@ mod tests {
             ("--spec-draft-models", "/models/draft.gguf"),
             ("--spec-draft-max-tokens", "8"),
             ("--spec-draft-min-tokens", "2"),
+            ("--spec-draft-acceptance-threshold", "0.8"),
+            ("--spec-draft-split-probability", "0.5"),
             ("--spec-ngram-min", "2"),
             ("--spec-ngram-max", "4"),
         ] {
@@ -1796,5 +1848,19 @@ mod tests {
             }
             other => panic!("unexpected command: {other:?}"),
         }
+    }
+
+    #[test]
+    fn cli_help_documents_serve_and_client_commands() {
+        let mut help_bytes = Vec::new();
+        Cli::command()
+            .write_help(&mut help_bytes)
+            .expect("render help");
+        let help_text = String::from_utf8(help_bytes).expect("utf8 help");
+
+        assert!(help_text.contains("serve"));
+        assert!(help_text.contains("Serve local models and join or publish a mesh"));
+        assert!(help_text.contains("client"));
+        assert!(help_text.contains("Run as a client-only mesh node with no local model required"));
     }
 }

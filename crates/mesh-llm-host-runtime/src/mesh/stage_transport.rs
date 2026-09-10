@@ -330,18 +330,34 @@ pub(crate) fn artifact_transfer_allowed_by_topology(
                 return Ok(true);
             }
             let include_output = final_stage_index == Some(assignment.stage_index);
-            let allowed = crate::models::artifact_transfer::required_stage_package_artifacts(
-                package_dir,
-                &topology.package_ref,
-                &topology.manifest_sha256,
-                crate::models::artifact_transfer::StageArtifactSelection {
-                    layer_start: assignment.layer_start,
-                    layer_end: assignment.layer_end,
-                    include_embeddings: assignment.layer_start == 0,
-                    include_output,
-                    include_projectors: assignment.layer_start == 0,
-                },
-            )?;
+            let allowed =
+                if crate::models::artifact_transfer::package_manifest_schema_version(package_dir)?
+                    == u64::from(skippy_package_format::PACKAGE_SCHEMA_VERSION)
+                {
+                    let admission = topology
+                        .admissions
+                        .get(&assignment.stage_id)
+                        .context("package-v2 topology is missing stage admission")?;
+                    crate::models::artifact_transfer::required_admitted_stage_package_artifacts(
+                        package_dir,
+                        &topology.package_ref,
+                        &topology.manifest_sha256,
+                        admission,
+                    )?
+                } else {
+                    crate::models::artifact_transfer::required_stage_package_artifacts(
+                        package_dir,
+                        &topology.package_ref,
+                        &topology.manifest_sha256,
+                        crate::models::artifact_transfer::StageArtifactSelection {
+                            layer_start: assignment.layer_start,
+                            layer_end: assignment.layer_end,
+                            include_embeddings: assignment.layer_start == 0,
+                            include_output,
+                            include_projectors: assignment.layer_start == 0,
+                        },
+                    )?
+                };
             if allowed.iter().any(|artifact| {
                 artifact.relative_path == relative_path
                     && request
@@ -367,7 +383,11 @@ pub(crate) fn artifact_transfer_allowed_by_topology(
 /// Channels returned by Node::start for inbound tunnel streams.
 pub struct TunnelChannels {
     pub rpc: tokio::sync::mpsc::Receiver<(iroh::endpoint::SendStream, iroh::endpoint::RecvStream)>,
-    pub http: tokio::sync::mpsc::Receiver<(iroh::endpoint::SendStream, iroh::endpoint::RecvStream)>,
+    pub http: tokio::sync::mpsc::Receiver<(
+        EndpointId,
+        iroh::endpoint::SendStream,
+        iroh::endpoint::RecvStream,
+    )>,
     pub stage: tokio::sync::mpsc::Receiver<(
         EndpointId,
         iroh::endpoint::SendStream,
@@ -382,6 +402,7 @@ pub struct StageTopologyInstance {
     pub model_id: String,
     pub package_ref: String,
     pub manifest_sha256: String,
+    pub admissions: std::collections::BTreeMap<String, skippy_protocol::StageAdmissionDescriptor>,
     pub stages: Vec<StageAssignment>,
 }
 
@@ -419,10 +440,13 @@ pub struct StageRuntimeStatus {
     pub node_id: Option<EndpointId>,
     pub layer_start: u32,
     pub layer_end: u32,
+    pub admission: Option<skippy_protocol::StageAdmissionDescriptor>,
+    pub activation_codec: skippy_protocol::StageActivationCodec,
+    pub activation_codec_policy: skippy_protocol::StageActivationCodecPolicy,
     pub state: crate::inference::skippy::StageRuntimeState,
     pub bind_addr: String,
-    pub activation_width: u32,
-    pub wire_dtype: crate::inference::skippy::StageWireDType,
+    pub input_activation_boundary: Option<skippy_runtime::ActivationBoundaryDesc>,
+    pub output_activation_boundary: Option<skippy_runtime::ActivationBoundaryDesc>,
     pub selected_device: Option<skippy_protocol::StageDevice>,
     pub ctx_size: u32,
     pub lane_count: u32,
@@ -539,11 +563,14 @@ impl StageTopologyState {
         failure: StageStatusRefreshFailure,
     ) {
         // A transient refresh failure (peer briefly unreachable, request
-        // timeout) must NOT mark the stage Failed — that discards a still-valid
-        // last-known status and can wrongly tear down a healthy split on a
-        // momentary blip. Only a definitive "missing from runtime" signal, where
-        // the peer answered but has no such stage, marks the stage Failed.
-        if failure == StageStatusRefreshFailure::Transient {
+        // timeout) must NOT mark the stage Failed. A newly published stage can
+        // also be absent from the responder until its embedded runtime records
+        // the first status, so retain Starting and retry. Once a stage has been
+        // observed Ready, a definitive "missing from runtime" response still
+        // marks it Failed.
+        if failure == StageStatusRefreshFailure::Transient
+            || status.state == crate::inference::skippy::StageRuntimeState::Starting
+        {
             return;
         }
         self.record_status(stage_runtime_status_from_snapshot(
@@ -684,6 +711,15 @@ impl Node {
         self.inflight_change_tx.subscribe()
     }
 
+    pub(crate) async fn set_stage_control_handle(
+        &self,
+        lifecycle: crate::inference::skippy::StageControlHandle,
+    ) {
+        *self.stage_control_tx.lock().await = Some(lifecycle.sender());
+        *self.stage_control_lifecycle.lock().await = Some(lifecycle);
+    }
+
+    #[cfg(test)]
     pub(crate) async fn set_stage_control_sender(
         &self,
         tx: tokio::sync::mpsc::UnboundedSender<crate::inference::skippy::StageControlCommand>,
@@ -693,6 +729,33 @@ impl Node {
 
     pub async fn record_stage_topology(&self, topology: StageTopologyInstance) {
         self.stage_topologies.lock().await.record_topology(topology);
+    }
+
+    pub(crate) async fn record_stage_load_topology(
+        &self,
+        load: &crate::inference::skippy::StageLoadRequest,
+    ) {
+        let topology = stage_topology_from_load(self.endpoint.id(), load);
+        let mut state = self.stage_topologies.lock().await;
+        state.record_topology(topology.clone());
+        for stage in topology.stages {
+            let mut snapshot = crate::mesh::stage_status_from_load(
+                load,
+                crate::inference::skippy::StageRuntimeState::Starting,
+            );
+            snapshot.stage_id = stage.stage_id;
+            snapshot.stage_index = stage.stage_index;
+            snapshot.layer_start = stage.layer_start;
+            snapshot.layer_end = stage.layer_end;
+            snapshot.bind_addr = stage.endpoint.bind_addr;
+            snapshot.admission =
+                (snapshot.stage_id == load.stage_id).then(|| load.admission.clone());
+            snapshot.error = None;
+            state.record_status(stage_runtime_status_from_snapshot(
+                Some(stage.node_id),
+                snapshot,
+            ));
+        }
     }
 
     pub async fn activate_stage_topology(&self, topology: StageTopologyInstance) {
@@ -717,6 +780,37 @@ impl Node {
         self.stage_topologies.lock().await.runtime_statuses()
     }
 
+    pub(crate) async fn locally_executing_stage_statuses(
+        &self,
+        filter: &crate::inference::skippy::StageStatusFilter,
+    ) -> Vec<crate::inference::skippy::StageStatusSnapshot> {
+        let local_node = self.endpoint.id();
+        self.stage_topologies
+            .lock()
+            .await
+            .runtime_statuses()
+            .into_iter()
+            .filter(|status| {
+                status.node_id == Some(local_node)
+                    && filter
+                        .topology_id
+                        .as_ref()
+                        .is_none_or(|value| value == &status.topology_id)
+                    && filter
+                        .run_id
+                        .as_ref()
+                        .is_none_or(|value| value == &status.run_id)
+                    && filter
+                        .stage_id
+                        .as_ref()
+                        .is_none_or(|value| value == &status.stage_id)
+            })
+            .map(|status| {
+                stage_snapshot_from_runtime_status(&status, status.state, status.error.clone())
+            })
+            .collect()
+    }
+
     pub async fn refresh_stage_runtime_statuses(&self, timeout: std::time::Duration) {
         let active_statuses = self.stage_topologies.lock().await.active_statuses();
         for status in active_statuses {
@@ -729,12 +823,12 @@ impl Node {
         status: StageRuntimeStatus,
         timeout: std::time::Duration,
     ) {
-        if status.stage_index == 0 {
-            return;
-        }
         let Some(peer_id) = status.node_id else {
             return;
         };
+        if peer_id == self.endpoint.id() {
+            return;
+        }
         let filter = crate::inference::skippy::StageStatusFilter {
             topology_id: Some(status.topology_id.clone()),
             run_id: Some(status.run_id.clone()),
@@ -869,9 +963,10 @@ impl Node {
         mut request: crate::inference::skippy::StageControlRequest,
     ) -> Result<crate::inference::skippy::StageControlResponse> {
         self.prepare_stage_control_request(&mut request).await?;
-        if let crate::inference::skippy::StageControlRequest::Load(load) = &request {
-            self.record_stage_topology(stage_topology_from_load(self.endpoint.id(), load))
-                .await;
+        if let crate::inference::skippy::StageControlRequest::Load(load)
+        | crate::inference::skippy::StageControlRequest::LoadLocal(load) = &request
+        {
+            self.record_stage_load_topology(load).await;
         }
         // Load/Prepare can take minutes on large stages; use the same
         // per-request budget remote control uses instead of the short default.
@@ -911,28 +1006,17 @@ impl Node {
         use prost::Message as _;
 
         let timeout = Self::stage_control_request_timeout(&request);
-        if let crate::inference::skippy::StageControlRequest::Load(load) = &request {
-            self.record_stage_topology(stage_topology_from_load(peer_id, load))
-                .await;
+        if let crate::inference::skippy::StageControlRequest::Load(load)
+        | crate::inference::skippy::StageControlRequest::LoadLocal(load) = &request
+        {
+            self.record_stage_load_topology(load).await;
         }
-        let frame = stage_control_request_to_proto(self.endpoint.id(), request);
+        let frame = stage_control_request_to_proto(self.endpoint.id(), request)?;
         let response = tokio::time::timeout(timeout, async {
-            let (mut send, mut recv) = if self
-                .peer_supports_skippy_subprotocol_feature(
-                    peer_id,
-                    skippy_protocol::STAGE_SUBPROTOCOL_FEATURE_STAGE_CONTROL,
-                )
-                .await
-            {
-                self.open_skippy_stage_mesh_stream(peer_id, skippy_protocol::STAGE_STREAM_CONTROL)
-                    .await?
-            } else {
-                let conn = self.stage_connection_to_peer(peer_id).await?;
-                let (mut send, recv) = conn.open_bi().await?;
-                send.write_all(&[skippy_protocol::STAGE_STREAM_CONTROL])
-                    .await?;
-                (send, recv)
-            };
+            self.ensure_current_stage_control_peer(peer_id).await?;
+            let (mut send, mut recv) = self
+                .open_skippy_stage_mesh_stream(peer_id, skippy_protocol::STAGE_STREAM_CONTROL)
+                .await?;
             write_len_prefixed(&mut send, &frame.encode_to_vec()).await?;
             let buf = read_len_prefixed(&mut recv).await?;
             let response =
@@ -977,6 +1061,9 @@ impl Node {
                 std::time::Duration::from_secs(30)
             }
             crate::inference::skippy::StageControlRequest::Load(load) => {
+                crate::inference::skippy::stage_load_timeout(load)
+            }
+            crate::inference::skippy::StageControlRequest::LoadLocal(load) => {
                 crate::inference::skippy::stage_load_timeout(load)
             }
             crate::inference::skippy::StageControlRequest::Prepare(prepare) => {
@@ -1138,16 +1225,8 @@ impl Node {
         send: iroh::endpoint::SendStream,
         recv: iroh::endpoint::RecvStream,
     ) {
-        match stream_type {
-            skippy_protocol::STAGE_STREAM_CONTROL => {
-                let node = self.clone();
-                tokio::spawn(async move {
-                    if let Err(e) = node.handle_stage_control(remote, send, recv).await {
-                        tracing::warn!("stage control error from {}: {e}", remote.fmt_short());
-                    }
-                });
-            }
-            skippy_protocol::STAGE_STREAM_TRANSPORT => {
+        match dedicated_stage_stream_kind(stream_type) {
+            Some(DedicatedStageStreamKind::ActivationTransport) => {
                 if self
                     .stage_transport_tx
                     .send((remote, send, recv))
@@ -1157,23 +1236,9 @@ impl Node {
                     tracing::warn!("Stage transport channel closed, dropping stream");
                 }
             }
-            skippy_protocol::STAGE_STREAM_ARTIFACT_TRANSFER => {
-                let node = self.clone();
-                tokio::spawn(async move {
-                    if let Err(e) = node
-                        .handle_artifact_transfer_stream(remote, send, recv)
-                        .await
-                    {
-                        tracing::debug!(
-                            "legacy artifact transfer stream error from {}: {e}",
-                            remote.fmt_short()
-                        );
-                    }
-                });
-            }
-            other => {
+            None => {
                 tracing::warn!(
-                    "Unknown skippy stage stream type {other:#04x} from {}",
+                    "unsupported dedicated skippy stage stream type {stream_type:#04x} from {}; control and artifact streams require mesh subprotocol transport",
                     remote.fmt_short()
                 );
             }
@@ -1240,5 +1305,36 @@ impl Node {
             }
         };
         StageStreamAccept::Dispatch((send, recv), stream_type)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DedicatedStageStreamKind {
+    ActivationTransport,
+}
+
+fn dedicated_stage_stream_kind(stream_type: u8) -> Option<DedicatedStageStreamKind> {
+    (stream_type == skippy_protocol::STAGE_STREAM_TRANSPORT)
+        .then_some(DedicatedStageStreamKind::ActivationTransport)
+}
+
+#[cfg(test)]
+mod dedicated_stream_tests {
+    use super::{DedicatedStageStreamKind, dedicated_stage_stream_kind};
+
+    #[test]
+    fn dedicated_stage_alpn_accepts_activation_transport_only() {
+        assert_eq!(
+            dedicated_stage_stream_kind(skippy_protocol::STAGE_STREAM_TRANSPORT),
+            Some(DedicatedStageStreamKind::ActivationTransport)
+        );
+        assert_eq!(
+            dedicated_stage_stream_kind(skippy_protocol::STAGE_STREAM_CONTROL),
+            None
+        );
+        assert_eq!(
+            dedicated_stage_stream_kind(skippy_protocol::STAGE_STREAM_ARTIFACT_TRANSFER),
+            None
+        );
     }
 }

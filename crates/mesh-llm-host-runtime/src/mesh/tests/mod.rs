@@ -7,6 +7,7 @@ mod control_listener;
 
 include!("connections.rs");
 include!("admission/helpers.rs");
+include!("endpoint_shutdown.rs");
 include!("protocol_compat.rs");
 include!("owner_control.rs");
 include!("stage_transport.rs");
@@ -20,8 +21,8 @@ mod split_coverage {
 
     mod cases {
         use super::super::{
-            make_test_endpoint_id, open_owner_control_stream, read_owner_control_envelope,
-            start_owner_control_test_server, test_owner_keypair,
+            make_test_endpoint_id, make_test_peer, open_owner_control_stream,
+            read_owner_control_envelope, start_owner_control_test_server, test_owner_keypair,
         };
         use super::*;
         use crate::mesh::node_requirements::preflight_pushed_config_for_current_node_with_gpus;
