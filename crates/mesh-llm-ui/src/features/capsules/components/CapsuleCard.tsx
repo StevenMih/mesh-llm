@@ -213,8 +213,12 @@ export function CapsuleCard({ record, nodePubKeyPem }: CapsuleCardProps) {
     return () => {
       cancelled = true
     }
+    // Depend on the whole `record`, not just its id: a malicious relay can
+    // re-send tampered content under the same capsule_id on a re-poll, and the
+    // verification (id recompute + signature check) must re-run when any field
+    // changes, not only when the id does. (ported from mesh-pane-a cdc2dd778)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [record.capsule_id, nodePubKeyPem])
+  }, [record, nodePubKeyPem])
 
   const verdict = buildVerdict(sp, {
     idMatch,
