@@ -337,3 +337,108 @@ describe('LedgerPageContent — Part 3: Exchanges table + row inspector', () => 
     expect(exportButton).not.toBe(evidenceButton)
   })
 })
+
+describe('LedgerPageContent — Part B1: Integrity chain strip', () => {
+  afterEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('replaces both contradictory sentences with the chain strip + four first-person stat cards, a zero rendered prominently', async () => {
+    const { fetchPaneA, fetchPaneCList } = await import('@/features/capsules/api/sidecarClient')
+    vi.mocked(fetchPaneA).mockResolvedValue({
+      operator: null,
+      witness_checkpoint_supplied: false,
+      rows: [
+        {
+          capsule_id: 'c-1',
+          timestamp: null,
+          model_claimed: null,
+          hardware_claimed: null,
+          verify_ok: true,
+          rungs: {},
+          record: {}
+        },
+        {
+          capsule_id: 'c-2',
+          timestamp: null,
+          model_claimed: null,
+          hardware_claimed: null,
+          verify_ok: true,
+          rungs: {},
+          record: {}
+        }
+      ],
+      card: { checkpoint_count: null, continuity: 'unbroken', witnesses: [] }
+    })
+    vi.mocked(fetchPaneCList).mockResolvedValue({
+      rows: [
+        {
+          exchange_key: 'exch-closed-1',
+          role_tag: 'ASKED',
+          header_state: 'ok',
+          properties: { outcome_corroboration: { state: 'PASS' } },
+          has_issue: false,
+          mine: { state: 'present', capsule_id: 'mine-1' },
+          theirs: { state: 'present', capsule_id: 'theirs-1' },
+          unilateral: false,
+          timestamp: null
+        },
+        {
+          exchange_key: 'exch-contradicted-1',
+          role_tag: 'ASKED',
+          header_state: 'issue',
+          properties: { outcome_corroboration: { state: 'FAIL', text: 'reported outcomes disagree' } },
+          has_issue: true,
+          mine: { state: 'present', capsule_id: 'mine-2' },
+          theirs: { state: 'present', capsule_id: 'theirs-2' },
+          unilateral: false,
+          timestamp: null
+        }
+      ],
+      row_count: 2,
+      default_sort: '',
+      filters: [],
+      next_after_seq: null,
+      archived_segments: []
+    })
+
+    const user = userEvent.setup()
+    render(<LedgerPageContent />, { wrapper: makeWrapper() })
+    await user.click(screen.getByRole('tab', { name: /integrity/i }))
+
+    // The four first-person stat cards, with real (non-literal) counts.
+    expect(await screen.findByText('Sealed')).toBeInTheDocument()
+    expect(screen.getByText('Registered')).toBeInTheDocument()
+    expect(screen.getByText('Closed by the other side')).toBeInTheDocument()
+    expect(screen.getByText('Contradicted')).toBeInTheDocument()
+    expect(screen.getAllByText('2').length).toBeGreaterThan(0) // Sealed 2, Closed by the other side 2
+    // A prominent, honest zero -- Registered 0 is present in the document,
+    // not suppressed behind a muted "no data" fallback line.
+    expect(screen.getAllByText('0').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('1').length).toBeGreaterThan(0) // Contradicted 1 (chain strip's leading "1" also renders)
+
+    // Both old contradictory sentences are gone.
+    const bodyText = document.body.textContent ?? ''
+    expect(bodyText).not.toMatch(/history is intact and registered with/i)
+    expect(bodyText).not.toMatch(/no integrity fields available/i)
+  })
+
+  it('renders the chain strip + stat cards even with no data, never the old "no integrity fields" fallback', async () => {
+    // Default mocked payloads: fetchPaneA returns rows:[], card:null and
+    // fetchPaneCList returns rows:[] -- an honest all-zero render, not a
+    // muted absence message.
+    const user = userEvent.setup()
+    render(<LedgerPageContent />, { wrapper: makeWrapper() })
+    await user.click(screen.getByRole('tab', { name: /integrity/i }))
+
+    expect(await screen.findByText('Sealed')).toBeInTheDocument()
+    expect(screen.getByText('Registered')).toBeInTheDocument()
+    expect(screen.getByText('Closed by the other side')).toBeInTheDocument()
+    expect(screen.getByText('Contradicted')).toBeInTheDocument()
+
+    const bodyText = document.body.textContent ?? ''
+    expect(bodyText).not.toMatch(/history is intact and registered with/i)
+    expect(bodyText).not.toMatch(/no integrity fields available/i)
+    expect(bodyText).not.toMatch(/no integrity data available/i)
+  })
+})

@@ -452,13 +452,88 @@ function ExchangesSection({
 }
 
 // ---------------------------------------------------------------------------
-// Integrity section (pane-a card field)
+// Integrity section (pane-a card field + pane-c first-person exchange
+// outcomes) -- [mesh-ledger-b1-integrity-chain-strip]. Replaces the old
+// two-sentence paragraph (which could say "intact and registered with 0
+// witnesses" AND "no integrity fields available" about the same node) with
+// a chain strip + four first-person stat cards. Per v2 §6/R-D these counts
+// describe THIS node's own chain, never a peer, so the full Logs stat-card
+// prominence treatment is allowed here.
 // ---------------------------------------------------------------------------
 
+/** The chain strip: a bar of this node's sealed entries, shading the
+ *  checkpoint-covered range when a checkpoint exists. */
+function ChainStrip({ sealedCount, checkpointCount }: { sealedCount: number; checkpointCount: number | null }) {
+  const hasCheckpoint = checkpointCount !== null && checkpointCount > 0
+  const coveredCount = hasCheckpoint ? Math.min(checkpointCount, sealedCount) : 0
+  const coveredPct = sealedCount > 0 ? (coveredCount / sealedCount) * 100 : 0
+
+  return (
+    <div className="flex flex-col gap-1">
+      <p className="type-caption font-mono text-fg-faint">Your chain</p>
+      <div className="flex items-center gap-2">
+        <span className="font-mono text-xs text-fg-faint">1</span>
+        <div
+          className="relative h-4 flex-1 overflow-hidden rounded bg-panel-strong/40"
+          role="img"
+          aria-label={`Sealed chain, ${sealedCount} entries`}
+        >
+          {sealedCount > 0 ? (
+            <>
+              <div className="absolute inset-y-0 left-0 bg-foreground/70" style={{ width: `${coveredPct}%` }} />
+              <div className="absolute inset-y-0 bg-foreground/25" style={{ left: `${coveredPct}%`, right: 0 }} />
+            </>
+          ) : null}
+        </div>
+        <span className="font-mono text-xs text-fg-faint">{sealedCount}</span>
+      </div>
+      <p className="type-caption text-fg-dim">
+        {hasCheckpoint
+          ? `covered by checkpoint (${checkpointCount} leaves) · after the last checkpoint is unshaded`
+          : `${sealedCount} entr${sealedCount === 1 ? 'y' : 'ies'}, all sealed · no checkpoint yet · nothing here is registered`}
+      </p>
+    </div>
+  )
+}
+
+type IntegrityStatCardProps = {
+  readonly label: string
+  readonly value: number
+  readonly tone?: 'default' | 'bad'
+}
+
+/** One first-person stat card. A zero renders in the exact same size/weight
+ *  as any other value -- never muted, never apologetic (Accept criterion). */
+function IntegrityStatCard({ label, value, tone = 'default' }: IntegrityStatCardProps) {
+  const valueColor = tone === 'bad' && value > 0 ? 'var(--color-bad)' : 'var(--color-foreground)'
+  return (
+    <div className="panel-shell min-w-0 rounded-[var(--radius-lg)] border border-border bg-panel px-[var(--panel-x)] py-[var(--panel-y)]">
+      <span className="type-label truncate text-fg-faint">{label}</span>
+      <div
+        className="mt-[var(--panel-y,12px)] font-mono text-[length:var(--density-type-headline)] font-semibold leading-none tracking-tight"
+        style={{ color: valueColor }}
+      >
+        {value}
+      </div>
+    </div>
+  )
+}
+
 function IntegritySection() {
+  const { mode } = useDataMode()
+  const harnessMode = mode === 'harness'
   const query = useQuery({
     queryKey: ['ledger', 'pane-a'],
     queryFn: () => fetchPaneA(),
+    refetchInterval: 15_000,
+    retry: false
+  })
+  // Same queryKey + queryFn shape as ExchangesSection's own pane-c query --
+  // needed here for the CLOSED BY THE OTHER SIDE / CONTRADICTED cards,
+  // first-person counts derived from this node's own exchange records.
+  const paneCQuery = useQuery({
+    queryKey: ['ledger', 'pane-c'],
+    queryFn: () => (harnessMode ? Promise.resolve(HARNESS_PANE_C_PAYLOAD) : fetchPaneCList()),
     refetchInterval: 15_000,
     retry: false
   })
@@ -470,10 +545,7 @@ function IntegritySection() {
 
   const card = query.data?.card
   const rows = query.data?.rows ?? []
-
-  if (!card && rows.length === 0) {
-    return <p className="text-sm text-muted-foreground">No integrity data available yet.</p>
-  }
+  const paneCRows = paneCQuery.data?.rows ?? []
 
   // Extract from the card if present
   const checkpointCount = typeof card?.checkpoint_count === 'number' ? card.checkpoint_count : null
@@ -485,15 +557,14 @@ function IntegritySection() {
   const ownerAddedAt = typeof card?.owner_added_at === 'string' ? card.owner_added_at : null
   const ownerCardIndex = typeof card?.owner_card_index === 'number' ? card.owner_card_index : null
 
-  // L3.1 — Integrity headline
-  const integrityHeadline = `Your history is intact and registered with ${witnessCount} witness${witnessCount === 1 ? '' : 'es'} (run by the mesh team, not you). ${rows.length} exchange${rows.length === 1 ? '' : 's'} served, all sealed.`
+  const sealedCount = rows.length
+  const closedByOtherSideCount = paneCRows.filter((row) => row.theirs.state !== 'absent' && !row.unilateral).length
+  const contradictedCount = paneCRows.filter((row) => row.properties?.outcome_corroboration?.state === 'FAIL').length
 
   return (
     <Card>
       <CardHeader>
         <CardTitle className="text-sm">Chain integrity</CardTitle>
-        {/* L3.1 — section headline inside the Integrity card */}
-        <p className="text-xs text-fg-dim mt-1">{integrityHeadline}</p>
         {/* L4.2 — owner-added-later notice */}
         {ownerAddedAt && ownerCardIndex !== null ? (
           <p className="text-xs text-fg-dim mt-1">
@@ -501,20 +572,18 @@ function IntegritySection() {
           </p>
         ) : null}
       </CardHeader>
-      <CardContent className="flex flex-col gap-2 pt-0 text-sm text-fg-dim">
+      <CardContent className="flex flex-col gap-4 pt-0 text-sm text-fg-dim">
+        <ChainStrip checkpointCount={checkpointCount} sealedCount={sealedCount} />
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <IntegrityStatCard label="Sealed" value={sealedCount} />
+          <IntegrityStatCard label="Registered" value={witnessCount} />
+          <IntegrityStatCard label="Closed by the other side" value={closedByOtherSideCount} />
+          <IntegrityStatCard label="Contradicted" tone="bad" value={contradictedCount} />
+        </div>
         {continuity ? (
           <p>
             Continuity: <span className="font-medium text-foreground">{continuity}</span>
           </p>
-        ) : null}
-        {checkpointCount !== null ? <p>Checkpoints: {checkpointCount}</p> : null}
-        {witnessCount > 0 ? (
-          <p>
-            Registered at {witnessCount} witness{witnessCount === 1 ? '' : 'es'}
-          </p>
-        ) : null}
-        {!continuity && checkpointCount === null && witnessCount === 0 ? (
-          <p className="text-muted-foreground">No integrity fields available in the current data.</p>
         ) : null}
       </CardContent>
     </Card>
