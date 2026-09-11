@@ -23,6 +23,17 @@ type CapsuleCardProps = {
 
 type DigestCheck = { sealedDigest: string | null; computedDigest: string | null; matches: boolean | null }
 
+function shortCapsuleId(capsuleId: string): string {
+  return capsuleId.length > 12 ? `${capsuleId.slice(0, 12)}…` : capsuleId
+}
+
+function formatLocalTimestamp(timestamp: string | undefined): string {
+  if (!timestamp) return '(no timestamp)'
+  const parsed = new Date(timestamp)
+  if (Number.isNaN(parsed.getTime())) return timestamp
+  return parsed.toLocaleString()
+}
+
 export function CapsuleCard({ record, nodePubKeyPem }: CapsuleCardProps) {
   const capsuleId = record.capsule_id ?? '(none)'
   const sp = servingProvenance(record)
@@ -143,8 +154,14 @@ export function CapsuleCard({ record, nodePubKeyPem }: CapsuleCardProps) {
     return () => {
       cancelled = true
     }
+    // Depend on `record` itself, not just record.capsule_id: a malicious-relay
+    // tamper deliberately leaves capsule_id unchanged (see redteam demo docs),
+    // so keying off capsule_id alone would cache the FIRST verify result for
+    // that id forever and never re-check on later polls. fetchCapsuleLedger
+    // parses fresh JSON every 15s poll, so `record` is a new reference each
+    // time -- this makes verify() re-run every poll, not just on first mount.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [record.capsule_id, nodePubKeyPem])
+  }, [record, nodePubKeyPem])
 
   const verdict = buildVerdict(sp, {
     idMatch,
@@ -169,7 +186,12 @@ export function CapsuleCard({ record, nodePubKeyPem }: CapsuleCardProps) {
   return (
     <Card className="mb-4">
       <CardHeader className="flex-row items-baseline justify-between gap-3">
-        <CardTitle className="text-base">{friendlyModel}</CardTitle>
+        <div>
+          <CardTitle className="text-base">{friendlyModel}</CardTitle>
+          <div className="mt-0.5 font-mono text-xs text-muted-foreground">
+            {formatLocalTimestamp(record.timestamp)} · {shortCapsuleId(capsuleId)}
+          </div>
+        </div>
         <Badge
           className={cn(
             sealedTone === 'ok' && 'border-emerald-600/40 bg-emerald-600/10 text-emerald-500',
