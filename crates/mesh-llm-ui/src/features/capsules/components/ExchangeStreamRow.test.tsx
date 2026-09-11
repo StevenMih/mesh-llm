@@ -150,12 +150,14 @@ describe('ExchangeStreamRow — [mesh-ledger-b3-paging] focus/highlight/checks t
     expect(rowEl).not.toHaveAttribute('data-focused')
   })
 
-  it("the `c` toggle reveals the row's checksText inline, hidden by default", () => {
-    const row = makeRow('closed', { checksText: 'continuity, capture_coverage' })
+  it('the `c` toggle reveals the security view inline, hidden by default [mesh-ledger-b5-security-view]', () => {
+    const row = makeRow('closed')
     const { rerender } = render(<ExchangeStreamRow onAction={vi.fn()} onActivate={vi.fn()} rail={NO_RAIL} row={row} />)
-    expect(screen.queryByText(/Checks:/)).not.toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: /Security checks/ })).not.toBeInTheDocument()
     rerender(<ExchangeStreamRow checksExpanded onAction={vi.fn()} onActivate={vi.fn()} rail={NO_RAIL} row={row} />)
-    expect(screen.getByText('Checks: continuity, capture_coverage')).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: /Security checks/ })).toBeInTheDocument()
+    // Never a modal (v3 §4) -- the toggle stays inline under the row.
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   })
 })
 

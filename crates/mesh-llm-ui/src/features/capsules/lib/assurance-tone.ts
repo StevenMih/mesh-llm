@@ -50,3 +50,24 @@ export const CHIP_GLYPH: Record<string, string> = {
   NOT_CHECKED: '…',
   INCONCLUSIVE: '?'
 }
+
+// Q1 RULED 2026-09-11 (Steven, `mesh-ledger-two-sided-v3` §0): the five
+// results render lowercase -- `established · failed · not present ·
+// not checked · inconclusive` -- never the shouty-caps wire vocabulary
+// (`PASS`/`FAIL`/...) the sidecar's `assurance_map.py` emits. The wire
+// values stay as-is (`CHIP_TONE`/`CHIP_GLYPH` above keep keying on them --
+// they're the sidecar's actual contract, not display text); this is the
+// one place that turns a wire state into the word a person reads.
+export const CHIP_LABEL: Record<string, string> = {
+  PASS: 'established',
+  FAIL: 'failed',
+  NOT_PRESENT: 'not present',
+  NOT_CHECKED: 'not checked',
+  INCONCLUSIVE: 'inconclusive'
+}
+
+/** Resolves a wire state to its lowercase, manifesto-vocabulary label. */
+export function labelForState(state: string | null | undefined): string {
+  if (!state) return CHIP_LABEL.NOT_CHECKED
+  return CHIP_LABEL[state] ?? state.toLowerCase().replace(/_/g, ' ')
+}

@@ -696,6 +696,8 @@ function ExchangesSection({
                   focused={index === focusedRowIndex}
                   highlighted={highlightedKey === row.exchangeKey}
                   key={row.exchangeKey}
+                  localRecord={row.raw.mine.capsule_id ? (recordsById.get(row.raw.mine.capsule_id) ?? null) : null}
+                  nodePubKeyPem={nodePubKeyPem}
                   onAction={handleExchangeRowActivate}
                   onActivate={handleExchangeRowActivate}
                   rail={railSegments[pageStart + index]}

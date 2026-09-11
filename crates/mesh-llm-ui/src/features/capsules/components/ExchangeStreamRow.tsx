@@ -10,6 +10,8 @@
 import { Button } from '@/components/ui/button'
 import { StatusBadge } from '@/components/ui/StatusBadge'
 import { cn } from '@/lib/cn'
+import type { CapsuleRecord } from '@/features/capsules/api/types'
+import { SecurityChecksView } from '@/features/capsules/components/SecurityChecksView'
 import {
   theirContentAction,
   theirContentText,
@@ -24,6 +26,7 @@ import {
   rightCellText
 } from '@/features/capsules/lib/exchange-row-state'
 import type { RailSegment } from '@/features/capsules/lib/exchange-stream'
+import { useRecomputedIdentity } from '@/features/capsules/lib/recompute-identity'
 
 function formatExchangeTimestamp(timestamp: string | null): string {
   if (!timestamp) return 'timestamp unavailable'
@@ -55,6 +58,12 @@ export type ExchangeStreamRowProps = {
    *  ([mesh-ledger-b4-toggle-content], v3 §3): one populated side, one
    *  empty side, flipping with `Your role` (L-F). */
   contentExpanded?: boolean
+  /** This row's own local capsule record ([mesh-ledger-b5-security-view]) --
+   *  needed to recompute `content_binding`/`producer_signature` in-browser
+   *  for the security view. `null` when the record hasn't been fetched
+   *  (never a stand-in for a trusted result). */
+  localRecord?: CapsuleRecord | null
+  nodePubKeyPem?: string | null
   onActivate: (row: ExchangeLedgerRow) => void
   onAction: (row: ExchangeLedgerRow) => void
 }
@@ -66,12 +75,18 @@ export function ExchangeStreamRow({
   highlighted = false,
   checksExpanded = false,
   contentExpanded = false,
+  localRecord = null,
+  nodePubKeyPem = null,
   onActivate,
   onAction
 }: ExchangeStreamRowProps) {
   const state = row.rightCellState
   const alarm = isAlarmState(state)
   const action = rightCellAction(state)
+  // Only recompute while the security view is actually open -- the hook
+  // itself must always be called (rules of hooks), but its effect no-ops on
+  // a `null` record, so collapsed rows never pay for a fetch+verify.
+  const identity = useRecomputedIdentity(checksExpanded ? localRecord : null, nodePubKeyPem)
   // L-O -- served rows render a distinct marker and never a rail.
   const marker = row.roleTag === 'SERVED' ? '◐' : '●'
 
@@ -185,7 +200,7 @@ export function ExchangeStreamRow({
             </div>
           </div>
         ) : null}
-        {checksExpanded ? <p className="type-caption font-mono text-fg-faint">Checks: {row.checksText}</p> : null}
+        {checksExpanded ? <SecurityChecksView identity={identity} localRecord={localRecord} row={row} /> : null}
       </div>
     </div>
   )

@@ -629,7 +629,7 @@ describe('LedgerPageContent — Part B3: windowed paging + sticky header', () =>
     expect(screen.queryByText('Not asked. They would be expected to hold none.')).not.toBeInTheDocument()
 
     await user.keyboard('c')
-    expect(await screen.findByText(/Checks:/)).toBeInTheDocument()
+    expect(await screen.findByRole('region', { name: /Security checks for exch-0/ })).toBeInTheDocument()
   })
 
   it('keyboard shortcuts never fire while typing in the search box (e.g. typing "exch" never toggles anything)', async () => {
@@ -648,7 +648,7 @@ describe('LedgerPageContent — Part B3: windowed paging + sticky header', () =>
     await user.keyboard('exch')
 
     expect(screen.getByLabelText('Open exchange inspector for exch-0')).toHaveAttribute('data-focused', 'true')
-    expect(screen.queryByText(/Checks:/)).not.toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: /Security checks/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   })
 })
