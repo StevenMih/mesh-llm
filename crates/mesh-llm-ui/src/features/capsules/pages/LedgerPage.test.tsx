@@ -441,3 +441,213 @@ describe('LedgerPageContent — Part B1: Integrity chain strip', () => {
     expect(bodyText).not.toMatch(/no integrity data available/i)
   })
 })
+
+// ---------------------------------------------------------------------------
+// [mesh-ledger-b3-paging] — windowed paging, sticky header, deep links,
+// Next contradiction, keyboard map (v3 §2a).
+// ---------------------------------------------------------------------------
+
+const B3_BASE_TIMESTAMP = '2026-09-11T20:00:00.000Z'
+
+/** Newest-first by construction -- index 0 is `B3_BASE_TIMESTAMP`, each
+ *  later index one minute older -- so `sortStreamByTime` keeps index order
+ *  stable and page N's rows are predictably `exch-<N*50>..exch-<N*50+49>`. */
+function makeManyPaneCRows(count: number, contradictedIndexes: ReadonlySet<number> = new Set()) {
+  return Array.from({ length: count }, (_, i) => {
+    const contradicted = contradictedIndexes.has(i)
+    return {
+      exchange_key: `exch-${i}`,
+      role_tag: 'ASKED',
+      header_state: contradicted ? 'issue' : 'ok',
+      properties: {
+        outcome_corroboration: { state: contradicted ? 'FAIL' : 'PASS' }
+      },
+      has_issue: contradicted,
+      mine: { state: 'present', capsule_id: `mine-${i}` },
+      theirs: { state: 'present', capsule_id: `theirs-${i}` },
+      unilateral: false,
+      timestamp: new Date(new Date(B3_BASE_TIMESTAMP).getTime() - i * 60_000).toISOString()
+    }
+  })
+}
+
+function b3PaneCPayload(rows: ReturnType<typeof makeManyPaneCRows>) {
+  return {
+    rows,
+    row_count: rows.length,
+    default_sort: '',
+    filters: [],
+    next_after_seq: null,
+    archived_segments: []
+  }
+}
+
+describe('LedgerPageContent — Part B3: windowed paging + sticky header', () => {
+  afterEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('windows into pages of 50 with an honest full-range banner, Older/Newer paging the rest', async () => {
+    const { fetchPaneCList } = await import('@/features/capsules/api/sidecarClient')
+    vi.mocked(fetchPaneCList).mockResolvedValue(b3PaneCPayload(makeManyPaneCRows(120)))
+
+    const user = userEvent.setup()
+    render(<LedgerPageContent />, { wrapper: makeWrapper() })
+    await user.click(screen.getByRole('tab', { name: /exchanges/i }))
+
+    // Page 1: newest 50 (exch-0..exch-49), never exch-50.
+    expect(await screen.findByText('mine-0')).toBeInTheDocument()
+    expect(screen.getByText('mine-49')).toBeInTheDocument()
+    expect(screen.queryByText('mine-50')).not.toBeInTheDocument()
+
+    // L-K — the full-range count states its own span, never a bare number.
+    expect(screen.getByText(/Showing 50 of 120 exchanges/)).toBeInTheDocument()
+    expect(
+      screen.getByText('Not shown here: exchanges outside this range. Counts above are for the full range.')
+    ).toBeInTheDocument()
+
+    const newerButton = screen.getByRole('button', { name: 'Newer exchanges' })
+    expect(newerButton).toBeDisabled()
+
+    await user.click(screen.getByRole('button', { name: 'Older exchanges' }))
+    expect(await screen.findByText('mine-50')).toBeInTheDocument()
+    expect(screen.getByText('mine-99')).toBeInTheDocument()
+    expect(screen.queryByText('mine-0')).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Newer exchanges' }))
+    expect(await screen.findByText('mine-0')).toBeInTheDocument()
+  })
+
+  it('the YOUR RECORD / THEIR RECORD column header is a single sticky header, never repeated per row', async () => {
+    const { fetchPaneCList } = await import('@/features/capsules/api/sidecarClient')
+    vi.mocked(fetchPaneCList).mockResolvedValue(b3PaneCPayload(makeManyPaneCRows(5)))
+
+    const user = userEvent.setup()
+    render(<LedgerPageContent />, { wrapper: makeWrapper() })
+    await user.click(screen.getByRole('tab', { name: /exchanges/i }))
+
+    await screen.findByText('mine-0')
+    expect(screen.getAllByText('YOUR RECORD')).toHaveLength(1)
+    expect(screen.getAllByText('THEIR RECORD, AS GIVEN TO YOU')).toHaveLength(1)
+  })
+
+  it('a deep-linked exchange key jumps to its page, highlights the row, and opens its inspector', async () => {
+    const { fetchPaneCList } = await import('@/features/capsules/api/sidecarClient')
+    vi.mocked(fetchPaneCList).mockResolvedValue(b3PaneCPayload(makeManyPaneCRows(120)))
+
+    render(<LedgerPageContent focusExchangeKey="exch-75" />, { wrapper: makeWrapper() })
+
+    // Auto-selects the Exchanges tab -- no manual click needed. (The
+    // inspector modal it opens ALSO renders "mine-75", so scope to the row.)
+    const row = await screen.findByLabelText('Open exchange inspector for exch-75')
+    expect(row).toHaveTextContent('mine-75')
+    // Page 2 (exch-50..exch-99), never page 1's exch-0.
+    expect(screen.queryByText('mine-0')).not.toBeInTheDocument()
+
+    expect(row).toHaveAttribute('aria-current', 'true')
+    expect(row).toHaveAttribute('data-highlighted', 'true')
+
+    // Opens the same full-detail inspector a click would.
+    const dialog = await screen.findByRole('dialog')
+    expect(dialog).toHaveTextContent('exch-75')
+  })
+
+  it('Next contradiction ▸ reaches an off-page contradiction regardless of the current page', async () => {
+    const { fetchPaneCList } = await import('@/features/capsules/api/sidecarClient')
+    vi.mocked(fetchPaneCList).mockResolvedValue(b3PaneCPayload(makeManyPaneCRows(120, new Set([90]))))
+
+    const user = userEvent.setup()
+    render(<LedgerPageContent />, { wrapper: makeWrapper() })
+    await user.click(screen.getByRole('tab', { name: /exchanges/i }))
+    await screen.findByText('mine-0')
+
+    const nextContradiction = screen.getByRole('button', { name: 'Next contradiction ▸' })
+    expect(nextContradiction).toBeEnabled()
+
+    await user.click(nextContradiction)
+    expect(await screen.findByText('mine-90')).toBeInTheDocument()
+    expect(screen.queryByText('mine-0')).not.toBeInTheDocument()
+  })
+
+  it('Next contradiction ▸ is disabled when nothing is contradicted', async () => {
+    const { fetchPaneCList } = await import('@/features/capsules/api/sidecarClient')
+    vi.mocked(fetchPaneCList).mockResolvedValue(b3PaneCPayload(makeManyPaneCRows(3)))
+
+    const user = userEvent.setup()
+    render(<LedgerPageContent />, { wrapper: makeWrapper() })
+    await user.click(screen.getByRole('tab', { name: /exchanges/i }))
+    await screen.findByText('mine-0')
+
+    expect(screen.getByRole('button', { name: 'Next contradiction ▸' })).toBeDisabled()
+  })
+
+  it('a twin-sized atomic group never splits a page boundary (component-level smoke; pure-fn coverage in exchange-pages.test.ts)', async () => {
+    // Today's payload can't carry a real twin bracket (B6) -- this only
+    // re-confirms 50 rows/page holds at the component level; the load-
+    // bearing invariant itself is unit-tested against a synthetic 3-row
+    // group in exchange-pages.test.ts.
+    const { fetchPaneCList } = await import('@/features/capsules/api/sidecarClient')
+    vi.mocked(fetchPaneCList).mockResolvedValue(b3PaneCPayload(makeManyPaneCRows(51)))
+
+    const user = userEvent.setup()
+    render(<LedgerPageContent />, { wrapper: makeWrapper() })
+    await user.click(screen.getByRole('tab', { name: /exchanges/i }))
+
+    expect(await screen.findByText('mine-49')).toBeInTheDocument()
+    expect(screen.queryByText('mine-50')).not.toBeInTheDocument()
+  })
+
+  it('keyboard map: j/k moves the row cursor, o opens the inspector, c reveals Checks inline, / focuses search', async () => {
+    const { fetchPaneCList } = await import('@/features/capsules/api/sidecarClient')
+    vi.mocked(fetchPaneCList).mockResolvedValue(b3PaneCPayload(makeManyPaneCRows(3)))
+
+    const user = userEvent.setup()
+    render(<LedgerPageContent />, { wrapper: makeWrapper() })
+    await user.click(screen.getByRole('tab', { name: /exchanges/i }))
+    await screen.findByText('mine-0')
+
+    const rowAt = (exchangeKey: string) => screen.getByLabelText(`Open exchange inspector for ${exchangeKey}`)
+    expect(rowAt('exch-0')).toHaveAttribute('data-focused', 'true')
+
+    await user.keyboard('j')
+    expect(rowAt('exch-1')).toHaveAttribute('data-focused', 'true')
+    expect(rowAt('exch-0')).not.toHaveAttribute('data-focused')
+
+    await user.keyboard('k')
+    expect(rowAt('exch-0')).toHaveAttribute('data-focused', 'true')
+
+    // Checked before `o` opens the modal -- Radix's dialog focus trap would
+    // otherwise pull focus straight back once inside it.
+    await user.keyboard('/')
+    expect(screen.getByLabelText('Search exchanges')).toHaveFocus()
+    await user.tab() // leave the search box so `o`/`c` aren't swallowed by isTypingTarget
+
+    await user.keyboard('o')
+    const dialog = await screen.findByRole('dialog')
+    expect(dialog).toHaveTextContent('exch-0')
+    await user.click(screen.getByLabelText('Close exchange inspector'))
+
+    await user.keyboard('c')
+    expect(await screen.findByText(/Checks:/)).toBeInTheDocument()
+  })
+
+  it('keyboard shortcuts never fire while typing in the search box (e.g. typing "exch" never toggles anything)', async () => {
+    const { fetchPaneCList } = await import('@/features/capsules/api/sidecarClient')
+    vi.mocked(fetchPaneCList).mockResolvedValue(b3PaneCPayload(makeManyPaneCRows(3)))
+
+    const user = userEvent.setup()
+    render(<LedgerPageContent />, { wrapper: makeWrapper() })
+    await user.click(screen.getByRole('tab', { name: /exchanges/i }))
+    await screen.findByText('mine-0')
+
+    await user.click(screen.getByLabelText('Search exchanges'))
+    // "exch" matches every exchange_key here (they all start with "exch-"),
+    // so the row stays mounted to assert against -- the point is that the
+    // 'c' it contains never toggles Checks while typing.
+    await user.keyboard('exch')
+
+    expect(screen.getByLabelText('Open exchange inspector for exch-0')).toHaveAttribute('data-focused', 'true')
+    expect(screen.queryByText(/Checks:/)).not.toBeInTheDocument()
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  })
+})

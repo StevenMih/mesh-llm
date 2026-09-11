@@ -5,7 +5,7 @@
 // block`/`served_summary.ServedSummary.to_value` and `capsule_exchange_tab.
 // build_exchange_list_payload` verbatim -- see `sidecarTypes.ts`.
 import type { PaneAJson } from '@/features/capsules/api/sidecarTypes'
-import type { PaneCListJson } from '@/features/capsules/api/sidecarTypes'
+import type { PaneCListJson, PaneCRow } from '@/features/capsules/api/sidecarTypes'
 
 export const HARNESS_PANE_A_PAYLOAD: PaneAJson = {
   operator: null,
@@ -86,12 +86,127 @@ const CONTRADICTED_EXCHANGE_PROPERTIES = {
   outcome_corroboration: { state: 'FAIL', text: 'reported outcomes disagree' }
 }
 
+// [mesh-ledger-b3-paging] -- the seven curated rows below (one per
+// right-cell state) are too few to page; `pnpm dev`'s harness mode needs a
+// realistic-sized ledger to actually exercise windowed paging, the
+// bounded-window banner, and the sticky header. This tail is deterministic
+// (index-derived, no Math.random/Date.now) so a screenshot or a snapshot is
+// reproducible run to run, and spans back to 3 Sep to match the v3 §2a
+// worked example ("Showing 50 of 1,284 exchanges · 3 Sep – 11 Sep")
+// verbatim once appended to the 7 curated rows below.
+export const HARNESS_LEDGER_FILLER_ROW_COUNT = 1277
+const FILLER_SPAN_START = new Date('2026-09-03T00:00:00Z').getTime()
+const FILLER_SPAN_END = new Date('2026-09-11T08:00:00Z').getTime() // just before the earliest curated row
+
+function fillerRowState(index: number): 'closed' | 'contradicted' | 'served' | 'refused' | 'absent' | 'not_asked' {
+  const cycle = index % 12
+  if (cycle === 0) return 'contradicted'
+  if (cycle === 1) return 'served'
+  if (cycle === 2) return 'refused'
+  if (cycle === 3) return 'absent'
+  if (cycle === 4) return 'not_asked'
+  return 'closed'
+}
+
+function buildFillerExchangeRows(count: number): PaneCRow[] {
+  const spanMs = FILLER_SPAN_END - FILLER_SPAN_START
+  return Array.from({ length: count }, (_, i) => {
+    // Newest filler row (i = count - 1) sits just before the curated rows;
+    // oldest (i = 0) sits at the span start -- keeps the whole payload in
+    // newest-first order once the Ledger's own time sort runs.
+    const timestamp = new Date(FILLER_SPAN_START + Math.round((spanMs * i) / (count - 1))).toISOString()
+    const key = `exch-filler-${String(i).padStart(4, '0')}`
+    const state = fillerRowState(i)
+    // Three consecutive ASKED rows share a session -- enough to render a
+    // few multi-row rails without every row looking identical.
+    const sessionId = state === 'served' ? undefined : `session-filler-${Math.floor(i / 3)}`
+
+    const base = {
+      exchange_key: key,
+      role_tag: state === 'served' ? 'SERVED' : 'ASKED',
+      mine: { state: 'present' as const, capsule_id: `mine_${key}` },
+      timestamp,
+      ...(sessionId ? { session_id: sessionId } : {})
+    }
+
+    switch (state) {
+      case 'contradicted':
+        return {
+          ...base,
+          header_state: 'issue',
+          properties: CONTRADICTED_EXCHANGE_PROPERTIES,
+          has_issue: true,
+          theirs: { state: 'present', capsule_id: `theirs_${key}` },
+          unilateral: false
+        }
+      case 'served':
+        return {
+          ...base,
+          header_state: 'ok',
+          properties: null,
+          has_issue: false,
+          theirs: { state: 'absent', capsule_id: null, evidence_outcome: 'not_asked' as const },
+          unilateral: true
+        }
+      case 'refused':
+        return {
+          ...base,
+          header_state: 'ok',
+          properties: null,
+          has_issue: false,
+          theirs: {
+            state: 'absent',
+            capsule_id: null,
+            evidence_outcome: 'signed_refusal' as const,
+            evidence_outcome_date: '4 Sep'
+          },
+          unilateral: true
+        }
+      case 'absent':
+        return {
+          ...base,
+          header_state: 'ok',
+          properties: null,
+          has_issue: false,
+          theirs: {
+            state: 'absent',
+            capsule_id: null,
+            evidence_outcome: 'recorded_absence' as const,
+            evidence_outcome_date: '4 Sep'
+          },
+          unilateral: true
+        }
+      case 'not_asked':
+        return {
+          ...base,
+          header_state: 'ok',
+          properties: null,
+          has_issue: false,
+          theirs: { state: 'absent', capsule_id: null },
+          unilateral: true
+        }
+      case 'closed':
+      default:
+        return {
+          ...base,
+          header_state: 'ok',
+          properties: CLEAN_EXCHANGE_PROPERTIES,
+          has_issue: false,
+          theirs: { state: 'present', capsule_id: `theirs_${key}` },
+          unilateral: false
+        }
+    }
+  })
+}
+
 // [mesh-ledger-b2-two-sided-row] -- one row per right-cell state (v3 §2's
 // six-row table), plus a served row and a second session, so `pnpm dev`
 // shows a real mix: the append-only stream, the session rail (L-N/L-O),
 // and every CLOSED/CONTRADICTED/OPEN·* status at once.
+// [mesh-ledger-b3-paging] -- 7 curated + the deterministic filler tail
+// above, so harness mode actually pages.
 export const HARNESS_PANE_C_PAYLOAD: PaneCListJson = {
-  row_count: 7,
+  row_count: 7 + HARNESS_LEDGER_FILLER_ROW_COUNT,
   default_sort: 'timestamp',
   filters: [],
   next_after_seq: null,
@@ -185,6 +300,7 @@ export const HARNESS_PANE_C_PAYLOAD: PaneCListJson = {
       theirs: { state: 'absent', capsule_id: null },
       unilateral: true,
       timestamp: '2026-09-11T08:03:00Z'
-    }
+    },
+    ...buildFillerExchangeRows(HARNESS_LEDGER_FILLER_ROW_COUNT)
   ]
 }

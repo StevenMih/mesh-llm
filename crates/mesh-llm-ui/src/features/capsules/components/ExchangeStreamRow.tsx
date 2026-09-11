@@ -2,12 +2,15 @@
 // v3 §2's anatomy: a role marker (`●` asked / `◐` served -- no rail, L-O), a
 // left session rail when this row and the previous one share a session
 // (L-N), and the two-sided record itself -- `YOUR RECORD │ THEIR RECORD, AS
-// GIVEN TO YOU`. Toggles ① content and ② checks (v3 §3/§4) are later
-// batches; clicking a row here still opens the existing full-detail
-// inspector modal, same as before this batch.
+// GIVEN TO YOU`. The column labels themselves now live in the sticky header
+// above the stream ([mesh-ledger-b3-paging], v3 §2a), not repeated per row.
+// Toggle ① content (v3 §3) is still later; clicking a row here still opens
+// the existing full-detail inspector modal, same as before this batch.
 import { Button } from '@/components/ui/button'
 import { StatusBadge } from '@/components/ui/StatusBadge'
+import { cn } from '@/lib/cn'
 import type { ExchangeLedgerRow } from '@/features/capsules/lib/exchange-ledger'
+import { exchangeRowDomId } from '@/features/capsules/lib/exchange-pages'
 import {
   isAlarmState,
   rightCellAction,
@@ -31,11 +34,30 @@ function roleText(roleTag: string): string {
 export type ExchangeStreamRowProps = {
   row: ExchangeLedgerRow
   rail: RailSegment
+  /** Keyboard nav cursor (j/k) -- transient, not persisted anywhere. */
+  focused?: boolean
+  /** The per-row deep-link target (v3 §2a "opening its page with the row
+   *  expanded and highlighted") -- persists until a different row is
+   *  focused via deep link, independent of keyboard focus. */
+  highlighted?: boolean
+  /** `c` keyboard toggle -- reveals this row's Checks column value inline.
+   *  Real per-row Checks toggle ② (v3 §4) is a later batch; this is the
+   *  honest minimum today's data already supports (`checksText`, the same
+   *  field the CSV export already uses). */
+  checksExpanded?: boolean
   onActivate: (row: ExchangeLedgerRow) => void
   onAction: (row: ExchangeLedgerRow) => void
 }
 
-export function ExchangeStreamRow({ row, rail, onActivate, onAction }: ExchangeStreamRowProps) {
+export function ExchangeStreamRow({
+  row,
+  rail,
+  focused = false,
+  highlighted = false,
+  checksExpanded = false,
+  onActivate,
+  onAction
+}: ExchangeStreamRowProps) {
   const state = row.rightCellState
   const alarm = isAlarmState(state)
   const action = rightCellAction(state)
@@ -43,15 +65,21 @@ export function ExchangeStreamRow({ row, rail, onActivate, onAction }: ExchangeS
   const marker = row.roleTag === 'SERVED' ? '◐' : '●'
 
   return (
-    <div className="flex flex-col">
+    <div className="flex flex-col" id={exchangeRowDomId(row.exchangeKey)}>
       {rail.isSegmentStart && row.sessionId ? (
         <p className="pl-3 pt-2 type-caption font-mono text-fg-faint">session {row.sessionId}</p>
       ) : null}
       <div
+        aria-current={highlighted ? 'true' : undefined}
         aria-label={`Open exchange inspector for ${row.exchangeKey}`}
-        className={`flex cursor-pointer flex-col gap-2 border-l-2 py-3 pl-3 pr-1 ${
-          rail.hasRail ? 'border-accent/50' : 'border-transparent'
-        }`}
+        className={cn(
+          'flex cursor-pointer flex-col gap-2 border-l-2 py-3 pl-3 pr-1 outline-none',
+          rail.hasRail ? 'border-accent/50' : 'border-transparent',
+          focused && 'ring-1 ring-inset ring-accent/70',
+          highlighted && 'bg-[color-mix(in_oklab,var(--color-accent)_10%,transparent)]'
+        )}
+        data-focused={focused ? 'true' : undefined}
+        data-highlighted={highlighted ? 'true' : undefined}
         data-right-cell-state={state.kind}
         data-role-tag={row.roleTag}
         onClick={() => onActivate(row)}
@@ -81,13 +109,11 @@ export function ExchangeStreamRow({ row, rail, onActivate, onAction }: ExchangeS
         </div>
         <div className="grid grid-cols-2 gap-0 rounded border border-border-soft">
           <div className="flex flex-col gap-1 border-r border-border-soft px-3 py-2">
-            <p className="type-caption font-mono text-fg-faint">YOUR RECORD</p>
             <p className="font-mono text-xs text-foreground">
               <span>{row.exchangeKey}</span> · <span>{row.raw.mine.capsule_id ?? row.raw.mine.text ?? '—'}</span>
             </p>
           </div>
           <div className="flex flex-col gap-1.5 px-3 py-2">
-            <p className="type-caption font-mono text-fg-faint">THEIR RECORD, AS GIVEN TO YOU</p>
             <p className="text-xs text-fg-dim">{rightCellText(state)}</p>
             {action ? (
               <Button
@@ -105,6 +131,7 @@ export function ExchangeStreamRow({ row, rail, onActivate, onAction }: ExchangeS
             ) : null}
           </div>
         </div>
+        {checksExpanded ? <p className="type-caption font-mono text-fg-faint">Checks: {row.checksText}</p> : null}
       </div>
     </div>
   )

@@ -90,14 +90,36 @@ const configurationTabRoute = createRoute({
   ),
   errorComponent: FeatureErrorBoundary
 })
+// [mesh-ledger-b3-paging] -- `focusExchangeKey` drives the Ledger's
+// Exchanges tab to jump to the row's page, open its inspector, and
+// highlight it (v3 §2a per-row deep link). See
+// `/capsules/exchange/$exchangeKey` below, which redirects here with this
+// param set -- same legacy-route-redirects-to-canonical-search shape as
+// `/logs/$requestId`.
+function parseCapsulesSearch(search: Record<string, unknown>): { focusExchangeKey?: string } {
+  const value = search['focusExchangeKey']
+  return typeof value === 'string' && value.length > 0 ? { focusExchangeKey: value } : {}
+}
 const capsulesRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/capsules',
   head: () => ({ meta: [{ title: 'MeshLLM - Accountability' }] }),
+  validateSearch: parseCapsulesSearch,
   component: lazyRouteComponent(
     () => import('@/features/capsules/pages/AccountabilityPage'),
     'AccountabilityPageContent'
   ),
+  errorComponent: FeatureErrorBoundary
+})
+const CapsulesExchangeRedirectPage = lazyRouteComponent(
+  () => import('@/features/capsules/pages/CapsulesExchangeRedirectPage'),
+  'CapsulesExchangeRedirectPage'
+)
+const capsulesExchangeRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/capsules/exchange/$exchangeKey',
+  head: () => ({ meta: [{ title: 'MeshLLM - Accountability' }] }),
+  component: CapsulesExchangeRedirectPage,
   errorComponent: FeatureErrorBoundary
 })
 const pluginWebUiRoute = createRoute({
@@ -133,6 +155,7 @@ export const routeTree = rootRoute.addChildren([
   configurationRoute,
   configurationTabRoute,
   capsulesRoute,
+  capsulesExchangeRoute,
   pluginWebUiRoute,
   ...(developerPlaygroundRoute ? [developerPlaygroundRoute] : []),
   ...(enableMeshVizPerfRoute ? [meshVizPerfRoute] : [])

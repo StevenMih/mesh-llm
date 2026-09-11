@@ -141,3 +141,40 @@ export function rightCellAction(state: RightCellState): string | null {
 export function isAlarmState(state: RightCellState): boolean {
   return state.kind === 'contradicted'
 }
+
+/** The ledger's state toolbar filter values (v3 §2a: "useful filters are
+ *  states, not qualities: open / closed / contradicted / asked-no-reply /
+ *  twins only"). `twins` isn't a right-cell state at all -- it's whether a
+ *  row belongs to a twin bracket, which callers derive separately (see
+ *  `exchange-pages.ts`; no bracket data exists until B6). */
+export type LedgerStateFilterValue = 'open' | 'closed' | 'contradicted' | 'asked_no_reply'
+
+export const LEDGER_STATE_FILTER_VALUES: readonly LedgerStateFilterValue[] = [
+  'closed',
+  'contradicted',
+  'asked_no_reply',
+  'open'
+]
+
+/** Buckets the six right-cell states into the toolbar's state filter
+ *  values: `open_asked` (a real ask, no reply yet) gets its own
+ *  `asked_no_reply` bucket, and the three "we hold no reply at all" states
+ *  collapse into the broader `open` bucket. */
+export function ledgerStateFilterValue(state: RightCellState): LedgerStateFilterValue {
+  switch (state.kind) {
+    case 'closed':
+      return 'closed'
+    case 'contradicted':
+      return 'contradicted'
+    case 'open_asked':
+      return 'asked_no_reply'
+    case 'open_refused':
+    case 'open_absent':
+    case 'open_not_asked':
+      return 'open'
+    default: {
+      const exhaustiveCheck: never = state.kind
+      return exhaustiveCheck
+    }
+  }
+}

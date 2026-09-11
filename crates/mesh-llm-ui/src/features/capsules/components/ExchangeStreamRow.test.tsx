@@ -4,6 +4,7 @@
 import { render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { ExchangeStreamRow } from '@/features/capsules/components/ExchangeStreamRow'
+import { exchangeRowDomId } from '@/features/capsules/lib/exchange-pages'
 import type { ExchangeLedgerRow } from '@/features/capsules/lib/exchange-ledger'
 import type { RightCellStateKind } from '@/features/capsules/lib/exchange-row-state'
 import type { RailSegment } from '@/features/capsules/lib/exchange-stream'
@@ -118,6 +119,39 @@ describe('ExchangeStreamRow — six states render distinct text/status/action', 
     const unansweredText = screen.getByText(/No reply yet\.$/).textContent
     unmountB()
     expect(notAskedText).not.toBe(unansweredText)
+  })
+})
+
+describe('ExchangeStreamRow — [mesh-ledger-b3-paging] focus/highlight/checks toggle', () => {
+  it('renders at a stable, addressable DOM id derived from the exchange key', () => {
+    const row = makeRow('closed')
+    const { container } = render(<ExchangeStreamRow onAction={vi.fn()} onActivate={vi.fn()} rail={NO_RAIL} row={row} />)
+    expect(container.querySelector(`#${exchangeRowDomId(row.exchangeKey)}`)).toBeInTheDocument()
+  })
+
+  it('marks the deep-link target row with aria-current and a data-highlighted flag', () => {
+    render(
+      <ExchangeStreamRow highlighted onAction={vi.fn()} onActivate={vi.fn()} rail={NO_RAIL} row={makeRow('closed')} />
+    )
+    const rowEl = screen.getByRole('button', { name: /Open exchange inspector/ })
+    expect(rowEl).toHaveAttribute('aria-current', 'true')
+    expect(rowEl).toHaveAttribute('data-highlighted', 'true')
+  })
+
+  it('a non-highlighted, non-focused row carries neither flag', () => {
+    render(<ExchangeStreamRow onAction={vi.fn()} onActivate={vi.fn()} rail={NO_RAIL} row={makeRow('closed')} />)
+    const rowEl = screen.getByRole('button', { name: /Open exchange inspector/ })
+    expect(rowEl).not.toHaveAttribute('aria-current')
+    expect(rowEl).not.toHaveAttribute('data-highlighted')
+    expect(rowEl).not.toHaveAttribute('data-focused')
+  })
+
+  it("the `c` toggle reveals the row's checksText inline, hidden by default", () => {
+    const row = makeRow('closed', { checksText: 'continuity, capture_coverage' })
+    const { rerender } = render(<ExchangeStreamRow onAction={vi.fn()} onActivate={vi.fn()} rail={NO_RAIL} row={row} />)
+    expect(screen.queryByText(/Checks:/)).not.toBeInTheDocument()
+    rerender(<ExchangeStreamRow checksExpanded onAction={vi.fn()} onActivate={vi.fn()} rail={NO_RAIL} row={row} />)
+    expect(screen.getByText('Checks: continuity, capture_coverage')).toBeInTheDocument()
   })
 })
 

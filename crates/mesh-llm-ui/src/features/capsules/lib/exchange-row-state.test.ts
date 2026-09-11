@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   deriveRightCellState,
   isAlarmState,
+  ledgerStateFilterValue,
   rightCellAction,
   rightCellStatusLabel,
   rightCellText,
@@ -195,5 +196,22 @@ describe('isAlarmState — L-A/L-B enforcement', () => {
     for (const kind of ALL_KINDS.filter((k) => k !== 'contradicted')) {
       expect(isAlarmState(stateOf(kind))).toBe(false)
     }
+  })
+})
+
+describe('ledgerStateFilterValue — v3 §2a toolbar buckets', () => {
+  it('closed and contradicted map to themselves', () => {
+    expect(ledgerStateFilterValue(stateOf('closed'))).toBe('closed')
+    expect(ledgerStateFilterValue(stateOf('contradicted'))).toBe('contradicted')
+  })
+
+  it('open_asked (a real ask, no reply yet) gets its own asked_no_reply bucket', () => {
+    expect(ledgerStateFilterValue(stateOf('open_asked', '3 Sep'))).toBe('asked_no_reply')
+  })
+
+  it('the three no-reply-at-all states collapse into the broader open bucket', () => {
+    expect(ledgerStateFilterValue(stateOf('open_refused'))).toBe('open')
+    expect(ledgerStateFilterValue(stateOf('open_absent'))).toBe('open')
+    expect(ledgerStateFilterValue(stateOf('open_not_asked'))).toBe('open')
   })
 })
