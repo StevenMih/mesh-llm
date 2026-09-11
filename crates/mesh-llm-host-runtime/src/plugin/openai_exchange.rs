@@ -198,8 +198,10 @@ impl ExchangeOutputDigests {
         let reasoning = collect_reasoning(&value);
         Self {
             response_body,
-            tool_calls: (!tool_calls.is_empty()).then(|| jcs_sha256(&serde_json::Value::Array(tool_calls))),
-            reasoning: (!reasoning.is_empty()).then(|| jcs_sha256(&serde_json::Value::Array(reasoning))),
+            tool_calls: (!tool_calls.is_empty())
+                .then(|| jcs_sha256(&serde_json::Value::Array(tool_calls))),
+            reasoning: (!reasoning.is_empty())
+                .then(|| jcs_sha256(&serde_json::Value::Array(reasoning))),
         }
     }
 
@@ -891,11 +893,13 @@ mod tests {
         // preserves), plus a real usage block — exactly what the host serves.
         let body = br#"{"id":"chatcmpl-seti","object":"chat.completion","created":1,"model":"llama-3.2-3b-instruct","choices":[{"index":0,"message":{"role":"assistant","content":"","tool_calls":[{"function":{"arguments":"{\"query\": \"mesh-llm vs SETI@Home\"}","name":"web_search"},"id":"call_719a955fb46a41008dd847d412f00795","type":"function"}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":202,"completion_tokens":25,"total_tokens":227}}"#;
         let digests = ExchangeOutputDigests::from_response_body(body);
-        let tool_calls_hex =
-            hex::encode(digests.tool_calls.expect("tool_calls digest present for a real tool call"));
+        let tool_calls_hex = hex::encode(
+            digests
+                .tool_calls
+                .expect("tool_calls digest present for a real tool call"),
+        );
         assert_eq!(
-            tool_calls_hex,
-            "f294be8a53bb9c29cd94472721f0857591f34b23fe010882de79b9fb210b1395",
+            tool_calls_hex, "f294be8a53bb9c29cd94472721f0857591f34b23fe010882de79b9fb210b1395",
             "host tool_calls_digest must equal the Python reference json_digest(tool_calls)"
         );
         // The response-body digest is real (present), and a non-reasoning model
@@ -928,8 +932,7 @@ mod tests {
         //     print(json_digest(['let me think about this']))"
         let body = br#"{"id":"x","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"42","reasoning_content":"let me think about this"},"finish_reason":"stop"}]}"#;
         let digests = ExchangeOutputDigests::from_response_body(body);
-        let reasoning_hex =
-            hex::encode(digests.reasoning.expect("reasoning digest present"));
+        let reasoning_hex = hex::encode(digests.reasoning.expect("reasoning digest present"));
         // Recompute the expected value the same way json_digest would: plain JCS
         // over ["let me think about this"], sha-256, hex.
         let expected = {

@@ -7,8 +7,8 @@ use crate::network::openai::automatic;
 use crate::network::openai::transport as proxy;
 use crate::network::router;
 use crate::plugin::openai_exchange::{
-    request_body_digest, ExchangeUsage, OpenAiExchangeChannel, OpenAiExchangeDispatchPath,
-    OpenAiExchangeEnvelope, ServingProvenance,
+    ExchangeUsage, OpenAiExchangeChannel, OpenAiExchangeDispatchPath, OpenAiExchangeEnvelope,
+    ServingProvenance, request_body_digest,
 };
 use mesh_llm_events::audit::{audit_events, emit_audit};
 use mesh_llm_events::{OutputEvent, emit_event};
