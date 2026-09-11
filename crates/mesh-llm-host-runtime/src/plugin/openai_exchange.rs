@@ -401,16 +401,17 @@ fn stringify_floats(value: &serde_json::Value) -> serde_json::Value {
     use serde_json::Value;
     match value {
         Value::Number(n) => {
-            if n.is_f64() && !(n.is_i64() || n.is_u64()) {
-                if let Some(f) = n.as_f64() {
-                    let s = format!("{f}");
-                    let s = if s.contains('.') || s.contains('e') || s.contains('E') {
-                        s
-                    } else {
-                        format!("{s}.0")
-                    };
-                    return Value::String(s);
-                }
+            if n.is_f64()
+                && !(n.is_i64() || n.is_u64())
+                && let Some(f) = n.as_f64()
+            {
+                let s = format!("{f}");
+                let s = if s.contains('.') || s.contains('e') || s.contains('E') {
+                    s
+                } else {
+                    format!("{s}.0")
+                };
+                return Value::String(s);
             }
             value.clone()
         }
