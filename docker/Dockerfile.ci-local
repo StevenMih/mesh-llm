@@ -1,0 +1,56 @@
+# syntax=docker/dockerfile:1.7
+#
+# Build tooling for scripts/ci-local.sh's default (non---fast) run: a Linux
+# container that approximates the runner used by
+# .github/workflows/ci-quality-slice.yml's quality_contracts / rust_fmt /
+# rust_clippy / cli_docs_sync jobs.
+#
+# NOT the pinned ghcr.io/mesh-llm/mesh-llm-cuda-runner image (private,
+# CUDA-enabled) that rust_clippy actually runs in upstream — see the header
+# of scripts/ci-local.sh for what that gap can and cannot hide. This image
+# carries no CUDA toolchain and is never pushed anywhere; it exists only to
+# be built and run locally by scripts/ci-local.sh.
+#
+# The repo itself is NOT copied into this image — scripts/ci-local.sh bind-
+# mounts the working tree at container run time, so every gate always runs
+# against the current checkout, not a stale baked-in copy.
+#
+# Build (from repo root): docker build -f docker/Dockerfile.ci-local -t mesh-llm-ci-local:latest docker/
+
+FROM rust:1-bookworm
+
+ARG ACTIONLINT_VERSION=1.7.12
+ARG ACTIONLINT_SHA256=8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+ARG NODE_MAJOR=24
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates curl git cmake ninja-build pkg-config \
+      libssl-dev libdbus-1-dev python3 python3-pip jq gnupg \
+    && rm -rf /var/lib/apt/lists/*
+
+# actionlint — pinned to the same version+checksum as
+# .github/actions/install-actionlint (quality_contracts job).
+RUN curl --fail --location --retry 5 --retry-all-errors --show-error --silent \
+      "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" \
+      --output /tmp/actionlint.tar.gz \
+    && echo "${ACTIONLINT_SHA256}  /tmp/actionlint.tar.gz" | sha256sum -c - \
+    && tar -xzf /tmp/actionlint.tar.gz -C /usr/local/bin actionlint \
+    && rm /tmp/actionlint.tar.gz \
+    && actionlint -version
+
+# just — CI installs via taiki-e/install-action with no version pin visible
+# to us; this uses the official installer's "latest" release, which can
+# therefore drift from whatever CI actually resolves at a given time.
+RUN curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh \
+      | bash -s -- --to /usr/local/bin \
+    && just --version
+
+# Node — CI pins 24.20.0 via actions/setup-node; NodeSource's setup script
+# tracks the latest release on the 24.x line, not that exact patch version.
+# Only exercised by the cli_docs_sync gate.
+RUN curl --fail --location --show-error --silent "https://deb.nodesource.com/setup_${NODE_MAJOR}.x" | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/* \
+    && node --version
+
+RUN rustup component add rustfmt clippy
