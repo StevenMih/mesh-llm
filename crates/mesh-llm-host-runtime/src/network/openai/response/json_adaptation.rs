@@ -3,8 +3,8 @@ use super::common::{
     retryable_quality_result,
 };
 use super::probe::{
-    ResponseBodyReadLimits, ResponseProbe, read_transformed_response_body,
-    try_parse_response_headers,
+    ResponseBodyReadLimits, ResponseProbe, append_mesh_served_by_header,
+    read_transformed_response_body, try_parse_response_headers,
 };
 use super::relay::relay_error_response;
 use crate::logging::OpenAiRouteObserver;
@@ -22,6 +22,7 @@ const TRANSFORMED_RESPONSE_READ_LIMITS: ResponseBodyReadLimits = ResponseBodyRea
     idle_timeout: TRANSFORMED_RESPONSE_BODY_IDLE_TIMEOUT,
 };
 
+/// Relay a chat-completions upstream response translated into Responses-API JSON.
 pub(in crate::network::openai::response) async fn relay_translated_responses_json<
     R: AsyncRead + Unpin,
 >(
@@ -29,6 +30,7 @@ pub(in crate::network::openai::response) async fn relay_translated_responses_jso
     reader: &mut R,
     probe: ResponseProbe,
     retry_policy: ResponseRetryPolicy,
+    served_by: Option<&str>,
     route_observer: OpenAiRouteObserver<'_>,
 ) -> Result<RouteAttemptResult> {
     if retry_policy.context_overflow && probe.retryable_context_overflow {
@@ -36,7 +38,7 @@ pub(in crate::network::openai::response) async fn relay_translated_responses_jso
     }
 
     if !(200..300).contains(&probe.status_code) {
-        return relay_error_response(tcp_stream, reader, probe, route_observer).await;
+        return relay_error_response(tcp_stream, reader, probe, served_by, route_observer).await;
     }
     let mut buffered = probe.buffered;
     let parsed = try_parse_response_headers(&buffered)?
@@ -55,10 +57,12 @@ pub(in crate::network::openai::response) async fn relay_translated_responses_jso
     }
     let translated_body = response_adapter::translate_chat_completion_to_responses(body)?;
     let usage = parse_token_usage_from_json_body(&translated_body);
-    let header = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+    let mut header = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n",
         translated_body.len()
     );
+    append_mesh_served_by_header(&mut header, served_by);
+    header.push_str("Connection: close\r\n\r\n");
     tcp_stream.write_all(header.as_bytes()).await?;
     tcp_stream.write_all(&translated_body).await?;
     route_observer.capture_response_body(&translated_body, Some("application/json"));
@@ -69,6 +73,7 @@ pub(in crate::network::openai::response) async fn relay_translated_responses_jso
     })
 }
 
+/// Relay a chat-completions upstream response through JSON body normalization.
 pub(in crate::network::openai::response) async fn relay_normalized_chat_completion_json<
     R: AsyncRead + Unpin,
 >(
@@ -76,6 +81,7 @@ pub(in crate::network::openai::response) async fn relay_normalized_chat_completi
     reader: &mut R,
     probe: ResponseProbe,
     retry_policy: ResponseRetryPolicy,
+    served_by: Option<&str>,
     route_observer: OpenAiRouteObserver<'_>,
 ) -> Result<RouteAttemptResult> {
     if retry_policy.context_overflow && probe.retryable_context_overflow {
@@ -83,7 +89,7 @@ pub(in crate::network::openai::response) async fn relay_normalized_chat_completi
     }
 
     if !(200..300).contains(&probe.status_code) {
-        return relay_error_response(tcp_stream, reader, probe, route_observer).await;
+        return relay_error_response(tcp_stream, reader, probe, served_by, route_observer).await;
     }
     let mut buffered = probe.buffered;
     let parsed = try_parse_response_headers(&buffered)?
@@ -103,10 +109,12 @@ pub(in crate::network::openai::response) async fn relay_normalized_chat_completi
         return Ok(result);
     }
     let usage = parse_token_usage_from_json_body(&normalized_body);
-    let header = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+    let mut header = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n",
         normalized_body.len()
     );
+    append_mesh_served_by_header(&mut header, served_by);
+    header.push_str("Connection: close\r\n\r\n");
     tcp_stream.write_all(header.as_bytes()).await?;
     tcp_stream.write_all(&normalized_body).await?;
     route_observer.capture_response_body(&normalized_body, Some("application/json"));
@@ -182,6 +190,7 @@ mod tests {
                 &mut upstream_reader,
                 probe,
                 ResponseRetryPolicy::next_target_available(false),
+                None,
                 OpenAiRouteObserver::default(),
             )
             .await
@@ -253,6 +262,7 @@ mod tests {
                 &mut upstream_reader,
                 probe,
                 ResponseRetryPolicy::next_target_available(false),
+                None,
                 OpenAiRouteObserver::default(),
             )
             .await

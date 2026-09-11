@@ -60,6 +60,7 @@ pub(crate) fn test_announcement(ts: Option<u64>) -> PeerAnnouncement {
         latency_age_ms: None,
         latency_observer_id: None,
         inference_admission_state: None,
+        checkpoint: None,
     }
 }
 
@@ -180,6 +181,98 @@ pub(crate) fn test_meaningfully_changed_stage_protocol_generation_support() {
     new_peer.stage_protocol_generation_supported = !old_peer.stage_protocol_generation_supported;
 
     assert!(peer_meaningfully_changed(&old_peer, &new_peer));
+}
+
+fn test_checkpoint_head(root_byte: u8) -> PeerCheckpointHead {
+    PeerCheckpointHead {
+        log_id: "mesh-checkpoint-demo-log".to_string(),
+        mmr_size: 4,
+        root: vec![root_byte; 32],
+        timestamp_unix_ms: 1_725_000_000_000,
+        signature: vec![0x99; 64],
+    }
+}
+
+#[test]
+pub(crate) fn test_meaningfully_changed_checkpoint_none_to_some() {
+    let old_peer = test_peer(Some(100));
+    let mut new_peer = test_peer(Some(100));
+    new_peer.checkpoint = Some(test_checkpoint_head(0xA1));
+
+    assert!(peer_meaningfully_changed(&old_peer, &new_peer));
+}
+
+#[test]
+pub(crate) fn test_meaningfully_changed_checkpoint_different_root() {
+    let mut old_peer = test_peer(Some(100));
+    old_peer.checkpoint = Some(test_checkpoint_head(0xA1));
+    let mut new_peer = test_peer(Some(100));
+    new_peer.checkpoint = Some(test_checkpoint_head(0xB2));
+
+    assert!(
+        peer_meaningfully_changed(&old_peer, &new_peer),
+        "a peer presenting a second, different root for the same log must be visible \
+         to plugins as a change — this is the observation a fork-reconciliation plugin \
+         depends on"
+    );
+}
+
+#[test]
+pub(crate) fn test_meaningfully_changed_checkpoint_same_root_unchanged() {
+    let mut old_peer = test_peer(Some(100));
+    old_peer.checkpoint = Some(test_checkpoint_head(0xA1));
+    let mut new_peer = test_peer(Some(100));
+    new_peer.checkpoint = Some(test_checkpoint_head(0xA1));
+
+    assert!(!peer_meaningfully_changed(&old_peer, &new_peer));
+}
+
+#[test]
+pub(crate) fn test_apply_transitive_ann_refreshes_checkpoint() {
+    let mut existing = test_peer(Some(100));
+    let mut ann = test_announcement(Some(100));
+    ann.checkpoint = Some(test_checkpoint_head(0xA1));
+
+    apply_transitive_ann(
+        &mut existing,
+        &test_addr(0x33),
+        &ann,
+        test_endpoint_id(0xee),
+    );
+
+    assert_eq!(existing.checkpoint, Some(test_checkpoint_head(0xA1)));
+}
+
+#[test]
+pub(crate) fn test_apply_transitive_ann_forwards_a_second_root_for_the_same_log() {
+    // Simulates the fork scenario at the wire-forwarding layer: a bridge peer
+    // relays a differing root for the same (log_id, mmr_size) than what this
+    // node already holds for that peer. mesh-llm must forward the update
+    // faithfully — reconciling/flagging the fork is the receiving plugin's
+    // job, not the gossip layer's.
+    let mut existing = test_peer(Some(100));
+    existing.checkpoint = Some(test_checkpoint_head(0xA1));
+    let mut ann = test_announcement(Some(100));
+    ann.checkpoint = Some(test_checkpoint_head(0xB2));
+
+    apply_transitive_ann(
+        &mut existing,
+        &test_addr(0x33),
+        &ann,
+        test_endpoint_id(0xee),
+    );
+
+    assert_eq!(existing.checkpoint, Some(test_checkpoint_head(0xB2)));
+}
+
+#[test]
+pub(crate) fn test_announcement_from_peer_preserves_checkpoint_for_rebroadcast() {
+    let mut peer = test_peer(Some(100));
+    peer.checkpoint = Some(test_checkpoint_head(0xA1));
+
+    let rebroadcast = Node::announcement_from_peer(&peer);
+
+    assert_eq!(rebroadcast.checkpoint, Some(test_checkpoint_head(0xA1)));
 }
 
 #[test]

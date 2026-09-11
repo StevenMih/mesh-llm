@@ -29,6 +29,12 @@ pub enum OpenAiExchangeDispatchPath {
     /// The raw-proxy ingress (`network/openai/ingress.rs`), used for
     /// plugin-served models; never sees a typed `ChatCompletionRequest`.
     RawProxy,
+    /// The raw-proxy ingress routes this exchange to a peer on the mesh
+    /// rather than serving it locally (`route_missing_local_model`'s
+    /// remote-mesh branch). This node is the requester/router, not the
+    /// server, for the exchange this envelope describes — a downstream
+    /// plugin must not treat it as the served-side event.
+    RemoteMesh,
 }
 
 /// Which moment in an exchange's lifecycle an [`OpenAiExchangeEnvelope`]
@@ -106,6 +112,16 @@ pub struct ServingProvenance {
     /// descriptor did not resolve one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model_identity_hash: Option<String>,
+    /// SHA-256 of the served GGUF's file BYTES, from
+    /// `ServedModelIdentity.weights_digest` — computed at load time from the
+    /// file this host actually opened for serving. A different fact from
+    /// `model_identity_hash` (a hash of a reference STRING, or absent for a
+    /// bare local path): this is a hash of the served weight BYTES, and never
+    /// replaces `model_identity_hash`. Omitted when the descriptor has not
+    /// resolved one (unreadable file, or no load-time hash computed yet for
+    /// this model) — never a fabricated digest.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub weights_digest: Option<String>,
     /// Canonical model reference (e.g. `repo@rev/file`), from
     /// `ServedModelIdentity.canonical_ref`.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -131,6 +147,40 @@ pub struct ServingProvenance {
     pub is_soc: Option<bool>,
 }
 
+/// The real token accounting the host observed for a served exchange, from the
+/// dispatch outcome's [`crate::network::openai::transport::RouteDispatchOutcome::RespondedWithUsage`]
+/// (the served backend's own OpenAI-shaped `usage` object). Present on a
+/// terminal envelope only when the served response actually carried usage;
+/// omitted (never zeroed) when the dispatch produced no usage — so a downstream
+/// plugin can seal the REAL token counts of a host-served real-weights exchange
+/// rather than a stub's zeros. Every field is a real count the host read off the
+/// wire; nothing is fabricated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct ExchangeUsage {
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+    pub total_tokens: u64,
+}
+
+/// How a terminal envelope's `capsule_id` was obtained.
+///
+/// `SelfMinted` (via [`OpenAiExchangeEnvelope::terminal`]'s `marker`) is the
+/// capsule_id this node minted for its own served response — the same value
+/// already written into the client's response as `X-Capsule-Id`.
+/// `PeerAsserted` (via [`OpenAiExchangeEnvelope::remote_mesh_terminal`]) is a
+/// value this node merely OBSERVED on a peer's raw response header while
+/// routing (not serving) the exchange. `X-Capsule-Id` is an unauthenticated,
+/// relay-injectable header — a `PeerAsserted` value is never elevated to
+/// verified here. It becomes verified only when a puller dereferences it via
+/// an E15 pull and the fetched capsule's digest matches; that check lives in
+/// the puller, not at this producer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CapsuleIdProvenance {
+    SelfMinted,
+    PeerAsserted,
+}
+
 /// The wire shape both dispatch paths publish on [`OPENAI_EXCHANGE_CHANNEL`].
 /// Deliberately independent of `openai_frontend`'s typed request/response —
 /// the raw-proxy path never has one — so one shape covers both paths without
@@ -148,11 +198,19 @@ pub struct OpenAiExchangeEnvelope {
     pub model: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<u16>,
-    /// Present only on a `Terminal` envelope carrying a rung-ladder response
-    /// marker (see [`CapsuleMarker`]) — the `capsule_id` already written into
-    /// the client's response as `X-Capsule-Id`.
+    /// Present on a `Terminal` envelope either carrying a rung-ladder
+    /// response marker this node minted (see [`CapsuleMarker`]) — the
+    /// `capsule_id` already written into the client's response as
+    /// `X-Capsule-Id` — OR, on a `RemoteMesh` terminal envelope, a peer's own
+    /// `X-Capsule-Id` observed on its raw response while this node routed
+    /// (not served) the exchange. See [`CapsuleIdProvenance`] to tell the two
+    /// apart — a downstream reader must not treat the latter as verified.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub capsule_id: Option<String>,
+    /// How `capsule_id` was obtained — see [`CapsuleIdProvenance`]. `None`
+    /// exactly when `capsule_id` is `None`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capsule_id_provenance: Option<CapsuleIdProvenance>,
     /// The nonce the marker is correlated against, so a plugin observing
     /// this event knows what a later client ack must sign over.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -167,6 +225,27 @@ pub struct OpenAiExchangeEnvelope {
     /// served (a denial/error before dispatch).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub serving_provenance: Option<ServingProvenance>,
+    /// The real token usage the served backend reported for this exchange (see
+    /// [`ExchangeUsage`]). Present on a terminal envelope for a host-served
+    /// exchange whose response carried a `usage` object; `None` on
+    /// effective-request envelopes and wherever the dispatch produced no usage
+    /// (a plugin-served stub, a denial, or a non-usage-bearing backend).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usage: Option<ExchangeUsage>,
+    /// The canonical JSON-DIGEST (RFC 8785 JCS over the profile-normalized,
+    /// float-stringified request body — see [`request_body_digest`]) of the
+    /// REAL request body this host actually dispatched. This is the one fact a
+    /// downstream capsule needs to bind its `agent_input_digest` to the real
+    /// bytes: the terminal event otherwise carries provenance and usage but
+    /// nothing tying the sealed capsule to *what was asked*. Byte-for-byte the
+    /// same value the `capsule-emit-mesh` plugin computes with its own
+    /// `canonical_body_digest`, so the two are comparable across
+    /// implementations. Present on a host-served terminal envelope whose request
+    /// carried a JSON body; `None` when the host held no parsed body to digest
+    /// (never a fabricated digest). No raw prompt text is carried — only its
+    /// digest.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_digest: Option<String>,
 }
 
 impl OpenAiExchangeEnvelope {
@@ -182,9 +261,12 @@ impl OpenAiExchangeEnvelope {
             model: model.into(),
             status: None,
             capsule_id: None,
+            capsule_id_provenance: None,
             nonce: None,
             nonce_source: None,
             serving_provenance: None,
+            usage: None,
+            request_digest: None,
         }
     }
 
@@ -203,9 +285,53 @@ impl OpenAiExchangeEnvelope {
             model: model.into(),
             status,
             capsule_id: marker.as_ref().map(|marker| marker.capsule_id.clone()),
+            capsule_id_provenance: marker.as_ref().map(|_| CapsuleIdProvenance::SelfMinted),
             nonce: marker.as_ref().map(|marker| marker.nonce.clone()),
             nonce_source,
             serving_provenance: None,
+            usage: None,
+            request_digest: None,
+        }
+    }
+
+    /// Terminal envelope for the `RemoteMesh` dispatch path — a routing node
+    /// observing (not serving) an exchange it forwarded to a peer.
+    ///
+    /// Unlike [`Self::terminal`]'s `marker`, which bundles a capsule_id this
+    /// node minted together with the nonce that capsule is correlated
+    /// against, a routing node mints nothing here: `nonce` is the
+    /// client-contributed value this node forwarded to the peer unchanged
+    /// (present only when the client supplied one — never a fallback minted
+    /// on this node, since a fallback minted here would not match whatever
+    /// the peer independently resolves, breaking "same nonce both sides"),
+    /// and `peer_capsule_id` is the peer's own `X-Capsule-Id` response
+    /// header, read back off the raw-proxy return. That value is always
+    /// recorded as [`CapsuleIdProvenance::PeerAsserted`] — see its doc for
+    /// why it is never elevated to verified here.
+    pub fn remote_mesh_terminal(
+        exchange_id: impl Into<String>,
+        model: impl Into<String>,
+        status: Option<u16>,
+        nonce: Option<String>,
+        nonce_source: Option<ClientNonceSource>,
+        peer_capsule_id: Option<String>,
+    ) -> Self {
+        let capsule_id_provenance = peer_capsule_id
+            .as_ref()
+            .map(|_| CapsuleIdProvenance::PeerAsserted);
+        Self {
+            exchange_id: exchange_id.into(),
+            dispatch_path: OpenAiExchangeDispatchPath::RemoteMesh,
+            phase: OpenAiExchangePhase::Terminal,
+            model: model.into(),
+            status,
+            capsule_id: peer_capsule_id,
+            capsule_id_provenance,
+            nonce,
+            nonce_source,
+            serving_provenance: None,
+            usage: None,
+            request_digest: None,
         }
     }
 
@@ -219,6 +345,179 @@ impl OpenAiExchangeEnvelope {
         self.serving_provenance = Some(provenance);
         self
     }
+
+    /// Attach the real token usage the served backend reported. Mirrors
+    /// [`Self::with_serving_provenance`] — a small builder so the host-served
+    /// raw-proxy path can add the REAL counts it read off the dispatch outcome
+    /// in one readable line, without churning the positional `terminal`
+    /// constructor. Only ever called with real usage; the field stays `None`
+    /// when the dispatch produced none.
+    #[must_use]
+    pub fn with_usage(mut self, usage: ExchangeUsage) -> Self {
+        self.usage = Some(usage);
+        self
+    }
+
+    /// Attach the canonical JSON-DIGEST of the REAL request body this host
+    /// dispatched, so a downstream capsule can bind its `agent_input_digest` to
+    /// the real bytes. Mirrors the other builders — a small one-liner the
+    /// raw-proxy host-served path calls after it has the request body in hand.
+    /// Only ever called with a real digest computed by [`request_body_digest`];
+    /// the field stays `None` when the host held no parsed body.
+    #[must_use]
+    pub fn with_request_digest(mut self, digest: String) -> Self {
+        self.request_digest = Some(digest);
+        self
+    }
+}
+
+/// The canonical JSON-DIGEST of a request body, byte-for-byte identical to the
+/// `capsule-emit-mesh` plugin's own `canonical_body_digest`
+/// (`plugins/admission-policy/src/capsule_emit.rs`) and the Python reference's
+/// `capsule_sidecar.digest_json` — so the digest the host forwards on a terminal
+/// event and the digest a verifier recomputes agree across implementations.
+///
+/// It is `HEX(SHA-256(JCS(normalize(stringify_floats(body)))))`:
+///  1. `stringify_floats` — every JSON float becomes its exact decimal string
+///     (JCS refuses floats in a digest-bearing value; OpenAI chat bodies are
+///     full of them: temperature, top_p, penalties);
+///  2. `normalize` — profile §2 bottom-up removal of null / empty-array /
+///     empty-object members;
+///  3. JCS — RFC 8785 canonical serialization (sorted keys, minimal form);
+///  4. SHA-256, lowercase hex.
+///
+/// A self-contained port kept in this crate (the host cannot depend on the
+/// plugin's `capsule-producer`), verified equal to the plugin on the shared
+/// Python-reference fixture in the tests below.
+pub fn request_body_digest(body: &serde_json::Value) -> String {
+    use sha2::{Digest, Sha256};
+    let canonical = jcs_bytes(&normalize(&stringify_floats(body)));
+    hex::encode(Sha256::digest(&canonical))
+}
+
+/// Replace every JSON float with its exact decimal-string form (mirrors the
+/// plugin's `stringify_floats` / the Python `_stringify_floats`).
+fn stringify_floats(value: &serde_json::Value) -> serde_json::Value {
+    use serde_json::Value;
+    match value {
+        Value::Number(n) => {
+            if n.is_f64()
+                && !(n.is_i64() || n.is_u64())
+                && let Some(f) = n.as_f64()
+            {
+                let s = format!("{f}");
+                let s = if s.contains('.') || s.contains('e') || s.contains('E') {
+                    s
+                } else {
+                    format!("{s}.0")
+                };
+                return Value::String(s);
+            }
+            value.clone()
+        }
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .map(|(k, v)| (k.clone(), stringify_floats(v)))
+                .collect(),
+        ),
+        Value::Array(arr) => Value::Array(arr.iter().map(stringify_floats).collect()),
+        other => other.clone(),
+    }
+}
+
+/// Profile §2 absent-field normalization: bottom-up removal of members whose
+/// value is null, an empty array, or an empty object (mirror of the plugin's
+/// `jcs::normalize`).
+fn normalize(v: &serde_json::Value) -> serde_json::Value {
+    use serde_json::{Map, Value};
+    match v {
+        Value::Object(map) => {
+            let mut out = Map::new();
+            for (key, val) in map {
+                let nv = normalize(val);
+                let drop = match &nv {
+                    Value::Null => true,
+                    Value::Array(a) => a.is_empty(),
+                    Value::Object(o) => o.is_empty(),
+                    _ => false,
+                };
+                if !drop {
+                    out.insert(key.clone(), nv);
+                }
+            }
+            Value::Object(out)
+        }
+        Value::Array(arr) => Value::Array(arr.iter().map(normalize).collect()),
+        other => other.clone(),
+    }
+}
+
+/// RFC 8785 JCS serialization (mirror of the plugin's `jcs::jcs`). Floats are
+/// already stringified before this runs, so a bare float here is a programmer
+/// error, serialized via serde's default rather than panicking.
+fn jcs_bytes(v: &serde_json::Value) -> Vec<u8> {
+    let mut out = String::new();
+    jcs_value(v, &mut out);
+    out.into_bytes()
+}
+
+fn jcs_value(v: &serde_json::Value, out: &mut String) {
+    use serde_json::Value;
+    match v {
+        Value::Null => out.push_str("null"),
+        Value::Bool(true) => out.push_str("true"),
+        Value::Bool(false) => out.push_str("false"),
+        Value::String(s) => jcs_string(s, out),
+        Value::Number(n) => out.push_str(&n.to_string()),
+        Value::Array(arr) => {
+            out.push('[');
+            for (i, x) in arr.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                jcs_value(x, out);
+            }
+            out.push(']');
+        }
+        Value::Object(map) => {
+            // RFC 8785 §3.2.3: object members sorted by UTF-16 code-unit sequence.
+            let mut items: Vec<(&String, &Value)> = map.iter().collect();
+            items.sort_by(|(a, _), (b, _)| {
+                let au: Vec<u16> = a.encode_utf16().collect();
+                let bu: Vec<u16> = b.encode_utf16().collect();
+                au.cmp(&bu).then_with(|| a.cmp(b))
+            });
+            out.push('{');
+            for (i, (k, val)) in items.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                jcs_string(k, out);
+                out.push(':');
+                jcs_value(val, out);
+            }
+            out.push('}');
+        }
+    }
+}
+
+fn jcs_string(s: &str, out: &mut String) {
+    out.push('"');
+    for ch in s.chars() {
+        let o = ch as u32;
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            _ if o == 0x08 => out.push_str("\\b"),
+            _ if o == 0x09 => out.push_str("\\t"),
+            _ if o == 0x0A => out.push_str("\\n"),
+            _ if o == 0x0C => out.push_str("\\f"),
+            _ if o == 0x0D => out.push_str("\\r"),
+            _ if o < 0x20 => out.push_str(&format!("\\u{o:04x}")),
+            _ => out.push(ch),
+        }
+    }
+    out.push('"');
 }
 
 /// Publishes [`OpenAiExchangeEnvelope`]s to whatever is subscribed on
@@ -402,6 +701,7 @@ mod tests {
             parameter_size: Some("7B".to_string()),
             layer_count: Some(32),
             model_identity_hash: Some("abc123".to_string()),
+            weights_digest: Some("d34d".repeat(16)),
             model_canonical_ref: None,
             model_revision: None,
             gpu: None,
@@ -417,11 +717,149 @@ mod tests {
         assert_eq!(prov["context_length"], 8192);
         assert_eq!(prov["layer_count"], 32);
         assert_eq!(prov["is_soc"], true);
+        // The name-hash and the bytes-hash both ride the block, as distinct
+        // facts -- neither replaces the other.
+        assert_eq!(prov["model_identity_hash"], "abc123");
+        assert_eq!(prov["weights_digest"], "d34d".repeat(16));
         // Unknown facts are ABSENT (omitted), not fabricated as null/empty.
         assert!(prov.get("model_canonical_ref").is_none());
         assert!(prov.get("model_revision").is_none());
         assert!(prov.get("gpu").is_none());
         assert!(prov.get("vram_bytes").is_none());
+    }
+
+    /// A served model whose descriptor has not resolved a weights digest
+    /// (unreadable file, or no load-time hash yet) omits `weights_digest`
+    /// entirely -- honest absence, never a fabricated placeholder -- while
+    /// the rest of the block (including `model_identity_hash`) still rides.
+    #[test]
+    fn serving_provenance_omits_weights_digest_when_not_resolved() {
+        let envelope = OpenAiExchangeEnvelope::terminal(
+            "exch-no-wd",
+            OpenAiExchangeDispatchPath::RawProxy,
+            "hermes-2-pro-mistral-7b",
+            Some(200),
+            None,
+            None,
+        )
+        .with_serving_provenance(ServingProvenance {
+            served_by_node_id: "node-abc".to_string(),
+            hostname: None,
+            quantization: None,
+            architecture: Some("llama".to_string()),
+            context_length: None,
+            parameter_size: None,
+            layer_count: None,
+            model_identity_hash: Some("abc123".to_string()),
+            weights_digest: None,
+            model_canonical_ref: None,
+            model_revision: None,
+            gpu: None,
+            vram_bytes: None,
+            is_soc: None,
+        });
+
+        let value = serde_json::to_value(&envelope).expect("serialize");
+        let prov = &value["serving_provenance"];
+        assert_eq!(prov["model_identity_hash"], "abc123");
+        assert!(prov.get("weights_digest").is_none());
+    }
+
+    /// The real token usage the host-served path reads off its dispatch outcome
+    /// rides the terminal envelope, so a downstream plugin can seal the REAL
+    /// counts of a host-served real-weights exchange instead of a stub's zeros.
+    #[test]
+    fn terminal_carries_real_usage_when_attached() {
+        let envelope = OpenAiExchangeEnvelope::terminal(
+            "exch-usage",
+            OpenAiExchangeDispatchPath::RawProxy,
+            "llama-3.2-3b-instruct",
+            Some(200),
+            None,
+            None,
+        )
+        .with_usage(ExchangeUsage {
+            prompt_tokens: 42,
+            completion_tokens: 6,
+            total_tokens: 48,
+        });
+
+        let value = serde_json::to_value(&envelope).expect("serialize");
+        assert_eq!(value["usage"]["prompt_tokens"], 42);
+        assert_eq!(value["usage"]["completion_tokens"], 6);
+        assert_eq!(value["usage"]["total_tokens"], 48);
+    }
+
+    /// A terminal envelope with no usage attached OMITS the `usage` key entirely
+    /// (never a fabricated all-zero object) — the same honesty contract the
+    /// serving-provenance fields hold: absent means genuinely unknown.
+    #[test]
+    fn terminal_omits_usage_when_none_attached() {
+        let envelope = OpenAiExchangeEnvelope::terminal(
+            "exch-no-usage",
+            OpenAiExchangeDispatchPath::RawProxy,
+            "some-plugin-model",
+            Some(200),
+            None,
+            None,
+        );
+        let value = serde_json::to_value(&envelope).expect("serialize");
+        assert!(value.get("usage").is_none());
+    }
+
+    /// The host's `request_body_digest` is byte-for-byte the value the
+    /// `capsule-emit-mesh` plugin's own `canonical_body_digest` produces — the
+    /// expected digest here is the SAME frozen constant the plugin pins against
+    /// the Python reference (`capsule_sidecar.digest_json`) in
+    /// `plugins/admission-policy/src/capsule_emit.rs`. This is the cross-impl
+    /// contract that lets the host forward `agent_input_digest` and a verifier
+    /// recompute it. `top_p: 1.0` exercises the whole-number-float edge case
+    /// (`stringify_floats` must emit "1.0", not "1").
+    #[test]
+    fn request_body_digest_matches_plugin_and_python_reference() {
+        let body = serde_json::json!({
+            "model": "hermes-2-pro-mistral-7b",
+            "messages": [{"role": "user", "content": "hello"}],
+            "temperature": 0.7,
+            "top_p": 1.0,
+            "max_tokens": 512
+        });
+        let expected = "a6329c5ebb66562f38a8136a8d8511b6aeed166e4c7d889b9133ac96fc49a9d5";
+        assert_eq!(request_body_digest(&body), expected);
+    }
+
+    /// A terminal envelope carrying a real request digest serializes it, and it
+    /// survives a round-trip — the one fact a downstream capsule binds its
+    /// `agent_input_digest` to.
+    #[test]
+    fn terminal_carries_request_digest_when_attached() {
+        let envelope = OpenAiExchangeEnvelope::terminal(
+            "exch-rd",
+            OpenAiExchangeDispatchPath::RawProxy,
+            "llama-3.2-3b-instruct",
+            Some(200),
+            None,
+            None,
+        )
+        .with_request_digest("deadbeef".to_string());
+        let value = serde_json::to_value(&envelope).expect("serialize");
+        assert_eq!(value["request_digest"], "deadbeef");
+    }
+
+    /// No request digest attached -> the key is omitted entirely (never a
+    /// fabricated empty digest), same honesty contract as usage/provenance.
+    #[test]
+    fn terminal_omits_request_digest_when_none_attached() {
+        let envelope = OpenAiExchangeEnvelope::terminal(
+            "exch-no-rd",
+            OpenAiExchangeDispatchPath::RawProxy,
+            "m",
+            Some(200),
+            None,
+            None,
+        );
+        let value = serde_json::to_value(&envelope).expect("serialize");
+        assert!(value.get("request_digest").is_none());
     }
 
     /// An effective-request envelope carries NO serving provenance (the field
@@ -434,6 +872,105 @@ mod tests {
         assert!(envelope.serving_provenance.is_none());
         let value = serde_json::to_value(&envelope).expect("serialize");
         assert!(value.get("serving_provenance").is_none());
+    }
+
+    /// [mesh-requester-nonce-addendum] A `RemoteMesh` terminal envelope
+    /// carries the peer's `X-Capsule-Id` as `capsule_id`, always labeled
+    /// `PeerAsserted` — never `SelfMinted` (this node minted nothing), and
+    /// never silently upgraded to verified.
+    #[test]
+    fn remote_mesh_terminal_labels_a_peer_capsule_id_as_peer_asserted() {
+        let envelope = OpenAiExchangeEnvelope::remote_mesh_terminal(
+            "exch-rm",
+            "hermes-2-pro-mistral-7b",
+            Some(200),
+            Some("6d7d8d2e-3f4a-4b5c-8d9e-0a1b2c3d4e5f".to_string()),
+            Some(ClientNonceSource::ClientSupplied),
+            Some("capsule-peer-1".to_string()),
+        );
+        assert_eq!(
+            envelope.dispatch_path,
+            OpenAiExchangeDispatchPath::RemoteMesh
+        );
+        assert_eq!(envelope.capsule_id.as_deref(), Some("capsule-peer-1"));
+        assert_eq!(
+            envelope.capsule_id_provenance,
+            Some(CapsuleIdProvenance::PeerAsserted)
+        );
+        assert_eq!(
+            envelope.nonce.as_deref(),
+            Some("6d7d8d2e-3f4a-4b5c-8d9e-0a1b2c3d4e5f")
+        );
+        assert_eq!(
+            envelope.nonce_source,
+            Some(ClientNonceSource::ClientSupplied)
+        );
+        let value = serde_json::to_value(&envelope).expect("serialize");
+        assert_eq!(value["capsule_id_provenance"], "peer_asserted");
+    }
+
+    /// Mutant 1: the peer's response carried no `X-Capsule-Id` header --
+    /// `capsule_id` and its provenance both stay honestly absent, never
+    /// invented.
+    #[test]
+    fn remote_mesh_terminal_without_a_peer_capsule_id_omits_both_fields() {
+        let envelope = OpenAiExchangeEnvelope::remote_mesh_terminal(
+            "exch-rm-2",
+            "hermes-2-pro-mistral-7b",
+            Some(200),
+            None,
+            None,
+            None,
+        );
+        assert!(envelope.capsule_id.is_none());
+        assert!(envelope.capsule_id_provenance.is_none());
+        let value = serde_json::to_value(&envelope).expect("serialize");
+        assert!(value.get("capsule_id").is_none());
+        assert!(value.get("capsule_id_provenance").is_none());
+    }
+
+    /// Mutant 2: a substitute/injected `X-Capsule-Id` is still recorded --
+    /// this producer does not attempt to distinguish a genuine peer value
+    /// from an injected one (it cannot, over an unauthenticated header) --
+    /// but it is NEVER sealed as anything other than `PeerAsserted`. Would-be
+    /// verification is out of scope here by design (see the puller).
+    #[test]
+    fn remote_mesh_terminal_records_an_injected_value_as_peer_asserted_never_verified() {
+        let envelope = OpenAiExchangeEnvelope::remote_mesh_terminal(
+            "exch-rm-3",
+            "hermes-2-pro-mistral-7b",
+            Some(200),
+            None,
+            None,
+            Some("injected-not-really-the-peers".to_string()),
+        );
+        assert_eq!(
+            envelope.capsule_id.as_deref(),
+            Some("injected-not-really-the-peers")
+        );
+        assert_eq!(
+            envelope.capsule_id_provenance,
+            Some(CapsuleIdProvenance::PeerAsserted)
+        );
+    }
+
+    /// A `RemoteMesh` terminal envelope mints no marker of its own: a
+    /// self-minted capsule_id (`SelfMinted`) can never appear on this
+    /// dispatch path.
+    #[test]
+    fn remote_mesh_terminal_never_produces_self_minted_provenance() {
+        let envelope = OpenAiExchangeEnvelope::remote_mesh_terminal(
+            "exch-rm-4",
+            "m",
+            Some(200),
+            Some("nonce-1".to_string()),
+            Some(ClientNonceSource::ClientSupplied),
+            Some("capsule-peer-2".to_string()),
+        );
+        assert_ne!(
+            envelope.capsule_id_provenance,
+            Some(CapsuleIdProvenance::SelfMinted)
+        );
     }
 
     #[derive(Default)]

@@ -59,6 +59,29 @@ message PeerAnnouncement {
   // Inference admission state advertised by this peer (additive; older nodes ignore).
   // Missing/unset means unspecified/legacy behavior.
   optional InferenceAdmissionState inference_admission_state = 49;
+  // This node's latest signed checkpoint head, if it runs a checkpointed
+  // local log (capsule-emit-mesh or equivalent). Purely additive/advisory:
+  // absent means the peer does not checkpoint, or has not yet produced one.
+  // Never verified by mesh-llm itself — carried opaquely for a receiving
+  // plugin (subscribed via `mesh_event_peer_updated`/`mesh_event_peer_up`)
+  // to reconcile against roots it has observed for the same (peer, log_id,
+  // mmr_size) from other sources.
+  optional PeerCheckpointHead checkpoint = 50;
+}
+
+// A minimal, self-contained attestation of one checkpoint's head — NOT the
+// full checkpoint record (no prev_size/prev_root/witnesses). `signature` is
+// an Ed25519 signature by the announcing peer's own node key (the same key
+// backing its `endpoint_id`) over the canonical encoding of
+// (log_id, mmr_size, root, timestamp_unix_ms) — never the full checkpoint's
+// own `signing_body`, which the announcing peer's `endpoint_id` alone cannot
+// resolve the other covered fields (v/kind/prev_size/prev_root) for.
+message PeerCheckpointHead {
+  string log_id = 1;
+  uint64 mmr_size = 2;
+  bytes root = 3;                  // 32 bytes: root_from_peaks at mmr_size
+  uint64 timestamp_unix_ms = 4;
+  bytes signature = 5;             // 64 bytes: Ed25519 signature
 }
 
 enum InferenceAdmissionState {

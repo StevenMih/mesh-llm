@@ -283,6 +283,19 @@ async fn local_announcement_uses_enumerate_host_for_host_fields_only() {
     );
 }
 
+#[tokio::test]
+async fn local_announcement_never_fabricates_a_checkpoint() {
+    // No local checkpoint source is wired yet (see `snapshot_local_announcement_data`) —
+    // this pins that a node's own announcement always carries `checkpoint: None`,
+    // never a stale or invented value, until a real source is plumbed in.
+    let node = make_test_node(super::NodeRole::Worker)
+        .await
+        .expect("test node must start");
+
+    let ann = node.build_local_announcement(node.snapshot_local_announcement_data().await);
+    assert!(ann.checkpoint.is_none());
+}
+
 fn make_valid_gossip_frame() -> GossipFrame {
     GossipFrame {
         r#gen: NODE_PROTOCOL_GENERATION,

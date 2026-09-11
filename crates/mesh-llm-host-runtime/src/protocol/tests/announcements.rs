@@ -61,6 +61,7 @@ fn owner_fields_roundtrip_through_proto_announcement() {
         latency_age_ms: None,
         latency_observer_id: None,
         inference_admission_state: None,
+        checkpoint: None,
     };
     let proto_pa = local_ann_to_proto_ann(&ann);
     let skippy = proto_pa
@@ -101,6 +102,97 @@ fn owner_fields_roundtrip_through_proto_announcement() {
     assert_eq!(roundtripped.claim.owner_id, "owner-abc");
     assert_eq!(roundtripped.claim.cert_id, "cert-123");
     assert_eq!(roundtripped.claim.node_label.as_deref(), Some("studio"));
+}
+
+#[test]
+fn checkpoint_head_roundtrips_through_proto_announcement() {
+    let peer_id = EndpointId::from(SecretKey::from_bytes(&[0xCD; 32]).public());
+    let checkpoint = super::super::PeerCheckpointHead {
+        log_id: "mesh-checkpoint-demo-log".to_string(),
+        mmr_size: 7,
+        root: vec![0x11; 32],
+        timestamp_unix_ms: 1_725_000_000_000,
+        signature: vec![0x22; 64],
+    };
+    let ann = super::super::PeerAnnouncement {
+        addr: iroh::EndpointAddr {
+            id: peer_id,
+            addrs: Default::default(),
+        },
+        role: super::super::NodeRole::Worker,
+        first_joined_mesh_ts: None,
+        models: vec![],
+        vram_bytes: 0,
+        model_source: None,
+        serving_models: vec![],
+        hosted_models: None,
+        available_models: vec![],
+        requested_models: vec![],
+        explicit_model_interests: vec![],
+        version: None,
+        model_demand: HashMap::new(),
+        mesh_id: None,
+        mesh_policy_hash: None,
+        gpu_name: None,
+        hostname: None,
+        is_soc: None,
+        gpu_vram: None,
+        gpu_reserved_bytes: None,
+        gpu_mem_bandwidth_gbps: None,
+        gpu_compute_tflops_fp32: None,
+        gpu_compute_tflops_fp16: None,
+        available_model_metadata: vec![],
+        experts_summary: None,
+        available_model_sizes: HashMap::new(),
+        served_model_descriptors: vec![],
+        served_model_runtime: vec![],
+        owner_attestation: None,
+        genesis_policy: None,
+        release_attestation: None,
+        direct_admission_proof: None,
+        artifact_transfer_supported: true,
+        stage_protocol_generation_supported: true,
+        stage_status_list_supported: true,
+        advertised_model_throughput: vec![],
+        latency_ms: None,
+        latency_source: None,
+        latency_age_ms: None,
+        latency_observer_id: None,
+        inference_admission_state: None,
+        checkpoint: Some(checkpoint.clone()),
+    };
+
+    let proto_pa = local_ann_to_proto_ann(&ann);
+    let proto_checkpoint = proto_pa
+        .checkpoint
+        .as_ref()
+        .expect("checkpoint head must survive local-to-proto conversion");
+    assert_eq!(proto_checkpoint.log_id, checkpoint.log_id);
+    assert_eq!(proto_checkpoint.mmr_size, checkpoint.mmr_size);
+    assert_eq!(proto_checkpoint.root, checkpoint.root);
+    assert_eq!(
+        proto_checkpoint.timestamp_unix_ms,
+        checkpoint.timestamp_unix_ms
+    );
+    assert_eq!(proto_checkpoint.signature, checkpoint.signature);
+
+    let (_, roundtripped) = proto_ann_to_local(&proto_pa).expect("proto_ann_to_local must succeed");
+    assert_eq!(roundtripped.checkpoint, Some(checkpoint));
+}
+
+#[test]
+fn missing_checkpoint_roundtrips_as_none() {
+    let proto = crate::proto::node::PeerAnnouncement {
+        endpoint_id: vec![1; 32],
+        role: crate::proto::node::NodeRole::Worker as i32,
+        ..Default::default()
+    };
+
+    let (_addr, ann) = proto_ann_to_local(&proto).expect("announcement should decode");
+    assert!(
+        ann.checkpoint.is_none(),
+        "a peer that never checkpoints must decode to None, never a fabricated value"
+    );
 }
 
 pub(crate) fn assert_mixed_version_peer_ignores_missing_release_attestation() {
@@ -191,6 +283,7 @@ fn advertised_model_throughput_roundtrips_through_proto_announcement() {
         latency_age_ms: None,
         latency_observer_id: None,
         inference_admission_state: None,
+        checkpoint: None,
     };
 
     let mut proto_pa = local_ann_to_proto_ann(&ann);
@@ -265,6 +358,7 @@ fn inference_admission_state_roundtrips_through_proto_announcement() {
         latency_age_ms: None,
         latency_observer_id: None,
         inference_admission_state: Some(expected_state),
+        checkpoint: None,
     };
 
     let proto_pa = local_ann_to_proto_ann(&ann);
@@ -369,6 +463,7 @@ fn test_proto_round_trip_with_bandwidth_and_tflops() {
         latency_age_ms: None,
         latency_observer_id: None,
         inference_admission_state: None,
+        checkpoint: None,
     };
 
     let proto_pa = local_ann_to_proto_ann(&ann);
