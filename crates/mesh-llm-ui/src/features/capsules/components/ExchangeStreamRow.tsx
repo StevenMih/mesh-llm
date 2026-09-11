@@ -4,11 +4,17 @@
 // (L-N), and the two-sided record itself -- `YOUR RECORD │ THEIR RECORD, AS
 // GIVEN TO YOU`. The column labels themselves now live in the sticky header
 // above the stream ([mesh-ledger-b3-paging], v3 §2a), not repeated per row.
-// Toggle ① content (v3 §3) is still later; clicking a row here still opens
-// the existing full-detail inspector modal, same as before this batch.
+// Toggle ① content ([mesh-ledger-b4-toggle-content], v3 §3) -- inline, below
+// the always-visible right-cell row; a row click still opens the existing
+// full-detail inspector modal, a separate concern from this toggle.
 import { Button } from '@/components/ui/button'
 import { StatusBadge } from '@/components/ui/StatusBadge'
 import { cn } from '@/lib/cn'
+import {
+  theirContentAction,
+  theirContentText,
+  yourContentFixedText
+} from '@/features/capsules/lib/exchange-content-state'
 import type { ExchangeLedgerRow } from '@/features/capsules/lib/exchange-ledger'
 import { exchangeRowDomId } from '@/features/capsules/lib/exchange-pages'
 import {
@@ -45,6 +51,10 @@ export type ExchangeStreamRowProps = {
    *  honest minimum today's data already supports (`checksText`, the same
    *  field the CSV export already uses). */
   checksExpanded?: boolean
+  /** `o` keyboard toggle -- reveals this row's content cells inline
+   *  ([mesh-ledger-b4-toggle-content], v3 §3): one populated side, one
+   *  empty side, flipping with `Your role` (L-F). */
+  contentExpanded?: boolean
   onActivate: (row: ExchangeLedgerRow) => void
   onAction: (row: ExchangeLedgerRow) => void
 }
@@ -55,6 +65,7 @@ export function ExchangeStreamRow({
   focused = false,
   highlighted = false,
   checksExpanded = false,
+  contentExpanded = false,
   onActivate,
   onAction
 }: ExchangeStreamRowProps) {
@@ -131,6 +142,49 @@ export function ExchangeStreamRow({
             ) : null}
           </div>
         </div>
+        {contentExpanded ? (
+          <div className="grid grid-cols-2 gap-0 rounded border border-border-soft" data-content-toggle="expanded">
+            <div
+              className="flex flex-col gap-1 border-r border-border-soft px-3 py-2"
+              data-your-content-state={row.contentToggleState.your.kind}
+            >
+              {row.contentToggleState.your.kind === 'populated' ? (
+                <>
+                  <p className="text-xs text-foreground">
+                    <span className="text-fg-faint">You asked</span> · {row.raw.mine.text ?? '—'}
+                  </p>
+                  {row.raw.mine.reply_text ? (
+                    <p className="text-xs text-foreground">
+                      <span className="text-fg-faint">They streamed back</span> · {row.raw.mine.reply_text}
+                    </p>
+                  ) : null}
+                </>
+              ) : (
+                <p className="text-xs text-foreground">{yourContentFixedText(row.contentToggleState.your)}</p>
+              )}
+            </div>
+            <div
+              className="flex flex-col gap-1.5 px-3 py-2"
+              data-their-content-state={row.contentToggleState.their.kind}
+            >
+              <p className="text-xs text-fg-dim">{theirContentText(row.contentToggleState.their)}</p>
+              {theirContentAction(row.contentToggleState.their) ? (
+                <Button
+                  className="ui-control h-7 w-fit gap-1 rounded-[var(--radius)] px-2 text-[length:var(--density-type-caption)]"
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    onAction(row)
+                  }}
+                  size="sm"
+                  type="button"
+                  variant="outline"
+                >
+                  {theirContentAction(row.contentToggleState.their)}
+                </Button>
+              ) : null}
+            </div>
+          </div>
+        ) : null}
         {checksExpanded ? <p className="type-caption font-mono text-fg-faint">Checks: {row.checksText}</p> : null}
       </div>
     </div>

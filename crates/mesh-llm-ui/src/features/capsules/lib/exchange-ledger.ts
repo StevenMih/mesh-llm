@@ -4,6 +4,7 @@
 // exceptions-first and NEVER a count; Confirmed is the double-entry fact,
 // not registration) are unit-testable without mounting a table.
 import type { PaneBRow, PaneCRow } from '@/features/capsules/api/sidecarTypes'
+import { deriveContentToggleState, type ContentToggleState } from '@/features/capsules/lib/exchange-content-state'
 import { deriveRightCellState, type RightCellState } from '@/features/capsules/lib/exchange-row-state'
 import { NINE_PROPERTY_LABELS } from '@/features/capsules/lib/nine-properties'
 import { peerExchangeIds } from '@/features/capsules/lib/peer-exchange-timeline'
@@ -25,6 +26,8 @@ export type ExchangeLedgerRow = {
   /** The right cell's one of six states (v3 §2) -- see
    *  `exchange-row-state.ts` for the derivation and its honesty limits. */
   rightCellState: RightCellState
+  /** Toggle ① content state (v3 §3) -- see `exchange-content-state.ts`. */
+  contentToggleState: ContentToggleState
   /** L-O: null for every served row and for any row the record itself
    *  carries no session for -- never invented. */
   sessionId: string | null
@@ -75,6 +78,7 @@ export function buildExchangeLedgerRows(
     hasIssue: row.has_issue,
     checksText: checksTextFor(row),
     rightCellState: deriveRightCellState(row),
+    contentToggleState: deriveContentToggleState(row),
     // L-O -- a served row structurally has no session (this node was never
     // party to the requester's conversation), regardless of what the
     // record carries.

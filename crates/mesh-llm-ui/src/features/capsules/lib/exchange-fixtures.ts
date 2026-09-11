@@ -205,8 +205,13 @@ function buildFillerExchangeRows(count: number): PaneCRow[] {
 // and every CLOSED/CONTRADICTED/OPEN·* status at once.
 // [mesh-ledger-b3-paging] -- 7 curated + the deterministic filler tail
 // above, so harness mode actually pages.
+// [mesh-ledger-b4-toggle-content] -- an 8th curated row (`exch-deleted-08`)
+// so the content toggle's deletion state is reachable in harness mode too;
+// `exch-closed-00` carries `mine.text`/`reply_text` matching v3 §3's Case A
+// worked example verbatim, so the content toggle has real quoted text to
+// show rather than the '—' fallback.
 export const HARNESS_PANE_C_PAYLOAD: PaneCListJson = {
-  row_count: 7 + HARNESS_LEDGER_FILLER_ROW_COUNT,
+  row_count: 8 + HARNESS_LEDGER_FILLER_ROW_COUNT,
   default_sort: 'timestamp',
   filters: [],
   next_after_seq: null,
@@ -218,7 +223,13 @@ export const HARNESS_PANE_C_PAYLOAD: PaneCListJson = {
       header_state: 'ok',
       properties: CLEAN_EXCHANGE_PROPERTIES,
       has_issue: false,
-      mine: { state: 'present', capsule_id: 'mine_exch-closed-00' },
+      mine: {
+        state: 'present',
+        capsule_id: 'mine_exch-closed-00',
+        text: 'Summarise this thread…',
+        reply_text: 'The thread covers three…',
+        reply_capsule_id: 'theirs_reply_exch-closed-00'
+      },
       theirs: { state: 'present', capsule_id: 'theirs_exch-closed-00' },
       unilateral: false,
       timestamp: '2026-09-11T16:58:05Z',
@@ -300,6 +311,22 @@ export const HARNESS_PANE_C_PAYLOAD: PaneCListJson = {
       theirs: { state: 'absent', capsule_id: null },
       unilateral: true,
       timestamp: '2026-09-11T08:03:00Z'
+    },
+    {
+      exchange_key: 'exch-deleted-08',
+      role_tag: 'ASKED',
+      header_state: 'ok',
+      properties: CLEAN_EXCHANGE_PROPERTIES,
+      has_issue: false,
+      mine: {
+        state: 'present',
+        capsule_id: 'mine_exch-deleted-08',
+        deleted: true,
+        deleted_date: '5 Sep'
+      },
+      theirs: { state: 'present', capsule_id: 'theirs_exch-deleted-08' },
+      unilateral: false,
+      timestamp: '2026-09-11T08:01:00Z'
     },
     ...buildFillerExchangeRows(HARNESS_LEDGER_FILLER_ROW_COUNT)
   ]

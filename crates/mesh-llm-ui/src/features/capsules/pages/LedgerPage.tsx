@@ -288,6 +288,7 @@ function ExchangesSection({
   const [focusedRowIndex, setFocusedRowIndex] = useState(0)
   const [highlightedKey, setHighlightedKey] = useState<string | null>(null)
   const [checksExpandedKey, setChecksExpandedKey] = useState<string | null>(null)
+  const [contentExpandedKey, setContentExpandedKey] = useState<string | null>(null)
   const searchInputRef = useRef<HTMLInputElement>(null)
   const handledFocusKeyRef = useRef<string | null>(null)
 
@@ -387,10 +388,11 @@ function ExchangesSection({
     setFocusedRowIndex(rowIndexOnPage >= 0 ? rowIndexOnPage : 0)
   }, [streamRows, pages, pageStart, focusedRowIndex])
 
-  // Keyboard map (v3 §2a): j/k row, o toggle content (opens the inspector --
-  // the only "content" surface that exists before v3 §3's real toggle),
-  // c toggle checks (reveals this row's Checks value inline -- v3 §4's real
-  // toggle is a later batch), / search, n next contradiction. Ignored while
+  // Keyboard map (v3 §2a): j/k row, o toggle content ([mesh-ledger-b4-
+  // toggle-content], v3 §3's real inline toggle -- one populated side, one
+  // empty side, flipping with role), c toggle checks (reveals this row's
+  // Checks value inline -- v3 §4's real toggle is a later batch), / search,
+  // n next contradiction. Ignored while
   // typing in a text field so normal typing (e.g. "close" in the search
   // box) never fires a shortcut.
   useEffect(() => {
@@ -421,7 +423,7 @@ function ExchangesSection({
         case 'o': {
           event.preventDefault()
           const row = currentPageRows[focusedRowIndex]
-          if (row) handleExchangeRowActivate(row)
+          if (row) setContentExpandedKey((prev) => (prev === row.exchangeKey ? null : row.exchangeKey))
           break
         }
         case 'c': {
@@ -440,7 +442,7 @@ function ExchangesSection({
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [currentPageRows, focusedRowIndex, handleExchangeRowActivate, jumpToNextContradiction])
+  }, [currentPageRows, focusedRowIndex, jumpToNextContradiction])
 
   const selectedRow = selectedExchangeKey
     ? (allRows.find((r) => r.exchangeKey === selectedExchangeKey)?.raw ?? null)
@@ -620,9 +622,10 @@ function ExchangesSection({
 
       {/* v3 §2 — one time-ordered, append-only stream (L-N), replacing the
          flat table + `Confirmed` chip column with a real two-sided row per
-         exchange. Toggle ① content (§3) is a later batch; a row (or its
-         in-cell action) still opens the existing full-detail inspector
-         modal below. */}
+         exchange. Toggle ① content ([mesh-ledger-b4-toggle-content], §3) is
+         the `o` keyboard toggle below; a row click (or its in-cell action)
+         still opens the existing full-detail inspector modal, a separate
+         concern. */}
       {streamRows.length === 0 ? (
         <p aria-label="Exchange records" className="py-6 text-center text-sm text-fg-dim" role="status">
           No exchanges match this filter.
@@ -689,6 +692,7 @@ function ExchangesSection({
               {currentPageRows.map((row, index) => (
                 <ExchangeStreamRow
                   checksExpanded={checksExpandedKey === row.exchangeKey}
+                  contentExpanded={contentExpandedKey === row.exchangeKey}
                   focused={index === focusedRowIndex}
                   highlighted={highlightedKey === row.exchangeKey}
                   key={row.exchangeKey}

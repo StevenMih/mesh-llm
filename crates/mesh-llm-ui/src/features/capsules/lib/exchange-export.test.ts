@@ -13,6 +13,7 @@ function row(overrides: Partial<ExchangeLedgerRow>): ExchangeLedgerRow {
     hasIssue: false,
     checksText: '—',
     rightCellState: { kind: 'closed', date: null },
+    contentToggleState: { your: { kind: 'populated', date: null }, their: { kind: 'not_asked', date: null } },
     sessionId: null,
     raw: {} as PaneCRow,
     ...overrides

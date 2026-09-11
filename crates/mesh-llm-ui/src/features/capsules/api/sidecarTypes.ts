@@ -177,7 +177,24 @@ export type PaneCRow = {
   header_state: string
   properties: AssuranceProperties | null
   has_issue: boolean
-  mine: { state: string; capsule_id: string | null; role?: string; text?: string }
+  mine: {
+    state: string
+    capsule_id: string | null
+    role?: string
+    text?: string
+    /** What the counterparty streamed back to you -- held only on the
+     *  requester's side ([mesh-ledger-b4-toggle-content], v3 §3: "both
+     *  halves of the conversation are on the left, because both passed
+     *  through you"). Optional/forward-looking: no sidecar emits it yet,
+     *  degrades to omitting the second half rather than inventing one. */
+    reply_text?: string
+    reply_capsule_id?: string | null
+    /** L-D: the requester's own copy of populated content, deleted locally.
+     *  Only meaningful when `role_tag === 'ASKED'` -- a SERVED row's `mine`
+     *  side was never populated to begin with (L-F). */
+    deleted?: boolean
+    deleted_date?: string | null
+  }
   theirs: {
     state: string
     capsule_id: string | null

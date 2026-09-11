@@ -24,7 +24,11 @@ function makeRow(kind: RightCellStateKind, overrides: Partial<ExchangeLedgerRow>
       date: kind === 'open_refused' || kind === 'open_absent' || kind === 'open_asked' ? '4 Sep' : null
     },
     sessionId: null,
-    raw: { mine: { state: 'present', capsule_id: 'mine-1' } } as PaneCRow,
+    contentToggleState: { your: { kind: 'populated', date: null }, their: { kind: 'not_asked', date: null } },
+    raw: {
+      mine: { state: 'present', capsule_id: 'mine-1' },
+      theirs: { state: 'present', capsule_id: 'theirs-1' }
+    } as PaneCRow,
     ...overrides
   }
 }
@@ -173,5 +177,148 @@ describe('ExchangeStreamRow — L-O served rows carry no rail and a distinct mar
     render(<ExchangeStreamRow onAction={vi.fn()} onActivate={vi.fn()} rail={NO_RAIL} row={makeRow('closed')} />)
     expect(screen.getByText('●')).toBeInTheDocument()
     expect(screen.getByText('you asked')).toBeInTheDocument()
+  })
+})
+
+describe('ExchangeStreamRow — [mesh-ledger-b4-toggle-content] toggle ① content', () => {
+  it('hidden by default, revealed by contentExpanded', () => {
+    const row = makeRow('closed', {
+      raw: {
+        mine: { state: 'present', capsule_id: 'mine-1', text: 'Summarise this thread…' },
+        theirs: { state: 'present', capsule_id: 'theirs-1' }
+      } as PaneCRow
+    })
+    const { rerender } = render(<ExchangeStreamRow onAction={vi.fn()} onActivate={vi.fn()} rail={NO_RAIL} row={row} />)
+    expect(screen.queryByText(/Summarise this thread/)).not.toBeInTheDocument()
+    rerender(<ExchangeStreamRow contentExpanded onAction={vi.fn()} onActivate={vi.fn()} rail={NO_RAIL} row={row} />)
+    expect(screen.getByText(/Summarise this thread/)).toBeInTheDocument()
+  })
+
+  it('Case A (you asked): both halves render on the left; the right renders the their-claim voice', () => {
+    const row = makeRow('closed', {
+      roleTag: 'ASKED',
+      contentToggleState: {
+        your: { kind: 'populated', date: null },
+        their: { kind: 'recorded_absence', date: '4 Sep' }
+      },
+      raw: {
+        mine: {
+          state: 'present',
+          capsule_id: 'mine-1',
+          text: 'Summarise this thread…',
+          reply_text: 'The thread covers three…'
+        },
+        theirs: {
+          state: 'absent',
+          capsule_id: null,
+          evidence_outcome: 'recorded_absence',
+          evidence_outcome_date: '4 Sep'
+        }
+      } as PaneCRow
+    })
+    render(<ExchangeStreamRow contentExpanded onAction={vi.fn()} onActivate={vi.fn()} rail={NO_RAIL} row={row} />)
+    expect(screen.getByText(/You asked/)).toBeInTheDocument()
+    expect(screen.getByText(/Summarise this thread/)).toBeInTheDocument()
+    expect(screen.getByText(/They streamed back/)).toBeInTheDocument()
+    expect(screen.getByText(/The thread covers three/)).toBeInTheDocument()
+    expect(screen.getByText('They state they hold no payload for this exchange — signed 4 Sep.')).toBeInTheDocument()
+  })
+
+  it('Case B (they asked, you served): the left renders the fixed fact-you-know string; the right renders "not visible to you"', () => {
+    const row = makeRow('closed', {
+      roleTag: 'SERVED',
+      contentToggleState: {
+        your: { kind: 'streamed_not_retained', date: null },
+        their: { kind: 'not_visible_holds', date: null }
+      }
+    })
+    render(<ExchangeStreamRow contentExpanded onAction={vi.fn()} onActivate={vi.fn()} rail={NO_RAIL} row={row} />)
+    expect(screen.getByText('No content. You streamed this response and did not retain it.')).toBeInTheDocument()
+    expect(screen.getByText('Their content — not visible to you. The requester holds it.')).toBeInTheDocument()
+  })
+
+  it('deletion renders as a distinct state, not a blank', () => {
+    const row = makeRow('closed', {
+      roleTag: 'ASKED',
+      contentToggleState: {
+        your: { kind: 'populated_deleted', date: '5 Sep' },
+        their: { kind: 'not_asked', date: null }
+      }
+    })
+    render(<ExchangeStreamRow contentExpanded onAction={vi.fn()} onActivate={vi.fn()} rail={NO_RAIL} row={row} />)
+    expect(screen.getByText('Content deleted 5 Sep · record still verifies')).toBeInTheDocument()
+  })
+
+  it('the three their-content sub-states + not-visible-holds each render distinct text', () => {
+    const cases: Array<{
+      contentToggleState: ExchangeLedgerRow['contentToggleState']
+      text: string
+    }> = [
+      {
+        contentToggleState: {
+          your: { kind: 'populated', date: null },
+          their: { kind: 'recorded_absence', date: '4 Sep' }
+        },
+        text: 'They state they hold no payload for this exchange — signed 4 Sep.'
+      },
+      {
+        contentToggleState: { your: { kind: 'populated', date: null }, their: { kind: 'not_asked', date: null } },
+        text: 'Not asked. They would be expected to hold none.'
+      },
+      {
+        contentToggleState: { your: { kind: 'populated', date: null }, their: { kind: 'unanswered', date: '3 Sep' } },
+        text: 'Asked 3 Sep. No reply yet.'
+      }
+    ]
+    for (const { contentToggleState, text } of cases) {
+      const { unmount } = render(
+        <ExchangeStreamRow
+          contentExpanded
+          onAction={vi.fn()}
+          onActivate={vi.fn()}
+          rail={NO_RAIL}
+          row={makeRow('closed', { contentToggleState })}
+        />
+      )
+      expect(screen.getByText(text)).toBeInTheDocument()
+      unmount()
+    }
+  })
+
+  it('the never-asked their-content state carries an action button wired to onAction', () => {
+    const onAction = vi.fn()
+    const row = makeRow('closed', {
+      contentToggleState: { your: { kind: 'populated', date: null }, their: { kind: 'not_asked', date: null } }
+    })
+    render(<ExchangeStreamRow contentExpanded onAction={onAction} onActivate={vi.fn()} rail={NO_RAIL} row={row} />)
+    screen.getByRole('button', { name: 'Ask them to state it' }).click()
+    expect(onAction).toHaveBeenCalledWith(row)
+  })
+
+  it('LOAD-BEARING (L-H): the your-empty voice and the their-empty voice are visibly different strings', () => {
+    const servedRow = makeRow('closed', {
+      roleTag: 'SERVED',
+      contentToggleState: {
+        your: { kind: 'streamed_not_retained', date: null },
+        their: { kind: 'not_visible_holds', date: null }
+      }
+    })
+    const { unmount } = render(
+      <ExchangeStreamRow contentExpanded onAction={vi.fn()} onActivate={vi.fn()} rail={NO_RAIL} row={servedRow} />
+    )
+    const yourVoice = screen.getByText(/No content\. You streamed/).textContent
+    unmount()
+
+    const askedRow = makeRow('closed', {
+      roleTag: 'ASKED',
+      contentToggleState: {
+        your: { kind: 'populated', date: null },
+        their: { kind: 'recorded_absence', date: '4 Sep' }
+      }
+    })
+    render(<ExchangeStreamRow contentExpanded onAction={vi.fn()} onActivate={vi.fn()} rail={NO_RAIL} row={askedRow} />)
+    const theirVoice = screen.getByText(/They state they hold no payload/).textContent
+
+    expect(yourVoice).not.toBe(theirVoice)
   })
 })

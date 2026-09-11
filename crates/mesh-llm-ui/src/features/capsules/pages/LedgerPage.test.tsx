@@ -597,7 +597,7 @@ describe('LedgerPageContent — Part B3: windowed paging + sticky header', () =>
     expect(screen.queryByText('mine-50')).not.toBeInTheDocument()
   })
 
-  it('keyboard map: j/k moves the row cursor, o opens the inspector, c reveals Checks inline, / focuses search', async () => {
+  it('keyboard map: j/k moves the row cursor, o toggles content inline, c reveals Checks inline, / focuses search', async () => {
     const { fetchPaneCList } = await import('@/features/capsules/api/sidecarClient')
     vi.mocked(fetchPaneCList).mockResolvedValue(b3PaneCPayload(makeManyPaneCRows(3)))
 
@@ -616,16 +616,17 @@ describe('LedgerPageContent — Part B3: windowed paging + sticky header', () =>
     await user.keyboard('k')
     expect(rowAt('exch-0')).toHaveAttribute('data-focused', 'true')
 
-    // Checked before `o` opens the modal -- Radix's dialog focus trap would
-    // otherwise pull focus straight back once inside it.
     await user.keyboard('/')
     expect(screen.getByLabelText('Search exchanges')).toHaveFocus()
     await user.tab() // leave the search box so `o`/`c` aren't swallowed by isTypingTarget
 
+    // `o` toggles Toggle ① content inline ([mesh-ledger-b4-toggle-content]) --
+    // these fixture rows carry no evidence_outcome, so the their-content side
+    // honestly degrades to the never-asked sub-state (L-C).
     await user.keyboard('o')
-    const dialog = await screen.findByRole('dialog')
-    expect(dialog).toHaveTextContent('exch-0')
-    await user.click(screen.getByLabelText('Close exchange inspector'))
+    expect(await screen.findByText('Not asked. They would be expected to hold none.')).toBeInTheDocument()
+    await user.keyboard('o')
+    expect(screen.queryByText('Not asked. They would be expected to hold none.')).not.toBeInTheDocument()
 
     await user.keyboard('c')
     expect(await screen.findByText(/Checks:/)).toBeInTheDocument()
