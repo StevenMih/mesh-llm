@@ -234,12 +234,12 @@ describe('LedgerPageContent', () => {
   })
 })
 
-describe('LedgerPageContent — Part 3: Exchanges table + row inspector', () => {
+describe('LedgerPageContent — Part 3: Exchanges two-sided stream + row inspector', () => {
   afterEach(() => {
     vi.clearAllMocks()
   })
 
-  it('renders a columned table: Checks is an em-dash for a clean row and names the failing property for an exception row, Confirmed shown, row opens the full-detail modal', async () => {
+  it('renders a two-sided row per exchange (CLOSED for an agreeing artifact, OPEN for a unilateral one), row opens the full-detail modal', async () => {
     const { fetchPaneCList } = await import('@/features/capsules/api/sidecarClient')
     vi.mocked(fetchPaneCList).mockResolvedValue({
       rows: [
@@ -247,7 +247,11 @@ describe('LedgerPageContent — Part 3: Exchanges table + row inspector', () => 
           exchange_key: 'exch-clean-00',
           role_tag: 'ASKED',
           header_state: 'ok',
-          properties: { content_binding: { state: 'PASS' }, checkpoint_signature: { state: 'PASS' } },
+          properties: {
+            content_binding: { state: 'PASS' },
+            checkpoint_signature: { state: 'PASS' },
+            outcome_corroboration: { state: 'PASS' }
+          },
           has_issue: false,
           mine: { state: 'present', capsule_id: 'mine-clean' },
           theirs: { state: 'present', capsule_id: 'theirs-clean' },
@@ -277,24 +281,19 @@ describe('LedgerPageContent — Part 3: Exchanges table + row inspector', () => 
     render(<LedgerPageContent />, { wrapper: makeWrapper() })
     await user.click(screen.getByRole('tab', { name: /exchanges/i }))
 
-    // Both rows load — one clean (em-dash Checks, confirmed), one exception
-    // (Checks names the failing property, never a count).
-    expect(await screen.findByText('exch-cle')).toBeInTheDocument()
-    expect(screen.getByText('exch-ala')).toBeInTheDocument()
-    // '—' appears at least once (the clean row's Checks cell) — also the
-    // honest fallback for an unresolved Counterparty, so assert presence
-    // rather than uniqueness.
-    expect(screen.getAllByText('—').length).toBeGreaterThan(0)
-    expect(screen.getByText('checkpoint signature')).toBeInTheDocument()
-    expect(screen.getByText('confirmed')).toBeInTheDocument()
-    expect(screen.getByText('not yet confirmed')).toBeInTheDocument()
-
-    // Never a count anywhere in the Checks column.
-    const bodyText = document.body.textContent ?? ''
-    expect(bodyText).not.toMatch(/\d\/9/)
+    // Both rows load — one CLOSED (agreeing artifact), one OPEN (never
+    // asked, per L-C -- an absent theirs record with no evidence_outcome
+    // carried can only honestly resolve to "not asked").
+    expect(await screen.findByText('mine-clean')).toBeInTheDocument()
+    expect(screen.getByText('mine-alarm')).toBeInTheDocument()
+    expect(screen.getByText('CLOSED')).toBeInTheDocument()
+    expect(screen.getByText('OPEN')).toBeInTheDocument()
+    expect(screen.getByText('✓ cites your half by digest')).toBeInTheDocument()
+    expect(screen.getByText("You haven't asked for their half.")).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Ask them for their half' })).toBeInTheDocument()
 
     // Row click opens the full nine-property detail modal.
-    await user.click(screen.getByText('exch-ala'))
+    await user.click(screen.getByLabelText('Open exchange inspector for exch-alarm-07'))
     const dialog = screen.getByRole('dialog')
     expect(dialog).toHaveTextContent('exch-alarm-07')
     expect(dialog).toHaveTextContent('checkpoint signature: FAIL')

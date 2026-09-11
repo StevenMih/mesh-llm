@@ -7,13 +7,11 @@
 //
 // Security boundary: NO user-visible strings may name internal tooling,
 // internal item IDs, or any branded service name. Comments are exempt.
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Search as SearchIcon, ShieldCheck } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { DataTable, type TanStackTable } from '@/components/ui/data-table'
-import { DataTableViewOptions } from '@/components/ui/data-table-view-options'
 import { FilterPopover, type FilterValueOption } from '@/components/ui/FilterPopover'
 import { InfoBanner } from '@/components/ui/InfoBanner'
 import { Input } from '@/components/ui/input'
@@ -25,13 +23,14 @@ import type { CapsuleRecord, JsonRecord } from '@/features/capsules/api/types'
 import { PaneFetchError, fetchPaneA, fetchPaneB, fetchPaneCList } from '@/features/capsules/api/sidecarClient'
 import { balanceCoverage } from '@/features/capsules/lib/balance-view'
 import { PeerCard } from '@/features/capsules/components/PeerCard'
-import { buildExchangeColumns, EXCHANGE_COLUMN_LABELS } from '@/features/capsules/components/ExchangeColumns'
 import { ExchangeInspector } from '@/features/capsules/components/ExchangeInspector'
+import { ExchangeStreamRow } from '@/features/capsules/components/ExchangeStreamRow'
 import {
   buildExchangeCounterpartyIndex,
   buildExchangeLedgerRows,
   type ExchangeLedgerRow
 } from '@/features/capsules/lib/exchange-ledger'
+import { buildRailSegments, sortStreamByTime } from '@/features/capsules/lib/exchange-stream'
 import { exchangeEvidenceBundle, exchangeRowsToCsv, saveTextFile } from '@/features/capsules/lib/exchange-export'
 import { HARNESS_PANE_A_PAYLOAD, HARNESS_PANE_C_PAYLOAD } from '@/features/capsules/lib/exchange-fixtures'
 import {
@@ -173,34 +172,6 @@ type ExchangeFilterKey = 'role' | 'checks'
 const ALL_ROLE_VALUES = ['SERVED', 'ASKED']
 const ALL_CHECKS_VALUES = ['clean', 'exception']
 
-// Stable, module-level references -- NEVER inline arrow functions here.
-// `DataTable` includes `getRowId` in its own `tableOptions` memo deps, so a
-// fresh function identity every render defeats that memo, produces a new
-// table instance every render, and (via `ExchangeTableCapture`'s effect
-// below) feeds straight back into a `setTable` call on every one of those
-// renders -- an infinite render loop, not merely a wasted recompute.
-function exchangeRowId(row: ExchangeLedgerRow): string {
-  return row.exchangeKey
-}
-
-function exchangeRowAriaLabel(row: ExchangeLedgerRow): string {
-  return `Open exchange inspector for ${row.exchangeKey}`
-}
-
-function ExchangeTableCapture({
-  table,
-  onCapture
-}: {
-  table: TanStackTable<ExchangeLedgerRow>
-  onCapture: (table: TanStackTable<ExchangeLedgerRow> | null) => void
-}) {
-  useEffect(() => {
-    onCapture(table)
-    return () => onCapture(null)
-  }, [table, onCapture])
-  return null
-}
-
 function exchangeFilterOptionLabel(value: string): string {
   if (value === 'SERVED') return 'Served'
   if (value === 'ASKED') return 'Asked'
@@ -257,14 +228,12 @@ function ExchangesSection({
     () => buildExchangeLedgerRows(query.data?.rows ?? [], counterpartyIndex),
     [query.data, counterpartyIndex]
   )
-  const columns = useMemo(() => buildExchangeColumns(), [])
 
   const [search, setSearch] = useState('')
   const [roleFilter, setRoleFilter] = useState<Set<string>>(new Set(ALL_ROLE_VALUES))
   const [checksFilter, setChecksFilter] = useState<Set<string>>(new Set(ALL_CHECKS_VALUES))
   const [selectedExchangeKey, setSelectedExchangeKey] = useState<string | null>(null)
   const handleExchangeRowActivate = useCallback((row: ExchangeLedgerRow) => setSelectedExchangeKey(row.exchangeKey), [])
-  const [table, setTable] = useState<TanStackTable<ExchangeLedgerRow> | null>(null)
 
   const trimmedSearch = search.trim().toLowerCase()
   const visibleRows = useMemo(
@@ -277,6 +246,12 @@ function ExchangesSection({
       }),
     [allRows, roleFilter, checksFilter, trimmedSearch]
   )
+
+  // L-N — one time-ordered append-only stream; nothing but time (and the
+  // exchangeKey tie-break) reorders it. Filtering above may drop rows, but
+  // never reorders the ones that remain.
+  const streamRows = useMemo(() => sortStreamByTime(visibleRows), [visibleRows])
+  const railSegments = useMemo(() => buildRailSegments(streamRows), [streamRows])
 
   const selectedRow = selectedExchangeKey
     ? (allRows.find((r) => r.exchangeKey === selectedExchangeKey)?.raw ?? null)
@@ -398,7 +373,6 @@ function ExchangesSection({
             triggerLabel="Filter exchanges"
             visibleCount={visibleRows.length}
           />
-          {table ? <DataTableViewOptions columnLabels={EXCHANGE_COLUMN_LABELS} table={table} /> : null}
           {/* Two distinct actions, never collapsed: a CSV of the current
              view vs. the portable evidence bundle (full records). */}
           <Button
@@ -428,17 +402,28 @@ function ExchangesSection({
         </div>
       </div>
 
-      <DataTable
-        ariaLabel="Exchange records"
-        columns={columns}
-        data={visibleRows}
-        emptyMessage="No exchanges match this filter."
-        getRowAriaLabel={exchangeRowAriaLabel}
-        getRowId={exchangeRowId}
-        onRowActivate={handleExchangeRowActivate}
-      >
-        {(tableInstance) => <ExchangeTableCapture onCapture={setTable} table={tableInstance} />}
-      </DataTable>
+      {/* v3 §2 — one time-ordered, append-only stream (L-N), replacing the
+         flat table + `Confirmed` chip column with a real two-sided row per
+         exchange. Toggles ① content / ② checks (§3/§4) are later batches;
+         a row (or its in-cell action) still opens the existing full-detail
+         inspector modal below. */}
+      {streamRows.length === 0 ? (
+        <p aria-label="Exchange records" className="py-6 text-center text-sm text-fg-dim" role="status">
+          No exchanges match this filter.
+        </p>
+      ) : (
+        <div aria-label="Exchange records" className="flex flex-col divide-y divide-border-soft" role="list">
+          {streamRows.map((row, index) => (
+            <ExchangeStreamRow
+              key={row.exchangeKey}
+              onAction={handleExchangeRowActivate}
+              onActivate={handleExchangeRowActivate}
+              rail={railSegments[index]}
+              row={row}
+            />
+          ))}
+        </div>
+      )}
 
       <ExchangeInspector
         counterparty={selectedCounterparty}

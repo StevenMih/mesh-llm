@@ -12,6 +12,8 @@ function row(overrides: Partial<ExchangeLedgerRow>): ExchangeLedgerRow {
     confirmed: true,
     hasIssue: false,
     checksText: '—',
+    rightCellState: { kind: 'closed', date: null },
+    sessionId: null,
     raw: {} as PaneCRow,
     ...overrides
   }

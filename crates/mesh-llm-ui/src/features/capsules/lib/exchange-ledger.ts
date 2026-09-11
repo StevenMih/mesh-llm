@@ -4,6 +4,7 @@
 // exceptions-first and NEVER a count; Confirmed is the double-entry fact,
 // not registration) are unit-testable without mounting a table.
 import type { PaneBRow, PaneCRow } from '@/features/capsules/api/sidecarTypes'
+import { deriveRightCellState, type RightCellState } from '@/features/capsules/lib/exchange-row-state'
 import { NINE_PROPERTY_LABELS } from '@/features/capsules/lib/nine-properties'
 import { peerExchangeIds } from '@/features/capsules/lib/peer-exchange-timeline'
 import { peerDisplayId } from '@/features/capsules/lib/peer-row-view'
@@ -21,6 +22,12 @@ export type ExchangeLedgerRow = {
    *  failing property name(s), or the pair-reconciliation fallback when
    *  `has_issue` is driven by that check rather than a named property. */
   checksText: string
+  /** The right cell's one of six states (v3 §2) -- see
+   *  `exchange-row-state.ts` for the derivation and its honesty limits. */
+  rightCellState: RightCellState
+  /** L-O: null for every served row and for any row the record itself
+   *  carries no session for -- never invented. */
+  sessionId: string | null
   raw: PaneCRow
 }
 
@@ -67,6 +74,11 @@ export function buildExchangeLedgerRows(
     confirmed: row.theirs.state !== 'absent' && !row.unilateral,
     hasIssue: row.has_issue,
     checksText: checksTextFor(row),
+    rightCellState: deriveRightCellState(row),
+    // L-O -- a served row structurally has no session (this node was never
+    // party to the requester's conversation), regardless of what the
+    // record carries.
+    sessionId: row.role_tag === 'ASKED' ? (row.session_id ?? null) : null,
     raw: row
   }))
 }

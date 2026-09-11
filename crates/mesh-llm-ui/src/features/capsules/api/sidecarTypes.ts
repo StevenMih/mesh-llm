@@ -163,6 +163,14 @@ export type PaneBJson = {
 
 export type AssuranceProperties = Record<string, PaneState>
 
+/** The four evidence-request outcomes named in the two-sided-ledger design
+ *  note (v3 §2's "evidence" column) -- see `exchange-row-state.ts`. Optional
+ *  because the carrier that would populate it is still unwired end-to-end
+ *  (`evidence_responder.py`: "not yet reachable over the wire") -- an
+ *  absent value degrades to `not_asked`, never a guess at one of the other
+ *  three. */
+export type EvidenceRequestOutcome = 'signed_refusal' | 'recorded_absence' | 'unanswered' | 'not_asked'
+
 export type PaneCRow = {
   exchange_key: string
   role_tag: string
@@ -170,9 +178,22 @@ export type PaneCRow = {
   properties: AssuranceProperties | null
   has_issue: boolean
   mine: { state: string; capsule_id: string | null; role?: string; text?: string }
-  theirs: { state: string; capsule_id: string | null; role?: string; text?: string }
+  theirs: {
+    state: string
+    capsule_id: string | null
+    role?: string
+    text?: string
+    evidence_outcome?: EvidenceRequestOutcome
+    evidence_outcome_date?: string | null
+  }
   unilateral: boolean
   timestamp: string | null
+  /** The conversation this exchange belongs to, when this node was the
+   *  requester (v3 §2 L-O: a served row structurally has none -- this node
+   *  was never party to the requester's session). Optional/forward-looking:
+   *  no sidecar emits it yet, so it degrades to `null` (no rail), never an
+   *  invented grouping. */
+  session_id?: string | null
 }
 
 export type PaneCListJson = {

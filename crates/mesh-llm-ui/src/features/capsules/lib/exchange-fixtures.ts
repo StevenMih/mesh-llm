@@ -69,46 +69,122 @@ const CLEAN_EXCHANGE_PROPERTIES = {
   outcome_corroboration: { state: 'PASS' }
 }
 
-const EXCEPTION_EXCHANGE_PROPERTIES = {
+// [mesh-ledger-b2-two-sided-row] -- the artifact-disagrees case (v3 §2):
+// `outcome_corroboration` itself must be FAIL -- a checkpoint-signature
+// exception with no outcome disagreement would still render CLOSED, not
+// CONTRADICTED (the six-state model and the nine-property Checks column
+// are independent axes).
+const CONTRADICTED_EXCHANGE_PROPERTIES = {
   content_binding: { state: 'PASS' },
   producer_signature: { state: 'PASS' },
   local_inclusion: { state: 'PASS' },
-  checkpoint_signature: { state: 'FAIL', text: 'checkpoint signature could not be verified against the pinned key' },
-  external_registration: { state: 'NOT_CHECKED' },
+  checkpoint_signature: { state: 'PASS' },
+  external_registration: { state: 'PASS' },
   continuity: { state: 'PASS' },
   identity_authority: { state: 'NOT_PRESENT' },
-  capture_coverage: { state: 'NOT_CHECKED' },
-  outcome_corroboration: { state: 'NOT_CHECKED' }
+  capture_coverage: { state: 'PASS' },
+  outcome_corroboration: { state: 'FAIL', text: 'reported outcomes disagree' }
 }
 
+// [mesh-ledger-b2-two-sided-row] -- one row per right-cell state (v3 §2's
+// six-row table), plus a served row and a second session, so `pnpm dev`
+// shows a real mix: the append-only stream, the session rail (L-N/L-O),
+// and every CLOSED/CONTRADICTED/OPEN·* status at once.
 export const HARNESS_PANE_C_PAYLOAD: PaneCListJson = {
-  row_count: 2,
+  row_count: 7,
   default_sort: 'timestamp',
   filters: [],
   next_after_seq: null,
   archived_segments: [],
   rows: [
     {
-      exchange_key: 'exch-clean-00',
+      exchange_key: 'exch-closed-00',
       role_tag: 'ASKED',
       header_state: 'ok',
       properties: CLEAN_EXCHANGE_PROPERTIES,
       has_issue: false,
-      mine: { state: 'present', capsule_id: 'mine_exch-clean-00' },
-      theirs: { state: 'present', capsule_id: 'theirs_exch-clean-00' },
+      mine: { state: 'present', capsule_id: 'mine_exch-closed-00' },
+      theirs: { state: 'present', capsule_id: 'theirs_exch-closed-00' },
       unilateral: false,
-      timestamp: '2026-09-08T16:58:05Z'
+      timestamp: '2026-09-11T16:58:05Z',
+      session_id: 'session-refactor-notes'
     },
     {
-      exchange_key: 'exch-alarm-07',
+      exchange_key: 'exch-contradicted-01',
       role_tag: 'ASKED',
       header_state: 'issue',
-      properties: EXCEPTION_EXCHANGE_PROPERTIES,
+      properties: CONTRADICTED_EXCHANGE_PROPERTIES,
       has_issue: true,
-      mine: { state: 'present', capsule_id: 'mine_exch-alarm-07' },
+      mine: { state: 'present', capsule_id: 'mine_exch-contradicted-01' },
+      theirs: { state: 'present', capsule_id: 'theirs_exch-contradicted-01' },
+      unilateral: false,
+      timestamp: '2026-09-11T16:57:40Z',
+      session_id: 'session-refactor-notes'
+    },
+    {
+      exchange_key: 'exch-served-02',
+      role_tag: 'SERVED',
+      header_state: 'ok',
+      properties: null,
+      has_issue: false,
+      mine: { state: 'present', capsule_id: 'mine_exch-served-02' },
+      theirs: { state: 'absent', capsule_id: null, evidence_outcome: 'not_asked' },
+      unilateral: true,
+      timestamp: '2026-09-11T16:55:12Z'
+      // No session_id -- served rows never carry one (L-O), even in a
+      // fixture built to demonstrate every other state.
+    },
+    {
+      exchange_key: 'exch-refused-03',
+      role_tag: 'ASKED',
+      header_state: 'ok',
+      properties: null,
+      has_issue: false,
+      mine: { state: 'present', capsule_id: 'mine_exch-refused-03' },
+      theirs: { state: 'absent', capsule_id: null, evidence_outcome: 'signed_refusal', evidence_outcome_date: '4 Sep' },
+      unilateral: true,
+      timestamp: '2026-09-11T09:30:00Z',
+      session_id: 'session-trip-planning'
+    },
+    {
+      exchange_key: 'exch-absent-04',
+      role_tag: 'ASKED',
+      header_state: 'ok',
+      properties: null,
+      has_issue: false,
+      mine: { state: 'present', capsule_id: 'mine_exch-absent-04' },
+      theirs: {
+        state: 'absent',
+        capsule_id: null,
+        evidence_outcome: 'recorded_absence',
+        evidence_outcome_date: '4 Sep'
+      },
+      unilateral: true,
+      timestamp: '2026-09-11T09:15:00Z',
+      session_id: 'session-trip-planning'
+    },
+    {
+      exchange_key: 'exch-asked-05',
+      role_tag: 'ASKED',
+      header_state: 'ok',
+      properties: null,
+      has_issue: false,
+      mine: { state: 'present', capsule_id: 'mine_exch-asked-05' },
+      theirs: { state: 'absent', capsule_id: null, evidence_outcome: 'unanswered', evidence_outcome_date: '3 Sep' },
+      unilateral: true,
+      timestamp: '2026-09-11T09:00:00Z',
+      session_id: 'session-trip-planning'
+    },
+    {
+      exchange_key: 'exch-not-asked-06',
+      role_tag: 'ASKED',
+      header_state: 'ok',
+      properties: null,
+      has_issue: false,
+      mine: { state: 'present', capsule_id: 'mine_exch-not-asked-06' },
       theirs: { state: 'absent', capsule_id: null },
       unilateral: true,
-      timestamp: '2026-09-08T08:03:00Z'
+      timestamp: '2026-09-11T08:03:00Z'
     }
   ]
 }
