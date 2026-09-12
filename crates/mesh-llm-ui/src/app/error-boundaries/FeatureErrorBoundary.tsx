@@ -1,6 +1,9 @@
 import { ErrorBoundaryPanel } from '@/lib/error/ErrorBoundaryPanel'
+import { normalizeCaughtError } from '@/lib/error/normalize-caught-error'
 
-type FeatureErrorBoundaryProps = { error?: Error }
+// `@tanstack/react-router`'s `errorComponent` passes `error: unknown` (a
+// thrown value, not necessarily an `Error`); normalized below.
+type FeatureErrorBoundaryProps = { error?: unknown }
 
 export function FeatureErrorBoundary({ error }: FeatureErrorBoundaryProps) {
   return (
@@ -8,7 +11,7 @@ export function FeatureErrorBoundary({ error }: FeatureErrorBoundaryProps) {
       <ErrorBoundaryPanel
         title="Something went wrong"
         description="This section failed to render, but the rest of the app can stay available. Refresh the page to retry the route."
-        error={error}
+        error={normalizeCaughtError(error)}
         scopeLabel="Route section"
         recoveryActionLabel="Refresh route"
       />

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useSearch } from '@tanstack/react-router'
 import { uiMessagesToThreadMessages } from '@/features/chat/api/use-chat-messages'
 import { ChatSessionProvider } from '@/features/chat/api/chat-session'
 import { createChatDraftConversationId } from '@/features/chat/api/chat-session-ids'
@@ -47,9 +48,21 @@ import {
 } from '@/features/chat/pages/chat-page-submissions'
 import { useChatPageSubmittedAttachments } from '@/features/chat/pages/chat-page-submitted-attachments'
 
-type ChatPageProps = { data?: ChatHarnessData }
+type ChatPageProps = { data?: ChatHarnessData; initialModel?: string }
 
-export function ChatPageContent({ data = CHAT_HARNESS }: ChatPageProps) {
+/** Route-level wrapper -- reads the router's `model` search param and hands
+ *  it down as a plain prop so `ChatPageContent` itself stays render-in-
+ *  isolation testable (existing tests mount it directly, outside a
+ *  `RouterProvider`). */
+export function ChatPageRoute(props: ChatPageProps) {
+  const search = useSearch({ from: '/chat' })
+  return <ChatPageContent {...props} initialModel={search.model} />
+}
+
+export function ChatPageContent({ data = CHAT_HARNESS, initialModel }: ChatPageProps) {
+  // Pre-selection from an external "Route here" action (e.g. the Ledger
+  // Peers tab, [mesh-ledger-peers-tab]) -- only ever a starting value, the
+  // model dropdown below remains free to change it.
   const { mode, setMode } = useDataMode()
   const liveMode = mode === 'live'
   const modelsQuery = useModelsQuery({ enabled: mode === 'live' })
@@ -77,7 +90,7 @@ export function ChatPageContent({ data = CHAT_HARNESS }: ChatPageProps) {
   const [systemPromptDialogOpen, setSystemPromptDialogOpen] = useState(false)
   const [systemPromptDraft, setSystemPromptDraft] = useState('')
   const [composerDrafts, setComposerDrafts] = useState<Record<string, ConversationComposerDraft>>({})
-  const [model, setModel] = useState('')
+  const [model, setModel] = useState(() => initialModel ?? '')
   const modelExists = selectableModels.some((item) => item.name === model)
   // selectedModelValue is what the dropdown shows (always a value
   // present in `options`, so Radix Select can highlight it).
