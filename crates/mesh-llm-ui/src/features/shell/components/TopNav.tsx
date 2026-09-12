@@ -15,6 +15,7 @@ import {
   ScrollText,
   Settings,
   Share2,
+  ShieldCheck,
   Sun,
   type LucideIcon
 } from 'lucide-react'
@@ -55,12 +56,13 @@ export type ApiTargetLiveness = 'checking' | 'live' | 'unavailable'
 const tabs: {
   value: AppTab
   href: string
-  labelKey: 'tabs.network' | 'tabs.reserves' | 'tabs.logs' | 'tabs.chat' | 'tabs.configuration'
+  labelKey: 'tabs.network' | 'tabs.reserves' | 'tabs.logs' | 'tabs.chat' | 'tabs.configuration' | 'tabs.capsules'
 }[] = [
   { value: 'network', href: '/', labelKey: 'tabs.network' },
   { value: 'reserves', href: '/reserves', labelKey: 'tabs.reserves' },
   { value: 'chat', href: '/chat', labelKey: 'tabs.chat' },
   { value: 'logs', href: '/logs', labelKey: 'tabs.logs' },
+  { value: 'capsules', href: '/capsules', labelKey: 'tabs.capsules' },
   { value: 'configuration', href: '/configuration', labelKey: 'tabs.configuration' }
 ]
 
@@ -75,6 +77,7 @@ const tabIcons: Record<AppTab, LucideIcon> = {
   reserves: BatteryCharging,
   logs: ScrollText,
   chat: BotMessageSquare,
+  capsules: ShieldCheck,
   configuration: Settings
 }
 

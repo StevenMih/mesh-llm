@@ -1,6 +1,9 @@
 import { ErrorBoundaryPanel } from '@/lib/error/ErrorBoundaryPanel'
+import { normalizeCaughtError } from '@/lib/error/normalize-caught-error'
 
-type AppErrorBoundaryProps = { error?: Error }
+// `@tanstack/react-router`'s `errorComponent` passes `error: unknown` (a
+// thrown value, not necessarily an `Error`); normalized below.
+type AppErrorBoundaryProps = { error?: unknown }
 
 export function AppErrorBoundary({ error }: AppErrorBoundaryProps) {
   return (
@@ -8,7 +11,7 @@ export function AppErrorBoundary({ error }: AppErrorBoundaryProps) {
       <ErrorBoundaryPanel
         title="App error"
         description="A route failed before the app could finish rendering. Refresh to rebuild the app shell and restore navigation."
-        error={error}
+        error={normalizeCaughtError(error)}
         scopeLabel="App shell"
       />
     </main>
