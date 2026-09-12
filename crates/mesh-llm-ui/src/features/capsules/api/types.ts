@@ -86,4 +86,10 @@ export type DisclosurePreimage = {
   request_text?: string | null
   response_text?: string | null
   tool_calls_note?: string | null
+  /** NOT part of the on-disk schema -- the exact bytes fetched for this
+   * preimage, kept so `digestResponseBody` can canonicalize `response_body`'s
+   * numbers by their original lexical form. `JSON.parse` collapses `43.0`
+   * and `43` to the same JS number, which would digest a whole-number float
+   * field wrong (see mesh-disclosure-recompute-jcs-float). */
+  _rawText?: string
 }
