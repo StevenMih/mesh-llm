@@ -7,6 +7,9 @@ pub(crate) fn requires_trusted_local_access(method: &str, path: &str) -> bool {
     if path == "/api/logs" || path.starts_with("/api/logs/") {
         return true;
     }
+    if path == "/api/capsules/ledger" || path.starts_with("/api/capsules/ledger/") {
+        return true;
+    }
     if path == "/mcp"
         || path.starts_with("/api/plugins")
         || (method == "POST"
