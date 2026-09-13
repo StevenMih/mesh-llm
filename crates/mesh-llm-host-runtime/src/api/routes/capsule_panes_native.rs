@@ -25,15 +25,31 @@
 //! provenance block): capsule id/timestamp, `model_claimed`'s honest
 //! last-resort default (`friendly_model_name`'s final fallback,
 //! `capsule_mesh_viewer.py:365`, always `"local model"` when no serving-
-//! provenance data has landed yet), the six Pane-A rungs' structural
+//! provenance data has landed yet), the Pane-A rungs' structural
 //! defaults (`freshness`/`runtime_binding`/`tee_citation`/
-//! `hardware_inventory` = `"absent"`, `cross_party` = `unilateral_fallback`,
-//! `log_integrity` = `"present-unverified"` -- `verify_ok is None` reads as
-//! "present, not yet independently verified", never a fabricated PASS/
-//! FAIL), exchange grouping (`exchange_key_for`), and role labelling
-//! (`label_role`, `source_log = "plugin"`, whose own default-by-source
-//! table already says a plugin-written record is always this node acting
-//! as the serving PROVIDER -- `capsule_mesh_view.py:81-83`).
+//! `hardware_inventory` = `"absent"`, `log_integrity` =
+//! `"present-unverified"` -- `verify_ok is None` reads as "present, not
+//! yet independently verified", never a fabricated PASS/FAIL), exchange
+//! grouping (`exchange_key_for`), and role labelling (`label_role`,
+//! `source_log = "plugin"`, whose own default-by-source table already
+//! says a plugin-written record is always this node acting as the
+//! serving PROVIDER -- `capsule_mesh_view.py:81-83`).
+//!
+//! **[ledger-T3-vocabulary-and-states] retirement, native reader only:**
+//! Pane A's `cross_party` cell and Pane B's per-row cross-party cell used
+//! to carry the `rung`/`unilateral_fallback` ladder word (still live in
+//! `capsule_accountability_tab.py`/`peer_accountability_tab.py` upstream,
+//! matching `f0e3af6`'s note that Pane A/B were explicitly out of that
+//! task's scope). This demo runs native/sidecar-DOWN, so THIS reader is
+//! where a stranger reading the raw pane JSON would actually see the
+//! retired word -- both cells now emit the same five-state property-map
+//! shape (`state`/`text`, `state` one of `PASS`/`FAIL`/`NOT_PRESENT`/
+//! `NOT_CHECKED`/`INCONCLUSIVE`) Pane C's `properties` map already uses,
+//! always `NOT_PRESENT` here (no counterparty identity data exists on a
+//! plugin-written record yet -- the same honest absence the old rung
+//! value encoded, in the current vocabulary). This is a deliberate,
+//! documented non-parity divergence from the Python reference (which
+//! hasn't migrated Pane A/B yet) -- not a byte-for-byte port gap.
 //!
 //! Two tranches stay `NOT_CHECKED`/absent/null on purpose, matching gaps
 //! `accountability_pane_routes.py`'s own docstring already names, not new
@@ -67,9 +83,18 @@ const NOT_CHECKED: &str = "NOT_CHECKED";
 /// about its contents) and are safe to compute without any crypto port.
 const STATE_PRESENT_UNVERIFIED: &str = "present-unverified";
 const STATE_ABSENT: &str = "absent";
-/// `peer_accountability_tab.CELL_UNILATERAL` / `CELL_PRESENT`.
-const CELL_UNILATERAL: &str = "unilateral";
+/// `peer_accountability_tab.CELL_PRESENT`.
 const CELL_PRESENT: &str = "present";
+/// Five-state property map (`PaneCRow.properties`'s wire vocabulary,
+/// `assurance-tone.ts`'s `CHIP_TONE`/`CHIP_LABEL` keys) -- what Pane A's
+/// `cross_party` cell and Pane B's per-row cross-party cell render now
+/// instead of the retired `rung`/`unilateral_fallback` ladder word
+/// ([ledger-T3-vocabulary-and-states]).
+const STATE_NOT_PRESENT: &str = "NOT_PRESENT";
+/// The honest text for "no counterparty identity data exists on a
+/// plugin-written record yet" -- the same fact the old `unilateral_fallback`
+/// rung value encoded, worded in the current vocabulary.
+const NO_COUNTERPARTY_EVIDENCE_TEXT: &str = "no counterparty evidence for this record";
 /// `capsule_mesh_viewer.friendly_model_name`'s unconditional last-resort
 /// fallback (`capsule_mesh_viewer.py:365`) when no serving-provenance
 /// architecture/parameter_size/ref data is on the record -- true of every
@@ -197,10 +222,11 @@ pub(super) fn build_pane_a(records: &[Value]) -> Value {
                 "verify_ok": Value::Null,
                 "rungs": {
                     "freshness": { "state": STATE_ABSENT, "client_nonce_source": Value::Null },
+                    // [ledger-T3-vocabulary-and-states]: five-state property
+                    // map, not the retired rung ladder -- see module docs.
                     "cross_party": {
-                        "rung": "unilateral_fallback",
-                        "identity_limitation": Value::Null,
-                        "unverifiable_claim": Value::Null,
+                        "state": STATE_NOT_PRESENT,
+                        "text": NO_COUNTERPARTY_EVIDENCE_TEXT,
                     },
                     "runtime_binding": { "state": STATE_ABSENT },
                     "tee_citation": { "state": STATE_ABSENT },
@@ -295,12 +321,6 @@ pub(super) fn build_pane_b(records: &[Value]) -> Value {
         ("unknown", format!("unknown role · {total}"))
     };
 
-    // `rung_cell`: worst cross-party rung across the group. Every record
-    // is `unilateral_fallback` in this cut (no counterparty identity data
-    // on a plugin-written record yet), so there is exactly one distinct
-    // rung and the cell state is `CELL_UNILATERAL`.
-    let distinct_rungs = vec!["unilateral_fallback"];
-
     let row = json!({
         "peer_id": Value::Null,
         "node": {
@@ -312,12 +332,13 @@ pub(super) fn build_pane_b(records: &[Value]) -> Value {
             "member_kind": Value::Null,
             "exchange_count": total,
         },
-        "rung": {
-            "state": CELL_UNILATERAL,
-            "text": "unilateral_fallback",
-            "rung": "unilateral_fallback",
-            "distinct_rungs": distinct_rungs,
-            "identity_limitation": Value::Null,
+        // [ledger-T3-vocabulary-and-states]: five-state property map, not
+        // the retired rung ladder -- see module docs. Fork UI types
+        // (`sidecarTypes.ts`'s `PaneBRow`) still name this cell `rung`;
+        // that rename is `[ledger-batch1-integrate]`'s job, not this one's.
+        "cross_party": {
+            "state": STATE_NOT_PRESENT,
+            "text": NO_COUNTERPARTY_EVIDENCE_TEXT,
         },
         "role": {
             "state": CELL_PRESENT,
@@ -482,7 +503,10 @@ mod tests {
     /// Every field here is pinned against a REAL `build_pane_a_json` run on
     /// capsule-emit-mesh main against the identical fixture record (see
     /// capsule-emit-mesh's `tests/test_mesh_llm_pane_parity.py`, which pins
-    /// the same values from the Python side) -- not a guess.
+    /// the same values from the Python side) -- not a guess. Exception:
+    /// `cross_party` -- [ledger-T3-vocabulary-and-states] retired the rung
+    /// ladder from THIS reader only, so it now diverges from the (still
+    /// unmigrated) Python reference by design; see module docs.
     #[test]
     fn pane_a_matches_the_python_reference_on_a_plugin_shaped_fixture() {
         let records = vec![fixture_record(
@@ -500,9 +524,10 @@ mod tests {
         assert_eq!(row["model_claimed"], json!("local model"));
         assert_eq!(row["hardware_claimed"], Value::Null);
         assert_eq!(row["rungs"]["freshness"]["state"], json!("absent"));
+        assert_eq!(row["rungs"]["cross_party"]["state"], json!("NOT_PRESENT"));
         assert_eq!(
-            row["rungs"]["cross_party"]["rung"],
-            json!("unilateral_fallback")
+            row["rungs"]["cross_party"]["text"],
+            json!(NO_COUNTERPARTY_EVIDENCE_TEXT)
         );
         assert_eq!(row["rungs"]["runtime_binding"]["state"], json!("absent"));
         assert_eq!(row["rungs"]["tee_citation"]["state"], json!("absent"));
@@ -538,6 +563,9 @@ mod tests {
         );
     }
 
+    /// [ledger-T3-vocabulary-and-states]: `cross_party` diverges from the
+    /// (still unmigrated) Python reference by design -- see module docs and
+    /// the Pane A test above.
     #[test]
     fn pane_b_cells_match_the_python_reference_on_a_plugin_shaped_fixture() {
         let records = vec![
@@ -546,11 +574,10 @@ mod tests {
         ];
         let pane = build_pane_b(&records);
         let row = &pane["rows"][0];
-        assert_eq!(row["rung"]["state"], json!("unilateral"));
-        assert_eq!(row["rung"]["rung"], json!("unilateral_fallback"));
+        assert_eq!(row["cross_party"]["state"], json!("NOT_PRESENT"));
         assert_eq!(
-            row["rung"]["distinct_rungs"],
-            json!(["unilateral_fallback"])
+            row["cross_party"]["text"],
+            json!(NO_COUNTERPARTY_EVIDENCE_TEXT)
         );
         assert_eq!(row["role"]["state"], json!("present"));
         assert_eq!(row["role"]["role"], json!("them_to_you"));
@@ -666,5 +693,71 @@ mod tests {
 
         assert!(build_pane_json("pane-z", &dir, None).is_none());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    // -----------------------------------------------------------------
+    // Retired vocabulary gate [ledger-T3-vocabulary-and-states] -- same
+    // discipline as capsule-emit-mesh's `f0e3af6` Pane C gate
+    // (`tests/test_accountability_pane_routes.py`'s
+    // `_assert_no_retired_vocabulary`), ported to this reader's own
+    // fixtures since it's the surface that actually emits raw JSON
+    // strangers can read (native/sidecar-DOWN is the demo's real path).
+    // -----------------------------------------------------------------
+
+    const RETIRED_PANE_VOCABULARY: &[&str] = &["rung", "unilateral_fallback"];
+
+    fn assert_no_retired_vocabulary(value: &Value, path: &str) {
+        match value {
+            Value::Object(map) => {
+                for (key, sub) in map {
+                    let lowered_key = key.to_lowercase();
+                    for word in RETIRED_PANE_VOCABULARY {
+                        assert!(
+                            !lowered_key.contains(word),
+                            "{path}.{key} carries retired vocabulary {word:?}"
+                        );
+                    }
+                    assert_no_retired_vocabulary(sub, &format!("{path}.{key}"));
+                }
+            }
+            Value::Array(items) => {
+                for (index, item) in items.iter().enumerate() {
+                    assert_no_retired_vocabulary(item, &format!("{path}[{index}]"));
+                }
+            }
+            Value::String(text) => {
+                let lowered = text.to_lowercase();
+                for word in RETIRED_PANE_VOCABULARY {
+                    assert!(
+                        !lowered.contains(word),
+                        "{path} carries retired vocabulary {word:?}: {text:?}"
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// The seeded record here has no cross-party evidence -- exactly the
+    /// shape that used to grade `unilateral_fallback` -- so this fixture is
+    /// a real mutant catch, not a vacuous pass.
+    #[test]
+    fn pane_a_json_never_carries_retired_rung_vocabulary() {
+        let records = vec![fixture_record(
+            "cap-1",
+            "2026-09-01T00:00:00Z",
+            "req-1",
+            None,
+        )];
+        assert_no_retired_vocabulary(&build_pane_a(&records), "$");
+    }
+
+    #[test]
+    fn pane_b_json_never_carries_retired_rung_vocabulary() {
+        let records = vec![
+            fixture_record("cap-1", "2026-09-01T00:00:00Z", "req-1", None),
+            fixture_record("cap-2", "2026-09-02T00:00:00Z", "req-2", Some("cap-1")),
+        ];
+        assert_no_retired_vocabulary(&build_pane_b(&records), "$");
     }
 }
