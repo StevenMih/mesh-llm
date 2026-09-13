@@ -10,9 +10,12 @@ import {
   adjudicationSummary,
   adjudicationSummaryText,
   alarmSignal,
+  isUnattributedPeerRow,
+  peerDisplayId,
   peerSortKey,
   sortPeerRows,
   theirChainSummary,
+  unattributedExchangesLine,
   withYouCounts,
   withYouCountsText
 } from '@/features/capsules/lib/peer-row-view'
@@ -201,5 +204,36 @@ describe('sortPeerRows', () => {
       ({ row, latencyMs }) => peerSortKey(row, latencyMs)
     )
     expect(sorted.map((entry) => entry.row.peer_id)).toEqual(['near', 'far'])
+  })
+})
+
+describe('peerDisplayId — no synthetic peer', () => {
+  it('ADVERSARIAL: never returns the string "unknown peer" — a row with no identity resolves to null', () => {
+    const row = baseRow({ peer_id: null, node: { state: 'present', text: null } })
+    expect(peerDisplayId(row)).toBeNull()
+    expect(peerDisplayId(row)).not.toBe('unknown peer')
+    expect(isUnattributedPeerRow(row)).toBe(true)
+  })
+
+  it('falls back to the node cell id when the row-level peer_id is absent', () => {
+    const row = baseRow({ peer_id: null, node: { state: 'present', text: null, peer_id: 'node:aa11bb22cc33' } })
+    expect(peerDisplayId(row)).toBe('node:aa11bb22cc33')
+    expect(isUnattributedPeerRow(row)).toBe(false)
+  })
+
+  it('prefers the row-level peer_id over the node cell id when both are present', () => {
+    const row = baseRow({ peer_id: 'peer-verified', node: { state: 'present', text: null, peer_id: 'node:other' } })
+    expect(peerDisplayId(row)).toBe('peer-verified')
+  })
+})
+
+describe('unattributedExchangesLine', () => {
+  it('states the count as a fact, never implying pending work', () => {
+    expect(unattributedExchangesLine(3)).toBe('3 exchanges have no counterparty recorded yet. They appear under Exchanges.')
+    expect(unattributedExchangesLine(3)).not.toMatch(/not resolved yet/i)
+  })
+
+  it('uses singular grammar for a count of one', () => {
+    expect(unattributedExchangesLine(1)).toBe('1 exchange has no counterparty recorded yet. They appear under Exchanges.')
   })
 })

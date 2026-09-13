@@ -139,4 +139,30 @@ describe('buildExchangeCounterpartyIndex', () => {
     expect(index.get('exch-a')).toBe('node:peer-a')
     expect(index.has('exch-nonexistent')).toBe(false)
   })
+
+  it('ADVERSARIAL: an unattributed Pane B row (no peer_id, no node.peer_id) contributes no entries — never "unknown peer"', () => {
+    const unattributed: PaneBRow = {
+      peer_id: null,
+      node: { state: 'present' },
+      rung: { state: 'present' },
+      role: { state: 'present' },
+      history: { state: 'NOT_CHECKED' },
+      served: { state: 'NOT_CHECKED' },
+      pair: {
+        state: 'verified',
+        verified: 1,
+        failed: 0,
+        missing: 0,
+        details: [{ exchange_id: 'exch-unattributed', state: 'verified' }]
+      },
+      verdicts: { state: 'NOT_CHECKED' },
+      asked: { state: 'absent' },
+      exchange_count: 1,
+      first_seen: null,
+      last_seen: null
+    }
+    const index = buildExchangeCounterpartyIndex([unattributed])
+    expect(index.has('exch-unattributed')).toBe(false)
+    expect([...index.values()]).not.toContain('unknown peer')
+  })
 })

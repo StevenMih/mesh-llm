@@ -147,6 +147,69 @@ describe('LedgerPageContent', () => {
     expect(await screen.findByText('peer-1')).toBeInTheDocument()
   })
 
+  it('[ledger-T2-counterparty-not-recorded] Peers: no card for an unattributed row — its exchanges roll into one headline count, never "unknown peer"', async () => {
+    const { fetchPaneB } = await import('@/features/capsules/api/sidecarClient')
+    vi.mocked(fetchPaneB).mockResolvedValueOnce({
+      rows: [
+        {
+          peer_id: 'peer-1',
+          node: { state: 'present', text: 'peer-1', peer_id: 'peer-1', member_kind: 'member', exchange_count: 1 },
+          rung: { state: 'present', text: 'full_bilateral', rung: 'full_bilateral', distinct_rungs: ['full_bilateral'] },
+          role: {
+            state: 'present',
+            text: 'you_to_them · 1',
+            role: 'you_to_them',
+            you_to_them_count: 1,
+            them_to_you_count: 0,
+            exchange_count: 1
+          },
+          history: { state: 'NOT_CHECKED', text: null },
+          served: { state: 'NOT_CHECKED', text: null },
+          pair: { state: 'absent', text: null, verified: 0, failed: 0, missing: 0, details: [] },
+          verdicts: { state: 'NOT_CHECKED', text: null, tally: { corroborated: 0, contradicted: 0, inconclusive: 0 } },
+          asked: { state: 'absent', text: null, count: 0 },
+          exchange_count: 1,
+          first_seen: null,
+          last_seen: null
+        },
+        {
+          // No `peer_id`, no `node.peer_id` — no counterparty evidence at
+          // all for these 3 exchanges (the case that used to render a
+          // synthetic "unknown peer" card).
+          peer_id: null,
+          node: { state: 'present', text: null },
+          rung: { state: 'present', text: 'unilateral_fallback', rung: 'unilateral_fallback' },
+          role: {
+            state: 'present',
+            text: 'you_to_them · 3',
+            role: 'you_to_them',
+            you_to_them_count: 3,
+            them_to_you_count: 0,
+            exchange_count: 3
+          },
+          history: { state: 'NOT_CHECKED', text: null },
+          served: { state: 'NOT_CHECKED', text: null },
+          pair: { state: 'absent', text: null, verified: 0, failed: 0, missing: 0, details: [] },
+          verdicts: { state: 'NOT_CHECKED', text: null, tally: { corroborated: 0, contradicted: 0, inconclusive: 0 } },
+          asked: { state: 'absent', text: null, count: 0 },
+          exchange_count: 3,
+          first_seen: null,
+          last_seen: null
+        }
+      ],
+      peer_count: 2
+    })
+
+    const user = userEvent.setup()
+    render(<LedgerPageContent />, { wrapper: makeWrapper() })
+    await user.click(screen.getByRole('tab', { name: /peers/i }))
+
+    expect(await screen.findByText('peer-1')).toBeInTheDocument()
+    expect(screen.getByText('3 exchanges have no counterparty recorded yet. They appear under Exchanges.')).toBeInTheDocument()
+    expect(screen.queryByText(/unknown peer/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/peer identity not resolved yet/i)).not.toBeInTheDocument()
+  })
+
   it('Exchanges header shows two counts not a ratio', async () => {
     // Set up mock with 3 rows, 1 of which is bilateral (not unilateral).
     // `mockResolvedValue` (persistent, not `...Once`): Peers is now the
