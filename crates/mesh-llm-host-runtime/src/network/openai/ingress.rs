@@ -58,8 +58,11 @@ async fn serving_provenance_for_model(node: &mesh::Node, model_name: &str) -> Se
     // The served-model descriptor for exactly this model, if the node has one.
     // We match on the served identity's `model_name`; a miss (peer-served or
     // not-yet-described) leaves every model field `None` rather than guessing.
+    // DEMO-ONLY divergence — #1708 gated served_model_descriptors() to
+    // #[cfg(test)]; unfiltered peer list is acceptable in the demo only,
+    // NEVER upstream.
     let descriptor = node
-        .served_model_descriptors()
+        .all_served_model_descriptors()
         .await
         .into_iter()
         .find(|d| d.identity.model_name == model_name);
