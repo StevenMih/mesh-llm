@@ -40,7 +40,7 @@ pub(super) fn is_route(path: &str) -> bool {
 ///    data-dir convention, `main.rs`'s `data_dir()`)
 /// 3. `./admission-policy-data/ledger` (the plugin's own default when neither
 ///    env var is set)
-fn ledger_dir() -> PathBuf {
+pub(super) fn ledger_dir() -> PathBuf {
     if let Ok(path) = std::env::var("MESH_LLM_CAPSULE_LEDGER_DIR") {
         return PathBuf::from(path);
     }
