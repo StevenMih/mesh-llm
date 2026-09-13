@@ -1532,7 +1532,7 @@ mod tests {
             survey_telemetry: survey::SurveyTelemetry::disabled(),
         };
 
-        let result = super::start_runtime_local_model(spec, model_name).await;
+        let result = super::start_runtime_local_model(spec, model_name, None).await;
         assert!(
             result.is_err(),
             "test setup: an undersized capacity budget must fail the start"
