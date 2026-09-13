@@ -10,7 +10,10 @@
 //      sidecar URL box anywhere
 //   4. Exchanges header shows two counts, never a ratio
 //   5. The Balance header strip on Exchanges never crashes on an absent
-//      served-summary and never fabricates a number
+//      served-summary and never fabricates a number; per [ledger-T8-header-
+//      copy] it renders NOTHING on a null card rather than a "no data" line
+//   6. The exceptions-first line above the table, and the Ledger badge's
+//      "This node's copy" rename ([ledger-T8-header-copy])
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -270,8 +273,11 @@ describe('LedgerPageContent', () => {
     // Navigate to Exchanges tab
     await user.click(screen.getByRole('tab', { name: /exchanges/i }))
 
-    // Wait for data
-    const headerEl = await screen.findByText(/3 exchange/i)
+    // Wait for data. Matched on "confirmed by the other side" (unique to
+    // this line) rather than "3 exchange" -- the exceptions-first line
+    // below it also states the same total, so a bare "3 exchange" query is
+    // ambiguous between the two.
+    const headerEl = await screen.findByText(/confirmed by the other side/i)
     expect(headerEl.textContent).toMatch(/3 exchange/)
     expect(headerEl.textContent).toMatch(/1 confirmed by the other side/)
 
@@ -281,19 +287,43 @@ describe('LedgerPageContent', () => {
     expect(bodyText).not.toMatch(/33%/)
   })
 
-  it('Exchanges shows the balance header strip above the records, honest absence when unwitnessed', async () => {
+  it('Exchanges hides the balance header strip entirely on a null card — never a "no data" line above real rows', async () => {
     const user = userEvent.setup()
     render(<LedgerPageContent />, { wrapper: makeWrapper() })
     await user.click(screen.getByRole('tab', { name: /exchanges/i }))
 
     // fetchPaneA's default mock (card: null) — never a crash, never a
-    // fabricated number, an honest absence message instead. The coverage-
+    // fabricated number, and (per [ledger-T8-header-copy]) no absence
+    // message either: the card renders nothing at all. The coverage-
     // statement branches themselves (witnessed / not-reconciled / failed)
     // are unit-tested directly against the pure `balanceCoverage` function
     // in balance-view.test.ts — fetchPaneA is shared by three query sites
     // on this page, so asserting a specific override's exact caller here
     // would be an order-dependent test, not a real wiring check.
-    expect(await screen.findByText('No served-summary data available yet.')).toBeInTheDocument()
+    await screen.findByText(/exchanges need your attention|Nothing needs your attention/)
+    expect(screen.queryByText('No served-summary data available yet.')).not.toBeInTheDocument()
+  })
+
+  it('never renders the retired "No served-summary data available yet." string, even off the empty-state path', async () => {
+    render(<LedgerPageContent />, { wrapper: makeWrapper() })
+    const bodyText = document.body.textContent ?? ''
+    expect(bodyText).not.toMatch(/No served-summary data available yet\./)
+  })
+
+  it('shows the exceptions-first line above the Exchanges table', async () => {
+    const user = userEvent.setup()
+    render(<LedgerPageContent />, { wrapper: makeWrapper() })
+    await user.click(screen.getByRole('tab', { name: /exchanges/i }))
+
+    expect(await screen.findByText(/^Nothing needs your attention\./)).toBeInTheDocument()
+  })
+
+  it('Ledger badge reads "This node\'s copy" with the two-sided-provenance subtext, never the retired "Local only"', () => {
+    render(<LedgerPageContent />, { wrapper: makeWrapper() })
+
+    expect(screen.getByText("This node's copy")).toBeInTheDocument()
+    expect(screen.getByText('Their halves appear here as they give them to you.')).toBeInTheDocument()
+    expect(screen.queryByText('Local only')).not.toBeInTheDocument()
   })
 })
 
