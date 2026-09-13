@@ -550,17 +550,29 @@ fn client_nonce_source(request: &ChatCompletionRequest) -> ClientNonceSource {
     }
 }
 
+/// A publish sink that records every envelope it receives instead of
+/// delivering it anywhere — shared by this module's own tests (path 1, the
+/// typed frontend hook bridge) and `network::openai::ingress`'s tests (path
+/// 2, the raw-proxy terminal builder), so both dispatch paths can assert on
+/// exactly what a subscribing plugin would have seen without spinning one
+/// up.
 #[cfg(test)]
-mod tests {
+pub(crate) mod test_support {
     use std::sync::Mutex;
 
-    use openai_frontend::{ChatCompletionOutcome, HookedOpenAiBackend, OpenAiBackend, Usage};
+    use async_trait::async_trait;
 
-    use super::*;
+    use super::{OpenAiExchangeChannel, OpenAiExchangeEnvelope};
 
     #[derive(Default)]
-    struct RecordingChannel {
+    pub(crate) struct RecordingChannel {
         events: Mutex<Vec<OpenAiExchangeEnvelope>>,
+    }
+
+    impl RecordingChannel {
+        pub(crate) fn events(&self) -> Vec<OpenAiExchangeEnvelope> {
+            self.events.lock().unwrap().clone()
+        }
     }
 
     #[async_trait]
@@ -569,6 +581,14 @@ mod tests {
             self.events.lock().unwrap().push(event.clone());
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use openai_frontend::{ChatCompletionOutcome, HookedOpenAiBackend, OpenAiBackend, Usage};
+
+    use super::test_support::RecordingChannel;
+    use super::*;
 
     struct EchoBackend;
 
@@ -623,7 +643,7 @@ mod tests {
             .await
             .expect("backend call succeeds");
 
-        let events = channel.events.lock().unwrap();
+        let events = channel.events();
         assert_eq!(events.len(), 2, "one effective-request, one terminal");
 
         assert_eq!(
@@ -667,7 +687,7 @@ mod tests {
             .await
             .expect("backend call succeeds");
 
-        let events = channel.events.lock().unwrap();
+        let events = channel.events();
         assert_eq!(events[1].nonce.as_deref(), Some("abc123"));
         assert_eq!(
             events[1].nonce_source,
@@ -690,7 +710,7 @@ mod tests {
             .await
             .expect("backend call succeeds");
 
-        let events = channel.events.lock().unwrap();
+        let events = channel.events();
         assert!(
             events[1]
                 .nonce
@@ -720,7 +740,7 @@ mod tests {
             .on_chat_completion_terminal(&request, "exchange-1", &denial)
             .await;
 
-        let events = channel.events.lock().unwrap();
+        let events = channel.events();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].exchange_id, "exchange-1");
         assert_eq!(events[0].status, Some(400));
@@ -744,7 +764,7 @@ mod tests {
             .on_chat_completion_terminal(&request, "exchange-1", &ChatCompletionOutcome::Cancelled)
             .await;
 
-        let events = channel.events.lock().unwrap();
+        let events = channel.events();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].phase, OpenAiExchangePhase::Terminal);
         assert!(events[0].status.is_none());
@@ -813,7 +833,7 @@ mod tests {
         slow_result.expect("slow exchange succeeds");
         fast_result.expect("fast exchange succeeds");
 
-        let events = channel.events.lock().unwrap();
+        let events = channel.events();
         assert_eq!(events.len(), 4, "two effective + two terminal events");
         assert_eq!(events[0].phase, OpenAiExchangePhase::EffectiveRequest);
         assert_eq!(events[1].phase, OpenAiExchangePhase::EffectiveRequest);
