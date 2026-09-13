@@ -1,4 +1,5 @@
 mod capsule_panes;
+mod capsule_panes_native;
 mod capsules;
 mod chat;
 mod control_apply_diagnostics;
