@@ -56,7 +56,12 @@ import {
 } from '@/features/capsules/lib/peer-fixtures'
 import { livePeerExchangeSources } from '@/features/capsules/lib/peer-exchange-timeline'
 import { usePeerMeshStatusIndex } from '@/features/capsules/lib/peer-mesh-status'
-import { peerDisplayId, peerSortKey, sortPeerRows } from '@/features/capsules/lib/peer-row-view'
+import {
+  peerDisplayId,
+  peerSortKey,
+  sortPeerRows,
+  unattributedExchangesLine
+} from '@/features/capsules/lib/peer-row-view'
 import { useDataMode } from '@/lib/data-mode'
 
 // ---------------------------------------------------------------------------
@@ -146,9 +151,17 @@ function PeersSection({ recordsById }: { recordsById: Map<string, CapsuleRecord>
     return <p className="text-sm text-muted-foreground">No peer exchanges recorded yet.</p>
   }
 
+  // No card is ever rendered for a row with no counterparty identity
+  // (design chooser-v1 §7 S1.1) -- those exchanges are rolled into the
+  // headline count below instead of a synthetic "unknown peer" card.
+  const attributedRows = query.data.rows.filter((row) => peerDisplayId(row) !== null)
+  const unattributedExchangeCount = query.data.rows
+    .filter((row) => peerDisplayId(row) === null)
+    .reduce((sum, row) => sum + (row.exchange_count ?? 0), 0)
+
   // Closest-first (latency asc); any row carrying an alarm floats to top.
-  const sortedRows = sortPeerRows(query.data.rows, (row) =>
-    peerSortKey(row, meshStatus.statusFor(peerDisplayId(row))?.latencyMs ?? null)
+  const sortedRows = sortPeerRows(attributedRows, (row) =>
+    peerSortKey(row, meshStatus.statusFor(peerDisplayId(row) ?? '')?.latencyMs ?? null)
   )
 
   return (
@@ -157,8 +170,11 @@ function PeersSection({ recordsById }: { recordsById: Map<string, CapsuleRecord>
       <p className="text-sm text-fg-dim">
         Nodes this node has exchanged with. What you sent, what they sent back, and whether it matched.
       </p>
+      {unattributedExchangeCount > 0 ? (
+        <p className="text-sm text-foreground">{unattributedExchangesLine(unattributedExchangeCount)}</p>
+      ) : null}
       {sortedRows.map((row) => {
-        const peerId = peerDisplayId(row)
+        const peerId = peerDisplayId(row) ?? ''
         const exchangeSources = harnessMode
           ? (PEER_TAB_HARNESS_EXCHANGE_SOURCES[peerId] ?? [])
           : livePeerExchangeSources(row, paneCQuery.data?.rows ?? [])
