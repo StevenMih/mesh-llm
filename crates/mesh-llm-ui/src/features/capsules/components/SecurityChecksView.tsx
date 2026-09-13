@@ -10,6 +10,7 @@ import type { CapsuleRecord } from '@/features/capsules/api/types'
 import type { ExchangeLedgerRow } from '@/features/capsules/lib/exchange-ledger'
 import type { RecomputedIdentity } from '@/features/capsules/lib/recompute-identity'
 import { toneForState } from '@/features/capsules/lib/assurance-tone'
+import { WHAT_ACTUALLY_HAPPENED_GROUP, WHAT_NODE_SAID_GROUP } from '@/features/capsules/lib/nine-properties'
 import {
   buildChecksRows,
   buildCommitsToRows,
@@ -17,6 +18,7 @@ import {
   buildIdentityRow,
   type ChecksSideCell
 } from '@/features/capsules/lib/security-checks-view'
+import { ChipExplanationPopover } from '@/features/capsules/components/ChipExplanationPopover'
 
 function badgeToneFor(state: string): StatusBadgeTone {
   const tone = toneForState(state)
@@ -40,7 +42,15 @@ function TwoCol({ yours, theirs }: { yours: ReactNode; theirs: ReactNode | null 
   )
 }
 
-function ChecksCell({ cell }: { cell: ChecksSideCell }) {
+function ChecksCell({
+  cell,
+  propertyKey,
+  factKey
+}: {
+  cell: ChecksSideCell
+  propertyKey: string
+  factKey?: 'binding' | 'authority'
+}) {
   // L-M: recomputed-here and taken-from-the-source must never render
   // identically -- distinct class + a distinct data attribute so a test can
   // assert the two classes differ, not just eyeball it.
@@ -55,9 +65,12 @@ function ChecksCell({ cell }: { cell: ChecksSideCell }) {
       data-recomputed={cell.recomputed ? 'true' : 'false'}
       data-source={cell.recomputed ? 'recomputed-in-browser' : 'from-sidecar'}
     >
-      <StatusBadge size="caption" tone={badgeToneFor(cell.state)}>
-        {cell.label}
-      </StatusBadge>
+      {/* v3 §4: every chip opens the four-part explanation. */}
+      <ChipExplanationPopover cell={cell} factKey={factKey} propertyKey={propertyKey}>
+        <StatusBadge size="caption" tone={badgeToneFor(cell.state)}>
+          {cell.label}
+        </StatusBadge>
+      </ChipExplanationPopover>
       {/* L-L: the input/policy phrase always renders inline, never on hover -- a bare state word is forbidden. */}
       <span>{cell.detail}</span>
     </p>
@@ -78,7 +91,8 @@ export function SecurityChecksView({ row, identity, localRecord }: SecurityCheck
   const commitsToRows = buildCommitsToRows(row.raw, localRecord)
   const checksRows = buildChecksRows(row.raw, identity)
   const captureCoverageRow = checksRows.find((r) => r.key === 'capture_coverage')
-  const propertyChecksRows = checksRows.filter((r) => r.key !== 'capture_coverage')
+  const nodeSaidRows = checksRows.filter((r) => r.key !== 'capture_coverage' && r.group === WHAT_NODE_SAID_GROUP)
+  const actuallyHappenedRows = checksRows.filter((r) => r.group === WHAT_ACTUALLY_HAPPENED_GROUP)
 
   async function copyBoth() {
     const payload = JSON.stringify({ mine: row.raw.mine, theirs: row.raw.theirs }, null, 2)
@@ -194,13 +208,38 @@ export function SecurityChecksView({ row, identity, localRecord }: SecurityCheck
 
           <div className="flex flex-col gap-1.5">
             <BlockHeading>checks</BlockHeading>
-            {propertyChecksRows.map((checkRow) => (
+
+            {/* Two labelled groups, no counts (v3 §4 / tab-design v2.1) -- this
+                node's own nine claims, then the one axis that isn't this
+                node's claim at all. Never merged back into one flat list. */}
+            <p
+              className="type-caption font-mono uppercase tracking-wide text-fg-faint"
+              data-check-group={WHAT_NODE_SAID_GROUP}
+            >
+              {WHAT_NODE_SAID_GROUP}
+            </p>
+            {nodeSaidRows.map((checkRow) => (
               <div className="flex flex-col gap-0.5" key={checkRow.key}>
                 <p className="type-caption text-fg-faint">{checkRow.label}</p>
-                <TwoCol
-                  theirs={checkRow.theirs ? <ChecksCell cell={checkRow.theirs} /> : null}
-                  yours={checkRow.yours ? <ChecksCell cell={checkRow.yours} /> : null}
-                />
+                {checkRow.facts ? (
+                  <div className="flex flex-col gap-0.5">
+                    {checkRow.facts.map((fact) => (
+                      <div className="flex items-baseline gap-1.5" key={fact.factLabel}>
+                        <span className="type-caption text-fg-faint">{fact.factLabel}</span>
+                        <ChecksCell
+                          cell={fact.cell}
+                          factKey={fact.factLabel as 'binding' | 'authority'}
+                          propertyKey={checkRow.key}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <TwoCol
+                    theirs={checkRow.theirs ? <ChecksCell cell={checkRow.theirs} propertyKey={checkRow.key} /> : null}
+                    yours={checkRow.yours ? <ChecksCell cell={checkRow.yours} propertyKey={checkRow.key} /> : null}
+                  />
+                )}
               </div>
             ))}
             {captureCoverageRow ? (
@@ -208,6 +247,22 @@ export function SecurityChecksView({ row, identity, localRecord }: SecurityCheck
                 <span className="text-fg-faint">{captureCoverageRow.label}</span> {captureCoverageRow.singleLine}
               </p>
             ) : null}
+
+            <p
+              className="type-caption font-mono uppercase tracking-wide text-fg-faint"
+              data-check-group={WHAT_ACTUALLY_HAPPENED_GROUP}
+            >
+              {WHAT_ACTUALLY_HAPPENED_GROUP}
+            </p>
+            {actuallyHappenedRows.map((checkRow) => (
+              <div className="flex flex-col gap-0.5" key={checkRow.key}>
+                <p className="type-caption text-fg-faint">{checkRow.label}</p>
+                <TwoCol
+                  theirs={checkRow.theirs ? <ChecksCell cell={checkRow.theirs} propertyKey={checkRow.key} /> : null}
+                  yours={checkRow.yours ? <ChecksCell cell={checkRow.yours} propertyKey={checkRow.key} /> : null}
+                />
+              </div>
+            ))}
           </div>
         </>
       )}
