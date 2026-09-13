@@ -196,6 +196,28 @@ describe('ExchangeStreamRow — [ledger-T1-ask-half-action] un-nesting + counter
   })
 })
 
+describe('ExchangeStreamRow — [ledger-T2-counterparty-not-recorded] counterparty field', () => {
+  it('renders the node id when a counterparty is attributed', () => {
+    render(<ExchangeStreamRow onAction={vi.fn()} onActivate={vi.fn()} rail={NO_RAIL} row={makeRow('closed')} />)
+    expect(screen.getByText('node:aa11bb22')).toBeInTheDocument()
+    expect(screen.queryByText('counterparty not recorded')).not.toBeInTheDocument()
+  })
+
+  it('ADVERSARIAL: reads "counterparty not recorded" — never "unknown peer", never "peer identity not resolved yet" — when unattributed', () => {
+    render(
+      <ExchangeStreamRow
+        onAction={vi.fn()}
+        onActivate={vi.fn()}
+        rail={NO_RAIL}
+        row={makeRow('closed', { counterparty: null })}
+      />
+    )
+    expect(screen.getByText('counterparty not recorded')).toBeInTheDocument()
+    expect(screen.queryByText(/unknown peer/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/peer identity not resolved yet/i)).not.toBeInTheDocument()
+  })
+})
+
 describe('ExchangeStreamRow — [mesh-ledger-b3-paging] focus/highlight/checks toggle', () => {
   it('renders at a stable, addressable DOM id derived from the exchange key', () => {
     const row = makeRow('closed')
