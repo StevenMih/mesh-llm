@@ -2,6 +2,7 @@
 // normative rules, on top of the pure-function tests in
 // `exchange-row-state.test.ts` / `exchange-stream.test.ts`.
 import { render, screen } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 import { ExchangeStreamRow } from '@/features/capsules/components/ExchangeStreamRow'
 import { exchangeRowDomId } from '@/features/capsules/lib/exchange-pages'
@@ -145,6 +146,75 @@ describe('ExchangeStreamRow — [ledger-T2-counterparty-not-recorded] counterpar
     expect(screen.getByText('counterparty not recorded')).toBeInTheDocument()
     expect(screen.queryByText(/unknown peer/i)).not.toBeInTheDocument()
     expect(screen.queryByText(/peer identity not resolved yet/i)).not.toBeInTheDocument()
+  })
+})
+
+describe('ExchangeStreamRow — [ledger-T1-ask-half-action] un-nesting + counterparty gating', () => {
+  it('the inspector control and the cell action are siblings, never nested', () => {
+    render(<ExchangeStreamRow onAction={vi.fn()} onActivate={vi.fn()} rail={NO_RAIL} row={makeRow('open_not_asked')} />)
+    const inspectorButton = screen.getByRole('button', { name: /Open exchange inspector/ })
+    const actionButton = screen.getByRole('button', { name: 'Ask them for their half' })
+    expect(inspectorButton.contains(actionButton)).toBe(false)
+    expect(actionButton.contains(inspectorButton)).toBe(false)
+  })
+
+  it('clicking the cell action calls onAction only; clicking the inspector control calls onActivate only', async () => {
+    const user = userEvent.setup()
+    const onAction = vi.fn()
+    const onActivate = vi.fn()
+    render(
+      <ExchangeStreamRow onAction={onAction} onActivate={onActivate} rail={NO_RAIL} row={makeRow('open_not_asked')} />
+    )
+
+    await user.click(screen.getByRole('button', { name: 'Ask them for their half' }))
+    expect(onAction).toHaveBeenCalledTimes(1)
+    expect(onActivate).not.toHaveBeenCalled()
+
+    await user.click(screen.getByRole('button', { name: /Open exchange inspector/ }))
+    expect(onActivate).toHaveBeenCalledTimes(1)
+    expect(onAction).toHaveBeenCalledTimes(1)
+  })
+
+  it('no recorded counterparty on an open_not_asked row: gated text, no ask button', () => {
+    render(
+      <ExchangeStreamRow
+        onAction={vi.fn()}
+        onActivate={vi.fn()}
+        rail={NO_RAIL}
+        row={makeRow('open_not_asked', { counterparty: null })}
+      />
+    )
+    expect(screen.getByText('Counterparty not recorded — nothing to ask yet.')).toBeInTheDocument()
+    expect(screen.queryByText("You haven't asked for their half.")).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Ask them for their half' })).not.toBeInTheDocument()
+    // The inspector control still renders -- only the ask action is gated.
+    expect(screen.getByRole('button', { name: /Open exchange inspector/ })).toBeInTheDocument()
+  })
+
+  it('no recorded counterparty on an open_asked row: gated text, no "Ask again" button', () => {
+    render(
+      <ExchangeStreamRow
+        onAction={vi.fn()}
+        onActivate={vi.fn()}
+        rail={NO_RAIL}
+        row={makeRow('open_asked', { counterparty: null })}
+      />
+    )
+    expect(screen.getByText('Counterparty not recorded — nothing to ask yet.')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Ask again' })).not.toBeInTheDocument()
+  })
+
+  it('a recorded counterparty leaves states that are not ask actions untouched (no gating on Compare/View)', () => {
+    render(
+      <ExchangeStreamRow
+        onAction={vi.fn()}
+        onActivate={vi.fn()}
+        rail={NO_RAIL}
+        row={makeRow('open_refused', { counterparty: null })}
+      />
+    )
+    expect(screen.getByText('They declined, and signed the refusal — 4 Sep')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'View refusal' })).toBeInTheDocument()
   })
 })
 

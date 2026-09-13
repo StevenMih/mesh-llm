@@ -352,8 +352,13 @@ describe('LedgerPageContent — Part 3: Exchanges two-sided stream + row inspect
     expect(screen.getByText('CLOSED')).toBeInTheDocument()
     expect(screen.getByText('OPEN')).toBeInTheDocument()
     expect(screen.getByText('✓ cites your half by digest')).toBeInTheDocument()
-    expect(screen.getByText("You haven't asked for their half.")).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Ask them for their half' })).toBeInTheDocument()
+    // [ledger-T1-ask-half-action]: neither row carries a counterparty (the
+    // default fetchPaneB mock returns no rows), so the OPEN row's ask
+    // action is gated -- a fact, never a fabricated "not yet asked" ask
+    // button pointed at nobody.
+    expect(screen.getByText('Counterparty not recorded — nothing to ask yet.')).toBeInTheDocument()
+    expect(screen.queryByText("You haven't asked for their half.")).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Ask them for their half' })).not.toBeInTheDocument()
 
     // Row click opens the full nine-property detail modal.
     await user.click(screen.getByLabelText('Open exchange inspector for exch-alarm-07'))
@@ -362,6 +367,87 @@ describe('LedgerPageContent — Part 3: Exchanges two-sided stream + row inspect
     expect(dialog).toHaveTextContent('checkpoint signature: FAIL')
     expect(dialog).toHaveTextContent('content binding')
     expect(dialog).toHaveTextContent('producer signature')
+  })
+
+  it('[ledger-T1-ask-half-action] a row with a recorded counterparty shows the ask action; clicking it never opens the inspector', async () => {
+    const { fetchPaneB, fetchPaneCList } = await import('@/features/capsules/api/sidecarClient')
+    vi.mocked(fetchPaneCList).mockResolvedValue({
+      rows: [
+        {
+          exchange_key: 'exch-known-peer',
+          role_tag: 'ASKED',
+          header_state: 'issue',
+          properties: null,
+          has_issue: true,
+          mine: { state: 'present', capsule_id: 'mine-known' },
+          theirs: { state: 'absent', capsule_id: null },
+          unilateral: true,
+          timestamp: '2026-09-08T08:03:00Z'
+        }
+      ],
+      row_count: 1,
+      default_sort: '',
+      filters: [],
+      next_after_seq: null,
+      archived_segments: []
+    })
+    vi.mocked(fetchPaneB).mockResolvedValue({
+      rows: [
+        {
+          peer_id: 'peer-known',
+          node: {
+            state: 'present',
+            text: 'peer-known',
+            peer_id: 'peer-known',
+            member_kind: 'member',
+            exchange_count: 1
+          },
+          rung: {
+            state: 'present',
+            text: 'full_bilateral',
+            rung: 'full_bilateral',
+            distinct_rungs: ['full_bilateral']
+          },
+          role: {
+            state: 'present',
+            text: 'you_to_them · 1',
+            role: 'you_to_them',
+            you_to_them_count: 1,
+            them_to_you_count: 0,
+            exchange_count: 1
+          },
+          history: { state: 'NOT_CHECKED', text: null },
+          served: { state: 'NOT_CHECKED', text: null },
+          pair: {
+            state: 'present',
+            text: null,
+            verified: 0,
+            failed: 0,
+            missing: 1,
+            details: [{ exchange_id: 'exch-known-peer', state: 'missing' }]
+          },
+          verdicts: { state: 'NOT_CHECKED', text: null, tally: { corroborated: 0, contradicted: 0, inconclusive: 0 } },
+          asked: { state: 'absent', text: null, count: 0 },
+          exchange_count: 1,
+          first_seen: null,
+          last_seen: null
+        }
+      ],
+      peer_count: 1
+    })
+
+    const user = userEvent.setup()
+    render(<LedgerPageContent />, { wrapper: makeWrapper() })
+    await user.click(screen.getByRole('tab', { name: /exchanges/i }))
+
+    expect(await screen.findByText("You haven't asked for their half.")).toBeInTheDocument()
+    const askButton = screen.getByRole('button', { name: 'Ask them for their half' })
+
+    await user.click(askButton)
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+
+    await user.click(screen.getByLabelText('Open exchange inspector for exch-known-peer'))
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
   })
 
   it('Export view (CSV) and Save evidence file are two distinct, present toolbar actions', async () => {

@@ -21,12 +21,20 @@ import type { ExchangeLedgerRow } from '@/features/capsules/lib/exchange-ledger'
 import { exchangeRowDomId } from '@/features/capsules/lib/exchange-pages'
 import {
   isAlarmState,
+  isAskAction,
   rightCellAction,
   rightCellStatusLabel,
   rightCellText
 } from '@/features/capsules/lib/exchange-row-state'
 import type { RailSegment } from '@/features/capsules/lib/exchange-stream'
 import { useRecomputedIdentity } from '@/features/capsules/lib/recompute-identity'
+
+/** The gated cell text ([ledger-T1-ask-half-action] Do (2)) when an ask
+ *  action's row carries no recorded counterparty -- today: all of them, a
+ *  limit `exchange-ledger.ts`'s own comment documents (no counterparty
+ *  identity field exists yet; the join comes from Pane B, per-peer). Never
+ *  invented as "not yet" -- it is a fact, not a deficit. */
+const NO_COUNTERPARTY_TEXT = 'Counterparty not recorded — nothing to ask yet.'
 
 function formatExchangeTimestamp(timestamp: string | null): string {
   if (!timestamp) return 'timestamp unavailable'
@@ -82,7 +90,11 @@ export function ExchangeStreamRow({
 }: ExchangeStreamRowProps) {
   const state = row.rightCellState
   const alarm = isAlarmState(state)
-  const action = rightCellAction(state)
+  // [ledger-T1-ask-half-action] Do (2): an ask action with no recorded
+  // counterparty renders no button at all -- there is nothing to ask yet.
+  const gatedByCounterparty = isAskAction(state.kind) && !row.counterparty
+  const cellText = gatedByCounterparty ? NO_COUNTERPARTY_TEXT : rightCellText(state)
+  const action = gatedByCounterparty ? null : rightCellAction(state)
   // Only recompute while the security view is actually open -- the hook
   // itself must always be called (rules of hooks), but its effect no-ops on
   // a `null` record, so collapsed rows never pay for a fetch+verify.
@@ -96,27 +108,14 @@ export function ExchangeStreamRow({
         <p className="pl-3 pt-2 type-caption font-mono text-fg-faint">session {row.sessionId}</p>
       ) : null}
       <div
-        aria-current={highlighted ? 'true' : undefined}
-        aria-label={`Open exchange inspector for ${row.exchangeKey}`}
         className={cn(
-          'flex cursor-pointer flex-col gap-2 border-l-2 py-3 pl-3 pr-1 outline-none',
+          'flex flex-col gap-2 border-l-2 py-3 pl-3 pr-1',
           rail.hasRail ? 'border-accent/50' : 'border-transparent',
           focused && 'ring-1 ring-inset ring-accent/70',
           highlighted && 'bg-[color-mix(in_oklab,var(--color-accent)_10%,transparent)]'
         )}
-        data-focused={focused ? 'true' : undefined}
-        data-highlighted={highlighted ? 'true' : undefined}
         data-right-cell-state={state.kind}
         data-role-tag={row.roleTag}
-        onClick={() => onActivate(row)}
-        onKeyDown={(event) => {
-          if (event.key === 'Enter' || event.key === ' ') {
-            event.preventDefault()
-            onActivate(row)
-          }
-        }}
-        role="button"
-        tabIndex={0}
       >
         <div className="flex flex-wrap items-center gap-2 text-xs text-fg-dim">
           <span aria-hidden="true">{marker}</span>
@@ -138,20 +137,29 @@ export function ExchangeStreamRow({
           </span>
         </div>
         <div className="grid grid-cols-2 gap-0 rounded border border-border-soft">
-          <div className="flex flex-col gap-1 border-r border-border-soft px-3 py-2">
+          {/* The id/digest area is its own control -- it opens the
+             inspector. It is not nested inside, and does not nest, any
+             other interactive element ([ledger-T1-ask-half-action] Do (1)):
+             the cell action to its right is a sibling, never a descendant. */}
+          <button
+            aria-current={highlighted ? 'true' : undefined}
+            aria-label={`Open exchange inspector for ${row.exchangeKey}`}
+            className="flex flex-col gap-1 border-r border-border-soft px-3 py-2 text-left outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-accent/70"
+            data-focused={focused ? 'true' : undefined}
+            data-highlighted={highlighted ? 'true' : undefined}
+            onClick={() => onActivate(row)}
+            type="button"
+          >
             <p className="font-mono text-xs text-foreground">
               <span>{row.exchangeKey}</span> · <span>{row.raw.mine.capsule_id ?? row.raw.mine.text ?? '—'}</span>
             </p>
-          </div>
+          </button>
           <div className="flex flex-col gap-1.5 px-3 py-2">
-            <p className="text-xs text-fg-dim">{rightCellText(state)}</p>
+            <p className="text-xs text-fg-dim">{cellText}</p>
             {action ? (
               <Button
                 className="ui-control h-7 w-fit gap-1 rounded-[var(--radius)] px-2 text-[length:var(--density-type-caption)]"
-                onClick={(event) => {
-                  event.stopPropagation()
-                  onAction(row)
-                }}
+                onClick={() => onAction(row)}
                 size="sm"
                 type="button"
                 variant="outline"
