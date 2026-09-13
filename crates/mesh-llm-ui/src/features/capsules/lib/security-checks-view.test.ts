@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import type { PaneCRow } from '@/features/capsules/api/sidecarTypes'
-import { NINE_PROPERTY_LABELS } from '@/features/capsules/lib/nine-properties'
+import {
+  NINE_PROPERTY_LABELS,
+  WHAT_ACTUALLY_HAPPENED_GROUP,
+  WHAT_NODE_SAID_GROUP
+} from '@/features/capsules/lib/nine-properties'
 import type { RecomputedIdentity } from '@/features/capsules/lib/recompute-identity'
 import {
   buildChecksRows,
@@ -53,6 +57,18 @@ describe('buildChecksRows — rendered property set (accept: == manifesto ten na
     expect(Object.keys(NINE_PROPERTY_LABELS)).toEqual(MANIFESTO_TEN_PROPERTY_KEYS)
     expect(NINE_PROPERTY_LABELS.task_binding).toBe('task binding')
   })
+
+  it('every row but outcome_corroboration is grouped "what this node said it did"; outcome_corroboration alone is "what actually happened"', () => {
+    const rows = buildChecksRows(paneCRow(), NOT_RECOMPUTED)
+    const byKey = Object.fromEntries(rows.map((r) => [r.key, r]))
+    for (const key of MANIFESTO_TEN_PROPERTY_KEYS) {
+      if (key === 'outcome_corroboration') {
+        expect(byKey[key].group).toBe(WHAT_ACTUALLY_HAPPENED_GROUP)
+      } else {
+        expect(byKey[key].group).toBe(WHAT_NODE_SAID_GROUP)
+      }
+    }
+  })
 })
 
 describe('buildChecksRows — Q1: five results render lowercase, never shouty caps', () => {
@@ -61,7 +77,7 @@ describe('buildChecksRows — Q1: five results render lowercase, never shouty ca
       properties: {
         task_binding: { state: 'PASS' },
         local_inclusion: { state: 'FAIL' },
-        checkpoint_signature: { state: 'NOT_PRESENT' },
+        checkpoint_signature: { state: 'PASS' },
         external_registration: { state: 'NOT_CHECKED' },
         continuity: { state: 'INCONCLUSIVE' }
       }
@@ -70,12 +86,144 @@ describe('buildChecksRows — Q1: five results render lowercase, never shouty ca
     const byKey = Object.fromEntries(rows.map((r) => [r.key, r]))
     expect(byKey.task_binding.yours?.label).toBe('established')
     expect(byKey.local_inclusion.yours?.label).toBe('failed')
-    expect(byKey.checkpoint_signature.yours?.label).toBe('not present')
+    expect(byKey.checkpoint_signature.yours?.label).toBe('established')
     expect(byKey.external_registration.yours?.label).toBe('not checked')
     expect(byKey.continuity.yours?.label).toBe('inconclusive')
     for (const r of rows) {
       if (r.yours) expect(r.yours.label).not.toMatch(/[A-Z]/)
     }
+  })
+})
+
+describe('buildChecksRows — checkpoint-dependent properties resolve NOT_PRESENT, never NOT_CHECKED, when absent', () => {
+  it('local_inclusion/checkpoint_signature/continuity default to not present with no properties at all', () => {
+    const rows = buildChecksRows(paneCRow({ properties: null }), NOT_RECOMPUTED)
+    const byKey = Object.fromEntries(rows.map((r) => [r.key, r]))
+    expect(byKey.local_inclusion.yours?.label).toBe('not present')
+    expect(byKey.local_inclusion.yours?.detail).toBe('no checkpoint covers this record')
+    expect(byKey.checkpoint_signature.yours?.label).toBe('not present')
+    expect(byKey.continuity.yours?.label).toBe('not present')
+  })
+
+  it('external_registration defaults to not present, with a receipt-specific detail, not the checkpoint one', () => {
+    const rows = buildChecksRows(paneCRow({ properties: null }), NOT_RECOMPUTED)
+    const externalRegistration = rows.find((r) => r.key === 'external_registration')
+    expect(externalRegistration?.yours?.label).toBe('not present')
+    expect(externalRegistration?.yours?.detail).toBe('no receipt covers this record')
+  })
+
+  it('a property with no absence rule (task_binding) still defaults to not checked, unchanged', () => {
+    const rows = buildChecksRows(paneCRow({ properties: null }), NOT_RECOMPUTED)
+    const taskBinding = rows.find((r) => r.key === 'task_binding')
+    expect(taskBinding?.yours?.label).toBe('not checked')
+  })
+})
+
+describe('buildChecksRows — continuity established only if checkpoint_signature established', () => {
+  it('downgrades a claimed continuity PASS to not present when checkpoint_signature is not established', () => {
+    const row = paneCRow({
+      properties: {
+        checkpoint_signature: { state: 'NOT_PRESENT' },
+        continuity: { state: 'PASS' }
+      }
+    })
+    const rows = buildChecksRows(row, NOT_RECOMPUTED)
+    const continuity = rows.find((r) => r.key === 'continuity')
+    expect(continuity?.yours?.state).toBe('NOT_PRESENT')
+    expect(continuity?.yours?.label).toBe('not present')
+  })
+
+  it('leaves continuity PASS alone when checkpoint_signature is also established', () => {
+    const row = paneCRow({
+      properties: {
+        checkpoint_signature: { state: 'PASS' },
+        continuity: { state: 'PASS' }
+      }
+    })
+    const rows = buildChecksRows(row, NOT_RECOMPUTED)
+    const continuity = rows.find((r) => r.key === 'continuity')
+    expect(continuity?.yours?.state).toBe('PASS')
+    expect(continuity?.yours?.label).toBe('established')
+  })
+
+  it('does not invent a stronger negative -- a continuity FAIL/INCONCLUSIVE from the sidecar passes through unchanged', () => {
+    const row = paneCRow({
+      properties: {
+        checkpoint_signature: { state: 'NOT_PRESENT' },
+        continuity: { state: 'FAIL', text: 'checkpoint mismatch at leaf 12' }
+      }
+    })
+    const rows = buildChecksRows(row, NOT_RECOMPUTED)
+    const continuity = rows.find((r) => r.key === 'continuity')
+    expect(continuity?.yours?.state).toBe('FAIL')
+    expect(continuity?.yours?.detail).toBe('checkpoint mismatch at leaf 12')
+  })
+})
+
+describe('buildChecksRows — capture_coverage: fixed sentence or not present, never a PASS variant', () => {
+  it('renders the fixed sentence when the sidecar has a record for it', () => {
+    const rows = buildChecksRows(paneCRow({ properties: { capture_coverage: { state: 'PASS' } } }), NOT_RECOMPUTED)
+    const captureCoverage = rows.find((r) => r.key === 'capture_coverage')
+    expect(captureCoverage?.singleLine).toBe('captured at the sidecar observe path (rule: every served exchange)')
+    expect(captureCoverage?.yours).toBeNull()
+    expect(captureCoverage?.theirs).toBeNull()
+  })
+
+  it('renders "not present" when the sidecar sends nothing for it', () => {
+    const rows = buildChecksRows(paneCRow({ properties: null }), NOT_RECOMPUTED)
+    const captureCoverage = rows.find((r) => r.key === 'capture_coverage')
+    expect(captureCoverage?.singleLine).toBe('not present')
+  })
+
+  it('an explicit NOT_PRESENT state also renders "not present", not the sentence', () => {
+    const rows = buildChecksRows(
+      paneCRow({ properties: { capture_coverage: { state: 'NOT_PRESENT' } } }),
+      NOT_RECOMPUTED
+    )
+    const captureCoverage = rows.find((r) => r.key === 'capture_coverage')
+    expect(captureCoverage?.singleLine).toBe('not present')
+  })
+})
+
+describe('buildChecksRows — identity/authority: two facts, not one state', () => {
+  it('binding is "not present" and authority is always "not present" when nothing is bound', () => {
+    const rows = buildChecksRows(paneCRow({ properties: null }), NOT_RECOMPUTED)
+    const identityAuthority = rows.find((r) => r.key === 'identity_authority')
+    expect(identityAuthority?.yours).toBeNull()
+    expect(identityAuthority?.facts?.map((f) => f.factLabel)).toEqual(['binding', 'authority'])
+    const binding = identityAuthority?.facts?.find((f) => f.factLabel === 'binding')
+    const authority = identityAuthority?.facts?.find((f) => f.factLabel === 'authority')
+    expect(binding?.cell.label).toBe('not present')
+    expect(authority?.cell.label).toBe('not present')
+    expect(authority?.cell.detail).toMatch(/not bound to a person/)
+  })
+
+  it('binding renders "self-asserted key, valid to <expiry>" when a key is bound', () => {
+    const rows = buildChecksRows(
+      paneCRow({ properties: { identity_authority: { state: 'PASS', expiry: '2026-12-01' } } }),
+      NOT_RECOMPUTED
+    )
+    const identityAuthority = rows.find((r) => r.key === 'identity_authority')
+    const binding = identityAuthority?.facts?.find((f) => f.factLabel === 'binding')
+    expect(binding?.cell.label).toBe('established')
+    expect(binding?.cell.detail).toBe('self-asserted key, valid to 2026-12-01')
+  })
+
+  it('binding renders "failed" when the bound key is invalid', () => {
+    const rows = buildChecksRows(paneCRow({ properties: { identity_authority: { state: 'FAIL' } } }), NOT_RECOMPUTED)
+    const identityAuthority = rows.find((r) => r.key === 'identity_authority')
+    const binding = identityAuthority?.facts?.find((f) => f.factLabel === 'binding')
+    expect(binding?.cell.label).toBe('failed')
+  })
+
+  it('authority is always not present, even when binding is established', () => {
+    const rows = buildChecksRows(
+      paneCRow({ properties: { identity_authority: { state: 'PASS', expiry: '2026-12-01' } } }),
+      NOT_RECOMPUTED
+    )
+    const identityAuthority = rows.find((r) => r.key === 'identity_authority')
+    const authority = identityAuthority?.facts?.find((f) => f.factLabel === 'authority')
+    expect(authority?.cell.label).toBe('not present')
   })
 })
 
@@ -85,6 +233,10 @@ describe('buildChecksRows — L-L: every check row names its inputs and policy i
     for (const r of rows) {
       if (r.key === 'capture_coverage') {
         expect(r.singleLine).toBeTruthy()
+        continue
+      }
+      if (r.key === 'identity_authority') {
+        for (const fact of r.facts ?? []) expect(fact.cell.detail).toBeTruthy()
         continue
       }
       expect(r.yours?.detail).toBeTruthy()
@@ -109,7 +261,6 @@ describe('buildChecksRows — L-M: recomputed-here and from-sidecar are never th
     expect(byKey.producer_signature.yours?.recomputed).toBe(true)
     expect(byKey.task_binding.yours?.recomputed).toBe(false)
     expect(byKey.local_inclusion.yours?.recomputed).toBe(false)
-    expect(byKey.identity_authority.yours?.recomputed).toBe(false)
     expect(byKey.outcome_corroboration.yours?.recomputed).toBe(false)
   })
 
@@ -128,12 +279,44 @@ describe('buildChecksRows — L-M: recomputed-here and from-sidecar are never th
   })
 })
 
+describe('buildChecksRows — forbidden mutant: never NOT_CHECKED together with recomputed:true', () => {
+  it('content_binding/producer_signature are NOT flagged recomputed while the recompute has not run yet', () => {
+    const rows = buildChecksRows(paneCRow(), NOT_RECOMPUTED)
+    const byKey = Object.fromEntries(rows.map((r) => [r.key, r]))
+    expect(byKey.content_binding.yours?.state).toBe('NOT_CHECKED')
+    expect(byKey.content_binding.yours?.recomputed).toBe(false)
+    expect(byKey.producer_signature.yours?.state).toBe('NOT_CHECKED')
+    expect(byKey.producer_signature.yours?.recomputed).toBe(false)
+  })
+
+  it('says "not yet recomputed in browser", not "recomputed in browser", while unrecomputed', () => {
+    const rows = buildChecksRows(paneCRow(), NOT_RECOMPUTED)
+    const byKey = Object.fromEntries(rows.map((r) => [r.key, r]))
+    expect(byKey.content_binding.yours?.detail).toBe('not yet recomputed in browser')
+  })
+
+  it('no row, in any identity state, ever pairs NOT_CHECKED with recomputed:true', () => {
+    for (const identity of [
+      NOT_RECOMPUTED,
+      RECOMPUTED_MATCH,
+      { idMatch: false, signatureOk: null } as RecomputedIdentity,
+      { idMatch: null, signatureOk: false } as RecomputedIdentity
+    ]) {
+      const rows = buildChecksRows(paneCRow(), identity)
+      for (const r of rows) {
+        if (r.yours) expect(r.yours.state === 'NOT_CHECKED' && r.yours.recomputed).toBe(false)
+        if (r.theirs) expect(r.theirs.state === 'NOT_CHECKED' && r.theirs.recomputed).toBe(false)
+      }
+    }
+  })
+})
+
 describe('buildChecksRows — THEIRS column (v1 §P5 / recompute-identity.ts: no full record for a counterparty half)', () => {
   it('theirs column is entirely absent when theirs.state is absent (L-G)', () => {
     const row = paneCRow({ theirs: { state: 'absent', capsule_id: null } })
     const rows = buildChecksRows(row, NOT_RECOMPUTED)
     for (const r of rows) {
-      if (r.key === 'capture_coverage') continue
+      if (r.key === 'capture_coverage' || r.key === 'identity_authority') continue
       expect(r.theirs).toBeNull()
     }
   })
@@ -141,7 +324,7 @@ describe('buildChecksRows — THEIRS column (v1 §P5 / recompute-identity.ts: no
   it('theirs is always NOT_CHECKED when held -- never a claimed PASS this page cannot back', () => {
     const rows = buildChecksRows(paneCRow(), RECOMPUTED_MATCH)
     for (const r of rows) {
-      if (r.key === 'capture_coverage') continue
+      if (r.key === 'capture_coverage' || r.key === 'identity_authority') continue
       expect(r.theirs?.state).toBe('NOT_CHECKED')
       expect(r.theirs?.recomputed).toBe(false)
       expect(r.theirs?.detail).toBeTruthy()

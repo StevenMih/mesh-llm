@@ -18,7 +18,7 @@ function paneCRow(overrides: Partial<PaneCRow> = {}): PaneCRow {
       external_registration: { state: 'NOT_PRESENT' },
       continuity: { state: 'NOT_PRESENT' },
       identity_authority: { state: 'NOT_PRESENT' },
-      capture_coverage: { state: 'PASS', text: 'captured at the sidecar observe path (rule: every served exchange)' },
+      capture_coverage: { state: 'PASS' },
       outcome_corroboration: { state: 'PASS' }
     },
     has_issue: false,
@@ -81,12 +81,39 @@ describe('SecurityChecksView — exact block order: IDENTITY -> HEADER -> WHAT I
   })
 })
 
+describe('SecurityChecksView — two labelled groups, no counts', () => {
+  it('renders "What this node said it did" and "What actually happened" as the two check-group headings', () => {
+    const { container } = render(
+      <SecurityChecksView identity={RECOMPUTED_MATCH} localRecord={null} row={ledgerRow(paneCRow())} />
+    )
+    const groupHeadings = Array.from(container.querySelectorAll('[data-check-group]')).map((el) =>
+      el.getAttribute('data-check-group')
+    )
+    expect(groupHeadings).toEqual(['What this node said it did', 'What actually happened'])
+  })
+
+  it('outcome_corroboration is the only row under "What actually happened", always visible', () => {
+    const { container } = render(
+      <SecurityChecksView identity={RECOMPUTED_MATCH} localRecord={null} row={ledgerRow(paneCRow())} />
+    )
+    const actuallyHappenedHeading = Array.from(container.querySelectorAll('[data-check-group]')).find(
+      (el) => el.getAttribute('data-check-group') === 'What actually happened'
+    ) as HTMLElement
+    const group = actuallyHappenedHeading.parentElement as HTMLElement
+    const rowsAfterHeading = Array.from(group.children).slice(
+      Array.from(group.children).indexOf(actuallyHappenedHeading) + 1
+    )
+    expect(rowsAfterHeading).toHaveLength(1)
+    expect(within(rowsAfterHeading[0] as HTMLElement).getByText('outcome corroboration')).toBeInTheDocument()
+  })
+})
+
 describe('SecurityChecksView — L-L: every check row names its inputs and policy inline', () => {
   it('never renders a bare state word with nothing beside it', () => {
     render(<SecurityChecksView identity={RECOMPUTED_MATCH} localRecord={null} row={ledgerRow(paneCRow())} />)
     expect(screen.getAllByText('recomputed in browser').length).toBeGreaterThan(0)
-    expect(screen.getByText('no checkpoint')).toBeInTheDocument()
-    expect(screen.getByText('no policy set')).toBeInTheDocument()
+    expect(screen.getAllByText('no checkpoint covers this record').length).toBeGreaterThan(0)
+    expect(screen.getByText('no receipt covers this record')).toBeInTheDocument()
   })
 })
 
@@ -94,12 +121,55 @@ describe('SecurityChecksView — L-M: recomputed-here vs from-sidecar are visual
   it('content_binding/producer_signature carry a different class + data-source than a sidecar property', () => {
     render(<SecurityChecksView identity={RECOMPUTED_MATCH} localRecord={null} row={ledgerRow(paneCRow())} />)
     const recomputedCell = screen.getAllByText('recomputed in browser')[0].closest('[data-source]')
-    const sidecarCell = screen.getByText('no checkpoint').closest('[data-source]')
+    const sidecarCell = screen.getAllByText('no checkpoint covers this record')[0].closest('[data-source]')
     expect(recomputedCell).not.toBeNull()
     expect(sidecarCell).not.toBeNull()
     expect(recomputedCell?.getAttribute('data-source')).toBe('recomputed-in-browser')
     expect(sidecarCell?.getAttribute('data-source')).toBe('from-sidecar')
     expect(recomputedCell?.className).not.toBe(sidecarCell?.className)
+  })
+})
+
+describe('SecurityChecksView — capture_coverage: sentence or not present, never a bare pass chip', () => {
+  it('renders the fixed sentence when present', () => {
+    render(<SecurityChecksView identity={RECOMPUTED_MATCH} localRecord={null} row={ledgerRow(paneCRow())} />)
+    expect(screen.getByText('captured at the sidecar observe path (rule: every served exchange)')).toBeInTheDocument()
+  })
+
+  it('renders "not present" when the sidecar sends nothing for it', () => {
+    render(
+      <SecurityChecksView
+        identity={RECOMPUTED_MATCH}
+        localRecord={null}
+        row={ledgerRow(paneCRow({ properties: null }))}
+      />
+    )
+    // Several other checkpoint-dependent rows are ALSO "not present" with
+    // no properties at all -- scope to the label that precedes the
+    // capture_coverage single line specifically.
+    const captureCoverageLine = screen.getByText('capture coverage').closest('p')
+    expect(captureCoverageLine?.textContent?.trim()).toBe('capture coverage not present')
+  })
+})
+
+describe('SecurityChecksView — identity/authority: two facts rendered under one row', () => {
+  it('renders both a "binding" and an "authority" fact, each with its own state', () => {
+    render(<SecurityChecksView identity={RECOMPUTED_MATCH} localRecord={null} row={ledgerRow(paneCRow())} />)
+    expect(screen.getByText('binding')).toBeInTheDocument()
+    expect(screen.getByText('authority')).toBeInTheDocument()
+    expect(screen.getByText(/not bound to a person/)).toBeInTheDocument()
+  })
+})
+
+describe('SecurityChecksView — every chip opens a four-part explanation', () => {
+  it('clicking a chip reveals what it means / what this view found / what it does not establish / how to change it', async () => {
+    const user = userEvent.setup()
+    render(<SecurityChecksView identity={RECOMPUTED_MATCH} localRecord={null} row={ledgerRow(paneCRow())} />)
+    await user.click(screen.getAllByText('established')[0])
+    expect(screen.getByText(/^What this means:/)).toBeInTheDocument()
+    expect(screen.getByText(/^What this view found:/)).toBeInTheDocument()
+    expect(screen.getByText(/^What it does not establish:/)).toBeInTheDocument()
+    expect(screen.getByText(/^How to change it:/)).toBeInTheDocument()
   })
 })
 
