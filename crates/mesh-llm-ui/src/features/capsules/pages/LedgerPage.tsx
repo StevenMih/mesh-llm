@@ -280,6 +280,15 @@ function ExchangesSection({
   const [stateFilter, setStateFilter] = useState<Set<string>>(new Set(ALL_STATE_FILTER_VALUES))
   const [selectedExchangeKey, setSelectedExchangeKey] = useState<string | null>(null)
   const handleExchangeRowActivate = useCallback((row: ExchangeLedgerRow) => setSelectedExchangeKey(row.exchangeKey), [])
+  // [ledger-T1-ask-half-action] -- deliberately distinct from
+  // handleExchangeRowActivate: the row's action cell must never open the
+  // inspector. The evidence-request carrier this would actually dispatch
+  // through is still unwired end-to-end (exchange-row-state.ts's own
+  // forward-compat note; capsule-emit-mesh's evidence_responder.py: "not
+  // yet reachable over the wire"), so this stays a no-op stub -- honest
+  // absence of a real ask, never a fabricated one -- until that carrier
+  // lands.
+  const handleAskForHalf = useCallback((_row: ExchangeLedgerRow) => {}, [])
 
   // [mesh-ledger-b3-paging] -- windowed paging (v3 §2a) state. `pageIndex`
   // is the source of truth; render/handlers read `safePageIndex` so a
@@ -706,7 +715,7 @@ function ExchangesSection({
                   key={row.exchangeKey}
                   localRecord={row.raw.mine.capsule_id ? (recordsById.get(row.raw.mine.capsule_id) ?? null) : null}
                   nodePubKeyPem={nodePubKeyPem}
-                  onAction={handleExchangeRowActivate}
+                  onAction={handleAskForHalf}
                   onActivate={handleExchangeRowActivate}
                   rail={railSegments[pageStart + index]}
                   row={row}

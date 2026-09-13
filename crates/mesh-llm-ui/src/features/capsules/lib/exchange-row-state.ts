@@ -134,6 +134,17 @@ export function rightCellAction(state: RightCellState): string | null {
   }
 }
 
+/** The two states whose action is literally "ask a counterparty"
+ *  ([ledger-T1-ask-half-action]) -- every other action (`Compare` / `View
+ *  refusal` / `View statement`) inspects evidence this node already holds,
+ *  not a live counterparty to contact, so only these two require a
+ *  recorded counterparty before the action can render. */
+const ASK_ACTION_KINDS: ReadonlySet<RightCellStateKind> = new Set(['open_not_asked', 'open_asked'])
+
+export function isAskAction(kind: RightCellStateKind): boolean {
+  return ASK_ACTION_KINDS.has(kind)
+}
+
 /** L-B: "Only CONTRADICTED gets alarm styling. It is the one state where
  *  two signed records disagree. Everything else is a presence fact." This
  *  predicate is also what enforces L-A ("an open row is never styled as a
