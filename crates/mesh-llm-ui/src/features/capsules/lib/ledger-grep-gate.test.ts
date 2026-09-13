@@ -30,6 +30,8 @@ const FORBIDDEN_EXACT = [
   'advertisement_absent',
   'trust_level',
   'not yet witnessed',
+  'unknown peer',
+  'peer identity not resolved yet',
 ] as const
 
 // Words forbidden as standalone tokens in rendered prose. Using

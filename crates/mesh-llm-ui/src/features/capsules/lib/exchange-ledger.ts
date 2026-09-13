@@ -40,11 +40,15 @@ export type ExchangeLedgerRow = {
  *  uses in the other direction: a Pane B peer's own `pair.details`/
  *  `expand.pair_ledger` names the exchange_ids it reconciled. This inverts
  *  that lookup into exchange_id -> peer display id, reusing `peerExchangeIds`
- *  verbatim rather than re-deriving the join. */
+ *  verbatim rather than re-deriving the join. A Pane B row with no
+ *  counterparty identity (`peerDisplayId` returns `null`) contributes NO
+ *  entries -- its exchange_ids stay unindexed, which `buildExchangeLedgerRows`
+ *  below reads as `counterparty: null`, never a synthetic placeholder. */
 export function buildExchangeCounterpartyIndex(paneBRows: readonly PaneBRow[]): Map<string, string> {
   const index = new Map<string, string>()
   for (const row of paneBRows) {
     const displayId = peerDisplayId(row)
+    if (displayId === null) continue
     for (const exchangeId of peerExchangeIds(row)) {
       index.set(exchangeId, displayId)
     }

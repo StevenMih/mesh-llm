@@ -123,7 +123,11 @@ export function ExchangeStreamRow({
             {formatExchangeTimestamp(row.timestamp)}
           </time>
           <span>{roleText(row.roleTag)}</span>
-          {row.counterparty ? <span className="font-mono">{row.counterparty}</span> : null}
+          {row.counterparty ? (
+            <span className="font-mono">{row.counterparty}</span>
+          ) : (
+            <span>counterparty not recorded</span>
+          )}
           <span className="ml-auto">
             {/* L-A/L-B: only CONTRADICTED gets alarm styling; every OPEN
                state renders the same neutral 'muted' tone as CLOSED. */}

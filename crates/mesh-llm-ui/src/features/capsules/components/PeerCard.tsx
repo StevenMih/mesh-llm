@@ -50,7 +50,11 @@ export function PeerCard({
   const navigate = useNavigate()
   const [inspectorOpen, setInspectorOpen] = useState(false)
 
-  const displayId = peerDisplayId(row)
+  // PeerCard is only ever handed an attributed row (the Peers section
+  // filters unattributed rows out before mapping to cards) -- this fallback
+  // exists only so the component stays honest, never "null", if ever called
+  // directly with one.
+  const displayId = peerDisplayId(row) ?? 'counterparty not recorded'
   const counts = withYouCounts(row)
   const adjudication = adjudicationSummary(row)
   const alarm = alarmSignal(row, resolveTimestamp)
