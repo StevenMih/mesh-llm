@@ -36,9 +36,15 @@ function makeRow(kind: RightCellStateKind, overrides: Partial<ExchangeLedgerRow>
 
 const NO_RAIL: RailSegment = { hasRail: false, isSegmentStart: false }
 
+/** Every test needs these two now that the modal is gone -- named to make
+ *  call sites read like "row props", not boilerplate. */
+function toggleProps() {
+  return { onToggleChecks: vi.fn(), onToggleContent: vi.fn() }
+}
+
 describe('ExchangeStreamRow — L-A/L-B alarm styling', () => {
   it('L-B: CONTRADICTED renders the bad tone (alarm)', () => {
-    render(<ExchangeStreamRow onAction={vi.fn()} onActivate={vi.fn()} rail={NO_RAIL} row={makeRow('contradicted')} />)
+    render(<ExchangeStreamRow onAction={vi.fn()} {...toggleProps()} rail={NO_RAIL} row={makeRow('contradicted')} />)
     const badge = screen.getByText('CONTRADICTED')
     expect(badge.style.color).toBe('var(--color-bad-text)')
   })
@@ -52,7 +58,7 @@ describe('ExchangeStreamRow — L-A/L-B alarm styling', () => {
     ]
     for (const [kind, status] of openStatuses) {
       const { unmount } = render(
-        <ExchangeStreamRow onAction={vi.fn()} onActivate={vi.fn()} rail={NO_RAIL} row={makeRow(kind)} />
+        <ExchangeStreamRow onAction={vi.fn()} {...toggleProps()} rail={NO_RAIL} row={makeRow(kind)} />
       )
       const badge = screen.getByText(status)
       expect(badge.style.color).not.toBe('var(--color-bad-text)')
@@ -61,7 +67,7 @@ describe('ExchangeStreamRow — L-A/L-B alarm styling', () => {
   })
 
   it('L-A: CLOSED also renders the neutral tone, never bad', () => {
-    render(<ExchangeStreamRow onAction={vi.fn()} onActivate={vi.fn()} rail={NO_RAIL} row={makeRow('closed')} />)
+    render(<ExchangeStreamRow onAction={vi.fn()} {...toggleProps()} rail={NO_RAIL} row={makeRow('closed')} />)
     const badge = screen.getByText('CLOSED')
     expect(badge.style.color).not.toBe('var(--color-bad-text)')
   })
@@ -95,18 +101,18 @@ describe('ExchangeStreamRow — six states render distinct text/status/action', 
   for (const { kind, text, status, action } of cases) {
     it(`renders ${kind} correctly`, () => {
       const { unmount } = render(
-        <ExchangeStreamRow onAction={vi.fn()} onActivate={vi.fn()} rail={NO_RAIL} row={makeRow(kind)} />
+        <ExchangeStreamRow onAction={vi.fn()} {...toggleProps()} rail={NO_RAIL} row={makeRow(kind)} />
       )
       expect(screen.getByText(text)).toBeInTheDocument()
       expect(screen.getByText(status)).toBeInTheDocument()
-      // The row itself is `role="button"` (whole-row click opens the
-      // inspector), so a state with no in-cell action has exactly that one
-      // button; a state with an action has that plus the action button.
+      // [ledger-T4-inline-inspector] no whole-row click target and no modal
+      // left to open -- every row always carries the two `▸ content`/
+      // `▸ checks` toggle buttons, plus one more when an action exists.
       if (action) {
         expect(screen.getByRole('button', { name: action })).toBeInTheDocument()
-        expect(screen.getAllByRole('button')).toHaveLength(2)
+        expect(screen.getAllByRole('button')).toHaveLength(3)
       } else {
-        expect(screen.getAllByRole('button')).toHaveLength(1)
+        expect(screen.getAllByRole('button')).toHaveLength(2)
       }
       unmount()
     })
@@ -114,12 +120,12 @@ describe('ExchangeStreamRow — six states render distinct text/status/action', 
 
   it('LOAD-BEARING: not-asked and unanswered render visibly distinct text on the row', () => {
     const { unmount: unmountA } = render(
-      <ExchangeStreamRow onAction={vi.fn()} onActivate={vi.fn()} rail={NO_RAIL} row={makeRow('open_not_asked')} />
+      <ExchangeStreamRow onAction={vi.fn()} {...toggleProps()} rail={NO_RAIL} row={makeRow('open_not_asked')} />
     )
     const notAskedText = screen.getByText("You haven't asked for their half.").textContent
     unmountA()
     const { unmount: unmountB } = render(
-      <ExchangeStreamRow onAction={vi.fn()} onActivate={vi.fn()} rail={NO_RAIL} row={makeRow('open_asked')} />
+      <ExchangeStreamRow onAction={vi.fn()} {...toggleProps()} rail={NO_RAIL} row={makeRow('open_asked')} />
     )
     const unansweredText = screen.getByText(/No reply yet\.$/).textContent
     unmountB()
@@ -127,37 +133,34 @@ describe('ExchangeStreamRow — six states render distinct text/status/action', 
   })
 })
 
-describe('ExchangeStreamRow — [ledger-T1-ask-half-action] un-nesting + counterparty gating', () => {
-  it('the inspector control and the cell action are siblings, never nested', () => {
-    render(<ExchangeStreamRow onAction={vi.fn()} onActivate={vi.fn()} rail={NO_RAIL} row={makeRow('open_not_asked')} />)
-    const inspectorButton = screen.getByRole('button', { name: /Open exchange inspector/ })
-    const actionButton = screen.getByRole('button', { name: 'Ask them for their half' })
-    expect(inspectorButton.contains(actionButton)).toBe(false)
-    expect(actionButton.contains(inspectorButton)).toBe(false)
+describe('ExchangeStreamRow — [ledger-T2-counterparty-not-recorded] counterparty field', () => {
+  it('renders the node id when a counterparty is attributed', () => {
+    render(<ExchangeStreamRow onAction={vi.fn()} {...toggleProps()} rail={NO_RAIL} row={makeRow('closed')} />)
+    expect(screen.getByText('node:aa11bb22')).toBeInTheDocument()
+    expect(screen.queryByText('counterparty not recorded')).not.toBeInTheDocument()
   })
 
-  it('clicking the cell action calls onAction only; clicking the inspector control calls onActivate only', async () => {
-    const user = userEvent.setup()
-    const onAction = vi.fn()
-    const onActivate = vi.fn()
+  it('ADVERSARIAL: reads "counterparty not recorded" — never "unknown peer", never "peer identity not resolved yet" — when unattributed', () => {
     render(
-      <ExchangeStreamRow onAction={onAction} onActivate={onActivate} rail={NO_RAIL} row={makeRow('open_not_asked')} />
+      <ExchangeStreamRow
+        onAction={vi.fn()}
+        {...toggleProps()}
+        rail={NO_RAIL}
+        row={makeRow('closed', { counterparty: null })}
+      />
     )
-
-    await user.click(screen.getByRole('button', { name: 'Ask them for their half' }))
-    expect(onAction).toHaveBeenCalledTimes(1)
-    expect(onActivate).not.toHaveBeenCalled()
-
-    await user.click(screen.getByRole('button', { name: /Open exchange inspector/ }))
-    expect(onActivate).toHaveBeenCalledTimes(1)
-    expect(onAction).toHaveBeenCalledTimes(1)
+    expect(screen.getByText('counterparty not recorded')).toBeInTheDocument()
+    expect(screen.queryByText(/unknown peer/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/peer identity not resolved yet/i)).not.toBeInTheDocument()
   })
+})
 
+describe('ExchangeStreamRow — [ledger-T1-ask-half-action] counterparty gating (unaffected by the modal removal)', () => {
   it('no recorded counterparty on an open_not_asked row: gated text, no ask button', () => {
     render(
       <ExchangeStreamRow
         onAction={vi.fn()}
-        onActivate={vi.fn()}
+        {...toggleProps()}
         rail={NO_RAIL}
         row={makeRow('open_not_asked', { counterparty: null })}
       />
@@ -165,15 +168,16 @@ describe('ExchangeStreamRow — [ledger-T1-ask-half-action] un-nesting + counter
     expect(screen.getByText('Counterparty not recorded — nothing to ask yet.')).toBeInTheDocument()
     expect(screen.queryByText("You haven't asked for their half.")).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Ask them for their half' })).not.toBeInTheDocument()
-    // The inspector control still renders -- only the ask action is gated.
-    expect(screen.getByRole('button', { name: /Open exchange inspector/ })).toBeInTheDocument()
+    // The two disclosure toggles still render -- only the ask action is gated.
+    expect(screen.getByRole('button', { name: '▸ content' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '▸ checks' })).toBeInTheDocument()
   })
 
   it('no recorded counterparty on an open_asked row: gated text, no "Ask again" button', () => {
     render(
       <ExchangeStreamRow
         onAction={vi.fn()}
-        onActivate={vi.fn()}
+        {...toggleProps()}
         rail={NO_RAIL}
         row={makeRow('open_asked', { counterparty: null })}
       />
@@ -186,7 +190,7 @@ describe('ExchangeStreamRow — [ledger-T1-ask-half-action] un-nesting + counter
     render(
       <ExchangeStreamRow
         onAction={vi.fn()}
-        onActivate={vi.fn()}
+        {...toggleProps()}
         rail={NO_RAIL}
         row={makeRow('open_refused', { counterparty: null })}
       />
@@ -196,47 +200,115 @@ describe('ExchangeStreamRow — [ledger-T1-ask-half-action] un-nesting + counter
   })
 })
 
-describe('ExchangeStreamRow — [ledger-T2-counterparty-not-recorded] counterparty field', () => {
-  it('renders the node id when a counterparty is attributed', () => {
-    render(<ExchangeStreamRow onAction={vi.fn()} onActivate={vi.fn()} rail={NO_RAIL} row={makeRow('closed')} />)
-    expect(screen.getByText('node:aa11bb22')).toBeInTheDocument()
-    expect(screen.queryByText('counterparty not recorded')).not.toBeInTheDocument()
+describe('[ledger-T4-inline-inspector] ExchangeStreamRow — the two row toggles replace the modal', () => {
+  it('never renders a dialog/alertdialog, in any state, expanded or not', () => {
+    for (const checksExpanded of [false, true]) {
+      for (const contentExpanded of [false, true]) {
+        const { unmount } = render(
+          <ExchangeStreamRow
+            checksExpanded={checksExpanded}
+            contentExpanded={contentExpanded}
+            onAction={vi.fn()}
+            {...toggleProps()}
+            rail={NO_RAIL}
+            row={makeRow('closed')}
+          />
+        )
+        expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+        expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
+        unmount()
+      }
+    }
   })
 
-  it('ADVERSARIAL: reads "counterparty not recorded" — never "unknown peer", never "peer identity not resolved yet" — when unattributed', () => {
+  it('renders both toggles collapsed by default, independent of each other', () => {
+    render(<ExchangeStreamRow onAction={vi.fn()} {...toggleProps()} rail={NO_RAIL} row={makeRow('closed')} />)
+    const contentToggle = screen.getByRole('button', { name: '▸ content' })
+    const checksToggle = screen.getByRole('button', { name: '▸ checks' })
+    expect(contentToggle).toHaveAttribute('aria-expanded', 'false')
+    expect(checksToggle).toHaveAttribute('aria-expanded', 'false')
+  })
+
+  it('flips its own label and aria-expanded when its prop is true, independent of the other toggle', () => {
+    render(
+      <ExchangeStreamRow checksExpanded onAction={vi.fn()} {...toggleProps()} rail={NO_RAIL} row={makeRow('closed')} />
+    )
+    expect(screen.getByRole('button', { name: '▾ checks' })).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByRole('button', { name: '▸ content' })).toHaveAttribute('aria-expanded', 'false')
+  })
+
+  it('clicking `▸ content` calls onToggleContent with this row only; clicking `▸ checks` calls onToggleChecks only', async () => {
+    const user = userEvent.setup()
+    const onToggleContent = vi.fn()
+    const onToggleChecks = vi.fn()
+    const row = makeRow('closed')
     render(
       <ExchangeStreamRow
         onAction={vi.fn()}
-        onActivate={vi.fn()}
+        onToggleChecks={onToggleChecks}
+        onToggleContent={onToggleContent}
         rail={NO_RAIL}
-        row={makeRow('closed', { counterparty: null })}
+        row={row}
       />
     )
-    expect(screen.getByText('counterparty not recorded')).toBeInTheDocument()
-    expect(screen.queryByText(/unknown peer/i)).not.toBeInTheDocument()
-    expect(screen.queryByText(/peer identity not resolved yet/i)).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: '▸ content' }))
+    expect(onToggleContent).toHaveBeenCalledWith(row)
+    expect(onToggleChecks).not.toHaveBeenCalled()
+
+    await user.click(screen.getByRole('button', { name: '▸ checks' }))
+    expect(onToggleChecks).toHaveBeenCalledWith(row)
+    expect(onToggleContent).toHaveBeenCalledTimes(1)
+  })
+
+  it('the ask/compare action cell button and the two toggles are independent siblings, never nested', () => {
+    render(<ExchangeStreamRow onAction={vi.fn()} {...toggleProps()} rail={NO_RAIL} row={makeRow('open_not_asked')} />)
+    const actionButton = screen.getByRole('button', { name: 'Ask them for their half' })
+    const contentToggle = screen.getByRole('button', { name: '▸ content' })
+    const checksToggle = screen.getByRole('button', { name: '▸ checks' })
+    expect(actionButton.contains(contentToggle)).toBe(false)
+    expect(contentToggle.contains(actionButton)).toBe(false)
+    expect(actionButton.contains(checksToggle)).toBe(false)
+  })
+
+  it('clicking the ask/compare action never fires either toggle callback', async () => {
+    const user = userEvent.setup()
+    const onToggleContent = vi.fn()
+    const onToggleChecks = vi.fn()
+    render(
+      <ExchangeStreamRow
+        onAction={vi.fn()}
+        onToggleChecks={onToggleChecks}
+        onToggleContent={onToggleContent}
+        rail={NO_RAIL}
+        row={makeRow('open_not_asked')}
+      />
+    )
+    await user.click(screen.getByRole('button', { name: 'Ask them for their half' }))
+    expect(onToggleContent).not.toHaveBeenCalled()
+    expect(onToggleChecks).not.toHaveBeenCalled()
   })
 })
 
 describe('ExchangeStreamRow — [mesh-ledger-b3-paging] focus/highlight/checks toggle', () => {
   it('renders at a stable, addressable DOM id derived from the exchange key', () => {
     const row = makeRow('closed')
-    const { container } = render(<ExchangeStreamRow onAction={vi.fn()} onActivate={vi.fn()} rail={NO_RAIL} row={row} />)
+    const { container } = render(<ExchangeStreamRow onAction={vi.fn()} {...toggleProps()} rail={NO_RAIL} row={row} />)
     expect(container.querySelector(`#${exchangeRowDomId(row.exchangeKey)}`)).toBeInTheDocument()
   })
 
   it('marks the deep-link target row with aria-current and a data-highlighted flag', () => {
     render(
-      <ExchangeStreamRow highlighted onAction={vi.fn()} onActivate={vi.fn()} rail={NO_RAIL} row={makeRow('closed')} />
+      <ExchangeStreamRow highlighted onAction={vi.fn()} {...toggleProps()} rail={NO_RAIL} row={makeRow('closed')} />
     )
-    const rowEl = screen.getByRole('button', { name: /Open exchange inspector/ })
+    const rowEl = screen.getByLabelText(`Exchange ${makeRow('closed').exchangeKey}`)
     expect(rowEl).toHaveAttribute('aria-current', 'true')
     expect(rowEl).toHaveAttribute('data-highlighted', 'true')
   })
 
   it('a non-highlighted, non-focused row carries neither flag', () => {
-    render(<ExchangeStreamRow onAction={vi.fn()} onActivate={vi.fn()} rail={NO_RAIL} row={makeRow('closed')} />)
-    const rowEl = screen.getByRole('button', { name: /Open exchange inspector/ })
+    render(<ExchangeStreamRow onAction={vi.fn()} {...toggleProps()} rail={NO_RAIL} row={makeRow('closed')} />)
+    const rowEl = screen.getByLabelText(`Exchange ${makeRow('closed').exchangeKey}`)
     expect(rowEl).not.toHaveAttribute('aria-current')
     expect(rowEl).not.toHaveAttribute('data-highlighted')
     expect(rowEl).not.toHaveAttribute('data-focused')
@@ -244,9 +316,9 @@ describe('ExchangeStreamRow — [mesh-ledger-b3-paging] focus/highlight/checks t
 
   it('the `c` toggle reveals the security view inline, hidden by default [mesh-ledger-b5-security-view]', () => {
     const row = makeRow('closed')
-    const { rerender } = render(<ExchangeStreamRow onAction={vi.fn()} onActivate={vi.fn()} rail={NO_RAIL} row={row} />)
+    const { rerender } = render(<ExchangeStreamRow onAction={vi.fn()} {...toggleProps()} rail={NO_RAIL} row={row} />)
     expect(screen.queryByRole('region', { name: /Security checks/ })).not.toBeInTheDocument()
-    rerender(<ExchangeStreamRow checksExpanded onAction={vi.fn()} onActivate={vi.fn()} rail={NO_RAIL} row={row} />)
+    rerender(<ExchangeStreamRow checksExpanded onAction={vi.fn()} {...toggleProps()} rail={NO_RAIL} row={row} />)
     expect(screen.getByRole('region', { name: /Security checks/ })).toBeInTheDocument()
     // Never a modal (v3 §4) -- the toggle stays inline under the row.
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
@@ -258,7 +330,7 @@ describe('ExchangeStreamRow — L-O served rows carry no rail and a distinct mar
     render(
       <ExchangeStreamRow
         onAction={vi.fn()}
-        onActivate={vi.fn()}
+        {...toggleProps()}
         rail={{ hasRail: true, isSegmentStart: true }}
         row={makeRow('open_not_asked', { roleTag: 'SERVED' })}
       />
@@ -268,7 +340,7 @@ describe('ExchangeStreamRow — L-O served rows carry no rail and a distinct mar
   })
 
   it('renders the asked marker (●) and "you asked" for an asked row', () => {
-    render(<ExchangeStreamRow onAction={vi.fn()} onActivate={vi.fn()} rail={NO_RAIL} row={makeRow('closed')} />)
+    render(<ExchangeStreamRow onAction={vi.fn()} {...toggleProps()} rail={NO_RAIL} row={makeRow('closed')} />)
     expect(screen.getByText('●')).toBeInTheDocument()
     expect(screen.getByText('you asked')).toBeInTheDocument()
   })
@@ -282,9 +354,9 @@ describe('ExchangeStreamRow — [mesh-ledger-b4-toggle-content] toggle ① conte
         theirs: { state: 'present', capsule_id: 'theirs-1' }
       } as PaneCRow
     })
-    const { rerender } = render(<ExchangeStreamRow onAction={vi.fn()} onActivate={vi.fn()} rail={NO_RAIL} row={row} />)
+    const { rerender } = render(<ExchangeStreamRow onAction={vi.fn()} {...toggleProps()} rail={NO_RAIL} row={row} />)
     expect(screen.queryByText(/Summarise this thread/)).not.toBeInTheDocument()
-    rerender(<ExchangeStreamRow contentExpanded onAction={vi.fn()} onActivate={vi.fn()} rail={NO_RAIL} row={row} />)
+    rerender(<ExchangeStreamRow contentExpanded onAction={vi.fn()} {...toggleProps()} rail={NO_RAIL} row={row} />)
     expect(screen.getByText(/Summarise this thread/)).toBeInTheDocument()
   })
 
@@ -310,7 +382,7 @@ describe('ExchangeStreamRow — [mesh-ledger-b4-toggle-content] toggle ① conte
         }
       } as PaneCRow
     })
-    render(<ExchangeStreamRow contentExpanded onAction={vi.fn()} onActivate={vi.fn()} rail={NO_RAIL} row={row} />)
+    render(<ExchangeStreamRow contentExpanded onAction={vi.fn()} {...toggleProps()} rail={NO_RAIL} row={row} />)
     expect(screen.getByText(/You asked/)).toBeInTheDocument()
     expect(screen.getByText(/Summarise this thread/)).toBeInTheDocument()
     expect(screen.getByText(/They streamed back/)).toBeInTheDocument()
@@ -326,7 +398,7 @@ describe('ExchangeStreamRow — [mesh-ledger-b4-toggle-content] toggle ① conte
         their: { kind: 'not_visible_holds', date: null }
       }
     })
-    render(<ExchangeStreamRow contentExpanded onAction={vi.fn()} onActivate={vi.fn()} rail={NO_RAIL} row={row} />)
+    render(<ExchangeStreamRow contentExpanded onAction={vi.fn()} {...toggleProps()} rail={NO_RAIL} row={row} />)
     expect(screen.getByText('No content. You streamed this response and did not retain it.')).toBeInTheDocument()
     expect(screen.getByText('Their content — not visible to you. The requester holds it.')).toBeInTheDocument()
   })
@@ -339,7 +411,7 @@ describe('ExchangeStreamRow — [mesh-ledger-b4-toggle-content] toggle ① conte
         their: { kind: 'not_asked', date: null }
       }
     })
-    render(<ExchangeStreamRow contentExpanded onAction={vi.fn()} onActivate={vi.fn()} rail={NO_RAIL} row={row} />)
+    render(<ExchangeStreamRow contentExpanded onAction={vi.fn()} {...toggleProps()} rail={NO_RAIL} row={row} />)
     expect(screen.getByText('Content deleted 5 Sep · record still verifies')).toBeInTheDocument()
   })
 
@@ -369,7 +441,7 @@ describe('ExchangeStreamRow — [mesh-ledger-b4-toggle-content] toggle ① conte
         <ExchangeStreamRow
           contentExpanded
           onAction={vi.fn()}
-          onActivate={vi.fn()}
+          {...toggleProps()}
           rail={NO_RAIL}
           row={makeRow('closed', { contentToggleState })}
         />
@@ -384,7 +456,7 @@ describe('ExchangeStreamRow — [mesh-ledger-b4-toggle-content] toggle ① conte
     const row = makeRow('closed', {
       contentToggleState: { your: { kind: 'populated', date: null }, their: { kind: 'not_asked', date: null } }
     })
-    render(<ExchangeStreamRow contentExpanded onAction={onAction} onActivate={vi.fn()} rail={NO_RAIL} row={row} />)
+    render(<ExchangeStreamRow contentExpanded onAction={onAction} {...toggleProps()} rail={NO_RAIL} row={row} />)
     screen.getByRole('button', { name: 'Ask them to state it' }).click()
     expect(onAction).toHaveBeenCalledWith(row)
   })
@@ -398,7 +470,7 @@ describe('ExchangeStreamRow — [mesh-ledger-b4-toggle-content] toggle ① conte
       }
     })
     const { unmount } = render(
-      <ExchangeStreamRow contentExpanded onAction={vi.fn()} onActivate={vi.fn()} rail={NO_RAIL} row={servedRow} />
+      <ExchangeStreamRow contentExpanded onAction={vi.fn()} {...toggleProps()} rail={NO_RAIL} row={servedRow} />
     )
     const yourVoice = screen.getByText(/No content\. You streamed/).textContent
     unmount()
@@ -410,7 +482,7 @@ describe('ExchangeStreamRow — [mesh-ledger-b4-toggle-content] toggle ① conte
         their: { kind: 'recorded_absence', date: '4 Sep' }
       }
     })
-    render(<ExchangeStreamRow contentExpanded onAction={vi.fn()} onActivate={vi.fn()} rail={NO_RAIL} row={askedRow} />)
+    render(<ExchangeStreamRow contentExpanded onAction={vi.fn()} {...toggleProps()} rail={NO_RAIL} row={askedRow} />)
     const theirVoice = screen.getByText(/They state they hold no payload/).textContent
 
     expect(yourVoice).not.toBe(theirVoice)

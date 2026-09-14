@@ -19,6 +19,7 @@ import type { PaneCRow } from '@/features/capsules/api/sidecarTypes'
 import type { RecomputedIdentity } from '@/features/capsules/lib/recompute-identity'
 import { NINE_PROPERTY_LABELS, PROPERTY_GROUP, RECOMPUTED_PROPERTIES } from '@/features/capsules/lib/nine-properties'
 import { labelForState } from '@/features/capsules/lib/assurance-tone'
+import { deriveRightCellState } from '@/features/capsules/lib/exchange-row-state'
 
 function boolToWireState(value: boolean | null): string {
   return value === null ? 'NOT_CHECKED' : value ? 'PASS' : 'FAIL'
@@ -95,23 +96,47 @@ export function buildHeaderRows(row: PaneCRow, localRecord: CapsuleRecord | null
 
 // ---------------------------------------------------------------------------
 // WHAT IT COMMITS TO -- the digest-shaped facts a record actually names.
-// Theirs is always absent here (L-G): even on a closed row, this page holds
-// no independent copy of their digests, only their citation of ours (which
-// the row's own right-cell state already says in words).
+//
+// [ledger-T4-inline-inspector] v3 §4: "every ✓ same is a corroboration you
+// can see... on an open row, the right column of this block is simply
+// absent." This page still holds no independent copy of their bytes (L-G) --
+// but a CLOSED row's own right-cell state already means "their record cites
+// your half by digest, and it matches," so mirroring the value with `✓ same`
+// restates a fact this page already knows, never a new one. A CONTRADICTED
+// row is known to disagree (`outcome_corroboration` FAIL) but this page has
+// no independent value to show, so it names the disagreement without
+// inventing one. An OPEN row (`theirs.state === 'absent'`) has no citation to
+// compare against at all -- the column is absent, same rule `theirsHeld`
+// applies everywhere else in this file.
 // ---------------------------------------------------------------------------
 
-export type CommitsToRow = { label: string; yours: string }
+export type CommitsToCell = { value: string; note: string }
+export type CommitsToRow = { label: string; yours: string; theirs: CommitsToCell | null }
 
 export function buildCommitsToRows(row: PaneCRow, localRecord: CapsuleRecord | null): CommitsToRow[] {
   const effect = (localRecord?.effect ?? null) as { request_digest?: string; response_digest?: string } | null
   const taskBindingCell = row.properties?.task_binding ?? null
   const modelId = localRecord?.model_attestation?.model_id ?? null
+  const rightCell = deriveRightCellState(row)
+
+  function theirsFor(yoursValue: string): CommitsToCell | null {
+    if (rightCell.kind === 'closed') return { value: yoursValue, note: '✓ same' }
+    if (rightCell.kind === 'contradicted') return { value: '—', note: '✕ differs' }
+    return null
+  }
+
+  const requestDigest = effect?.request_digest ?? 'unavailable'
+  const responseDigest = effect?.response_digest ?? 'unavailable'
+  const taskBinding = taskBindingCell?.text ?? 'from the record'
+  const modelIdentity = modelId ?? 'unavailable'
+  const servedBy = row.role_tag === 'SERVED' ? 'this node' : 'counterparty'
+
   return [
-    { label: 'request digest', yours: effect?.request_digest ?? 'unavailable' },
-    { label: 'response digest', yours: effect?.response_digest ?? 'unavailable' },
-    { label: 'task binding', yours: taskBindingCell?.text ?? 'from the record' },
-    { label: 'model identity', yours: modelId ?? 'unavailable' },
-    { label: 'served by', yours: row.role_tag === 'SERVED' ? 'this node' : 'counterparty' }
+    { label: 'request digest', yours: requestDigest, theirs: theirsFor(requestDigest) },
+    { label: 'response digest', yours: responseDigest, theirs: theirsFor(responseDigest) },
+    { label: 'task binding', yours: taskBinding, theirs: theirsFor(taskBinding) },
+    { label: 'model identity', yours: modelIdentity, theirs: theirsFor(modelIdentity) },
+    { label: 'served by', yours: servedBy, theirs: theirsFor(servedBy) }
   ]
 }
 
