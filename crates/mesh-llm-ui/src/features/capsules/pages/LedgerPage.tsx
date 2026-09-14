@@ -44,7 +44,21 @@ import {
   windowBannerHeadline
 } from '@/features/capsules/lib/exchange-pages'
 import { LEDGER_STATE_FILTER_VALUES, ledgerStateFilterValue } from '@/features/capsules/lib/exchange-row-state'
-import { exchangeEvidenceBundle, exchangeRowsToCsv, saveTextFile } from '@/features/capsules/lib/exchange-export'
+import {
+  exchangeEvidenceBundle,
+  exchangeRowsToCsv,
+  integrityEvidenceBundle,
+  saveTextFile
+} from '@/features/capsules/lib/exchange-export'
+import {
+  buildRegistrationCopy,
+  buildSetupSteps,
+  CAPTURE_BOUNDARY_FACT,
+  CONTINUITY_NOT_ESTABLISHED,
+  identityFact,
+  RETENTION_FACT,
+  type SetupStep
+} from '@/features/capsules/lib/integrity-view'
 import { HARNESS_PANE_A_PAYLOAD, HARNESS_PANE_C_PAYLOAD } from '@/features/capsules/lib/exchange-fixtures'
 import {
   HARNESS_PANE_B_PAYLOAD,
@@ -61,6 +75,7 @@ import {
   sortPeerRows,
   unattributedExchangesLine
 } from '@/features/capsules/lib/peer-row-view'
+import { useStatusQuery } from '@/features/network/api/use-status-query'
 import { useDataMode } from '@/lib/data-mode'
 
 // ---------------------------------------------------------------------------
@@ -827,6 +842,26 @@ function IntegrityStatCard({ label, value, tone = 'default' }: IntegrityStatCard
   )
 }
 
+/** The setup checklist ([ledger-T6-integrity-completion], ledger-ux-from-
+ *  the-user §6) -- three steps in value order, replacing the incoherent
+ *  "registered with 0 witnesses" line a new node used to show. Each step
+ *  states what it buys and what it does not; once done, the explanatory
+ *  sentence drops and only the status word remains. */
+function SetupChecklist({ steps }: { steps: readonly SetupStep[] }) {
+  return (
+    <div className="flex flex-col gap-3 rounded border border-border-soft bg-panel-strong/40 p-3">
+      {steps.map((step, index) => (
+        <div className="flex flex-col gap-0.5" key={step.key}>
+          <p className="type-caption font-mono text-fg-faint">
+            {index + 1} · {step.title} — <span className="font-medium text-foreground">{step.status}</span>
+          </p>
+          {step.body ? <p className="type-caption text-fg-dim">{step.body}</p> : null}
+        </div>
+      ))}
+    </div>
+  )
+}
+
 function IntegritySection() {
   const { mode } = useDataMode()
   const harnessMode = mode === 'harness'
@@ -845,6 +880,10 @@ function IntegritySection() {
     refetchInterval: 15_000,
     retry: false
   })
+  // Owner identity is real, live data -- already wired for the Network
+  // dashboard (`NodeSidebar.tsx`) -- not part of the still-unwired pane-a
+  // `card`. Disabled in harness mode, same gating as `usePeerMeshStatusIndex`.
+  const statusQuery = useStatusQuery({ enabled: !harnessMode })
 
   if (query.isLoading) return <p className="text-sm text-muted-foreground">Loading…</p>
   if (query.isError) {
@@ -854,6 +893,7 @@ function IntegritySection() {
   const card = query.data?.card
   const rows = query.data?.rows ?? []
   const paneCRows = paneCQuery.data?.rows ?? []
+  const owner = statusQuery.data?.owner ?? null
 
   // Extract from the card if present
   const checkpointCount = typeof card?.checkpoint_count === 'number' ? card.checkpoint_count : null
@@ -869,16 +909,38 @@ function IntegritySection() {
   const closedByOtherSideCount = paneCRows.filter((row) => row.theirs.state !== 'absent' && !row.unilateral).length
   const contradictedCount = paneCRows.filter((row) => row.properties?.outcome_corroboration?.state === 'FAIL').length
 
+  const setupSteps = buildSetupSteps(card ?? null, owner)
+  const registrationCopy = buildRegistrationCopy(card ?? null)
+
   return (
     <Card>
-      <CardHeader>
-        <CardTitle className="text-sm">Chain integrity</CardTitle>
-        {/* L4.2 — owner-added-later notice */}
-        {ownerAddedAt && ownerCardIndex !== null ? (
-          <p className="text-xs text-fg-dim mt-1">
-            Owner bound from {ownerAddedAt} (card #{ownerCardIndex}); earlier records are unowned.
-          </p>
-        ) : null}
+      <CardHeader className="flex-row items-start justify-between gap-2">
+        <div>
+          <CardTitle className="text-sm">Chain integrity</CardTitle>
+          {/* L4.2 — owner-added-later notice */}
+          {ownerAddedAt && ownerCardIndex !== null ? (
+            <p className="text-xs text-fg-dim mt-1">
+              Owner bound from {ownerAddedAt} (card #{ownerCardIndex}); earlier records are unowned.
+            </p>
+          ) : null}
+        </div>
+        {/* ledger-ux-from-the-user §7 — the one hand-over affordance, on
+           every range, same as the Exchanges table's own evidence export. */}
+        <Button
+          className="ui-control h-8 shrink-0 gap-1.5 rounded-[var(--radius)] px-2.5 text-[length:var(--density-type-caption)]"
+          onClick={() =>
+            saveTextFile(
+              'mesh-integrity-evidence.json',
+              integrityEvidenceBundle(rows, card ?? null),
+              'application/json'
+            )
+          }
+          size="sm"
+          type="button"
+          variant="outline"
+        >
+          Save evidence file
+        </Button>
       </CardHeader>
       <CardContent className="flex flex-col gap-4 pt-0 text-sm text-fg-dim">
         <ChainStrip checkpointCount={checkpointCount} sealedCount={sealedCount} />
@@ -888,11 +950,34 @@ function IntegritySection() {
           <IntegrityStatCard label="Closed by the other side" value={closedByOtherSideCount} />
           <IntegrityStatCard label="Contradicted" tone="bad" value={contradictedCount} />
         </div>
+
+        <SetupChecklist steps={setupSteps} />
+
+        {registrationCopy ? (
+          <div className="flex flex-col gap-0.5">
+            <p>{registrationCopy.witnessSummary}</p>
+            {registrationCopy.registeredNoLaterThan ? (
+              <p className="type-caption text-fg-faint">{registrationCopy.registeredNoLaterThan}</p>
+            ) : null}
+          </div>
+        ) : null}
+
         {continuity ? (
           <p>
             Continuity: <span className="font-medium text-foreground">{continuity}</span>
           </p>
-        ) : null}
+        ) : (
+          <p>{CONTINUITY_NOT_ESTABLISHED}</p>
+        )}
+
+        {/* Once-per-node facts -- stated once here, never repeated per
+           exchange row (rows link back instead, see `security-checks-
+           view.ts`'s `local_inclusion` detail). */}
+        <div className="flex flex-col gap-1 border-t border-border-soft pt-3">
+          <p>{RETENTION_FACT}</p>
+          <p>{CAPTURE_BOUNDARY_FACT}</p>
+          <p>{identityFact(owner)}</p>
+        </div>
       </CardContent>
     </Card>
   )

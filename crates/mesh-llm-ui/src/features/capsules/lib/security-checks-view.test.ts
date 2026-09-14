@@ -100,7 +100,7 @@ describe('buildChecksRows — checkpoint-dependent properties resolve NOT_PRESEN
     const rows = buildChecksRows(paneCRow({ properties: null }), NOT_RECOMPUTED)
     const byKey = Object.fromEntries(rows.map((r) => [r.key, r]))
     expect(byKey.local_inclusion.yours?.label).toBe('not present')
-    expect(byKey.local_inclusion.yours?.detail).toBe('no checkpoint covers this record')
+    expect(byKey.local_inclusion.yours?.detail).toBe('Range facts: no checkpoint covers this record — see Integrity.')
     expect(byKey.checkpoint_signature.yours?.label).toBe('not present')
     expect(byKey.continuity.yours?.label).toBe('not present')
   })
