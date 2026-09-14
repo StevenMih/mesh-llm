@@ -112,8 +112,10 @@ describe('SecurityChecksView — L-L: every check row names its inputs and polic
   it('never renders a bare state word with nothing beside it', () => {
     render(<SecurityChecksView identity={RECOMPUTED_MATCH} localRecord={null} row={ledgerRow(paneCRow())} />)
     expect(screen.getAllByText('recomputed in browser').length).toBeGreaterThan(0)
+    expect(screen.getByText('Range facts: no checkpoint covers this record — see Integrity.')).toBeInTheDocument()
     expect(screen.getAllByText('no checkpoint covers this record').length).toBeGreaterThan(0)
     expect(screen.getByText('no receipt covers this record')).toBeInTheDocument()
+    expect(screen.getByText('no key bound')).toBeInTheDocument()
   })
 })
 
@@ -121,7 +123,9 @@ describe('SecurityChecksView — L-M: recomputed-here vs from-sidecar are visual
   it('content_binding/producer_signature carry a different class + data-source than a sidecar property', () => {
     render(<SecurityChecksView identity={RECOMPUTED_MATCH} localRecord={null} row={ledgerRow(paneCRow())} />)
     const recomputedCell = screen.getAllByText('recomputed in browser')[0].closest('[data-source]')
-    const sidecarCell = screen.getAllByText('no checkpoint covers this record')[0].closest('[data-source]')
+    const sidecarCell = screen
+      .getByText('Range facts: no checkpoint covers this record — see Integrity.')
+      .closest('[data-source]')
     expect(recomputedCell).not.toBeNull()
     expect(sidecarCell).not.toBeNull()
     expect(recomputedCell?.getAttribute('data-source')).toBe('recomputed-in-browser')
