@@ -11,13 +11,20 @@ import { adaptModelsToSummary } from '@/features/network/api/models-adapter'
 import { adaptStatusToDashboard } from '@/features/network/api/status-adapter'
 import { useModelsQuery } from '@/features/network/api/use-models-query'
 import { useStatusQuery } from '@/features/network/api/use-status-query'
+import { LatencySource } from '@/lib/api/types'
 import type { ModelSummary, Peer } from '@/features/app-tabs/types'
+import type { PaneBRow } from '@/features/capsules/api/sidecarTypes'
+import { peerDisplayId } from '@/features/capsules/lib/peer-row-view'
 
 export type PeerMeshStatus = {
   modelName: string | null
   quant: string | null
   contextLengthK: number | null
   latencyMs: number | null
+  /** chooser-v2 §3: "latency with provenance" -- DIRECT means this node
+   *  measured it itself, ESTIMATED means the figure was reported by
+   *  another node/gossip. Never rendered as a bare number without this. */
+  latencySource: LatencySource | null
   online: boolean
 }
 
@@ -56,11 +63,28 @@ export function deriveMeshStatus(
     quant: model?.quant ?? null,
     contextLengthK: model?.ctxMaxK ?? null,
     latencyMs: peer.latencyMs,
+    latencySource: peer.latencySource ?? null,
     online: peer.status === 'online'
   }
 }
 
-export type PeerMeshStatusIndex = { statusFor: (peerId: string) => PeerMeshStatus | null }
+/** T7 §3-F -- the Peers table's second row group ("advertised but unused")
+ *  is every mesh-known peer that Pane B carries no row for at all, i.e. no
+ *  exchange has ever happened. Reuses `findMeshPeer`'s own best-effort
+ *  matching (the same logic `deriveMeshStatus` already applies per row) so
+ *  the group split can never disagree with what a row's own mesh-status
+ *  lookup found. */
+export function advertisedOnlyPeers(paneBRows: readonly PaneBRow[], peers: readonly Peer[]): Peer[] {
+  const dealtWithMeshIds = new Set(
+    paneBRows.map((row) => findMeshPeer(peerDisplayId(row) ?? '', peers)?.id).filter((id): id is string => Boolean(id))
+  )
+  return peers.filter((peer) => !dealtWithMeshIds.has(peer.id))
+}
+
+export type PeerMeshStatusIndex = {
+  statusFor: (peerId: string) => PeerMeshStatus | null
+  peers: readonly Peer[]
+}
 
 /** Live mode: reuses the same `useStatusQuery`/`useModelsQuery` +
  *  adapters the Network Dashboard already calls -- no new endpoint, no
@@ -97,7 +121,8 @@ export function usePeerMeshStatusIndex(
       statusFor(peerId: string) {
         if (!cache.has(peerId)) cache.set(peerId, deriveMeshStatus(peerId, peers, models))
         return cache.get(peerId) ?? null
-      }
+      },
+      peers
     }
   }, [peers, models])
 }
