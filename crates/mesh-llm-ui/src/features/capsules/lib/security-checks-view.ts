@@ -186,6 +186,10 @@ function yoursDetailFor(key: string, state: string, text: string | undefined, ac
   if (actuallyRecomputed) return 'recomputed in browser'
   if (RECOMPUTED_PROPERTIES.has(key)) return 'not yet recomputed in browser'
   if (state === 'NOT_PRESENT') {
+    // [ledger-T6-integrity-completion]: once-per-node checkpoint/registration
+    // facts live on the Integrity section, never repeated per row -- this
+    // row links back with one line instead of duplicating them.
+    if (key === 'local_inclusion') return 'Range facts: no checkpoint covers this record — see Integrity.'
     if (CHECKPOINT_DEPENDENT.has(key)) return 'no checkpoint covers this record'
     if (key === 'external_registration') return 'no receipt covers this record'
   }

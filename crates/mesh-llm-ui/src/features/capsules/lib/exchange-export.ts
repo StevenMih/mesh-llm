@@ -5,7 +5,7 @@
 // Checks column only names, never a spreadsheet-shaped summary of the same
 // facts). Never collapsed into one action -- the two have different
 // semantics and different consumers.
-import type { PaneCRow } from '@/features/capsules/api/sidecarTypes'
+import type { PaneAJson, PaneCRow } from '@/features/capsules/api/sidecarTypes'
 import type { ExchangeLedgerRow } from '@/features/capsules/lib/exchange-ledger'
 
 const CSV_COLUMNS = ['Time', 'Exchange ID', 'Counterparty', 'Your role', 'Confirmed', 'Checks'] as const
@@ -38,6 +38,20 @@ export function exchangeRowsToCsv(rows: readonly ExchangeLedgerRow[]): string {
  *  nine-property detail included), not a re-shaping of the table. */
 export function exchangeEvidenceBundle(rows: readonly PaneCRow[]): string {
   return `${JSON.stringify({ schema: 'mesh-ledger-exchanges-evidence/1', exchanges: rows }, null, 2)}\n`
+}
+
+/** Integrity's own "Save evidence file" ([ledger-T6-integrity-completion],
+ *  ledger-ux-from-the-user §7) -- covers the RANGE, not one exchange: this
+ *  node's sealed chain plus the pane-a card facts (checkpoint/witnesses/
+ *  continuity/owner) that back the registration copy and once-per-node
+ *  facts rendered on the Integrity section. Distinct schema from the
+ *  Exchanges evidence bundle above -- different shape, different claim. */
+export function integrityEvidenceBundle(sealedRows: PaneAJson['rows'], card: PaneAJson['card']): string {
+  return `${JSON.stringify(
+    { schema: 'mesh-ledger-integrity-evidence/1', sealed: sealedRows, card: card ?? null },
+    null,
+    2
+  )}\n`
 }
 
 export function saveTextFile(fileName: string, content: string, mediaType: string): boolean {

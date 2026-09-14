@@ -46,6 +46,13 @@ vi.mock('@/features/capsules/api/client', () => ({
   fetchCapsuleLedger: vi.fn().mockResolvedValue({ records: [], nodePubKeyPem: null })
 }))
 
+// Owner identity is live `/api/status` data ([ledger-T6-integrity-
+// completion]) -- defaults to no owner (a bare node), overridden per-test
+// with `vi.mocked(useStatusQuery).mockReturnValue(...)`.
+vi.mock('@/features/network/api/use-status-query', () => ({
+  useStatusQuery: vi.fn(() => ({ data: undefined }))
+}))
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -618,6 +625,155 @@ describe('LedgerPageContent — Part B1: Integrity chain strip', () => {
     expect(bodyText).not.toMatch(/history is intact and registered with/i)
     expect(bodyText).not.toMatch(/no integrity fields available/i)
     expect(bodyText).not.toMatch(/no integrity data available/i)
+  })
+})
+
+// A minimally-valid `StatusPayload` ([status-adapter.test.ts]'s own
+// `PUBLIC_STATUS_PAYLOAD` shape) -- `useStatusQuery` is one shared mock for
+// the whole render tree (Peers' `usePeerMeshStatusIndex` calls it too), so
+// overriding its return value needs enough fields that `adaptStatusToDashboard`
+// doesn't crash on an absent `serving_models`, not just the `owner` field
+// this test cares about.
+const BOUND_OWNER_STATUS_PAYLOAD = {
+  node_id: 'node-t6-test',
+  node_state: 'standby',
+  model_name: 'test-model',
+  serving_models: [],
+  peers: [],
+  models: [],
+  gpus: [],
+  my_vram_gb: 0,
+  version: '0',
+  owner: { status: 'verified', verified: true }
+}
+
+describe('LedgerPageContent — Part T6: Integrity section completion', () => {
+  afterEach(async () => {
+    vi.clearAllMocks()
+    // `mockReturnValue` survives `clearAllMocks` -- restore the shared
+    // `useStatusQuery` mock explicitly so a later test/describe block never
+    // inherits this block's override.
+    const { useStatusQuery } = await import('@/features/network/api/use-status-query')
+    vi.mocked(useStatusQuery).mockReturnValue({ data: undefined } as never)
+  })
+
+  it('Registered 0 renders at the same weight as any other value, never muted or suppressed', async () => {
+    const user = userEvent.setup()
+    render(<LedgerPageContent />, { wrapper: makeWrapper() })
+    await user.click(screen.getByRole('tab', { name: /integrity/i }))
+
+    const registeredLabel = await screen.findByText('Registered')
+    const statCard = registeredLabel.closest('div')
+    const zero = statCard?.querySelector('.font-mono')
+    expect(zero?.textContent).toBe('0')
+    // Same element the "bad"-toned Contradicted card would use for a real
+    // value -- no separate muted/apologetic class for a zero.
+    expect(zero?.className).toMatch(/font-semibold/)
+  })
+
+  it('shows the three-step setup checklist, in value order, on a bare node', async () => {
+    const user = userEvent.setup()
+    render(<LedgerPageContent />, { wrapper: makeWrapper() })
+    await user.click(screen.getByRole('tab', { name: /integrity/i }))
+
+    await screen.findByText(/Register your checkpoints/)
+    expect(screen.getByText(/Bind an owner identity/)).toBeInTheDocument()
+    expect(screen.getByText(/Ask a peer for their half/)).toBeInTheDocument()
+    expect(screen.getByText('Corroboration cannot come from you.')).toBeInTheDocument()
+    expect(screen.getByText(/does not make your records true/)).toBeInTheDocument()
+    expect(screen.getByText(/does not prove who you are/)).toBeInTheDocument()
+  })
+
+  it('flips step 1 to "registered" and shows registration copy once a checkpoint exists', async () => {
+    const { fetchPaneA } = await import('@/features/capsules/api/sidecarClient')
+    vi.mocked(fetchPaneA).mockResolvedValue({
+      operator: null,
+      witness_checkpoint_supplied: true,
+      rows: [],
+      card: {
+        checkpoint_count: 4,
+        witnesses: [{ operated_by_producer: true }, { operated_by_producer: false }],
+        registered_no_later_than: '2026-09-10'
+      }
+    })
+
+    const user = userEvent.setup()
+    render(<LedgerPageContent />, { wrapper: makeWrapper() })
+    await user.click(screen.getByRole('tab', { name: /integrity/i }))
+
+    expect(await screen.findByText('Registered with 2 witnesses (1 not operated by this node)')).toBeInTheDocument()
+    expect(screen.getByText('registered no later than 2026-09-10')).toBeInTheDocument()
+    // Step 1 no longer shows the "what it does not buy" sentence once done.
+    expect(screen.queryByText(/does not make your records true/)).not.toBeInTheDocument()
+  })
+
+  it('shows the once-per-node facts (retention, capture boundary, identity) exactly once, never per row', async () => {
+    const user = userEvent.setup()
+    render(<LedgerPageContent />, { wrapper: makeWrapper() })
+    await user.click(screen.getByRole('tab', { name: /integrity/i }))
+
+    expect(await screen.findByText(/^Retention:/)).toBeInTheDocument()
+    expect(screen.getByText(/^Capture boundary:/)).toBeInTheDocument()
+    expect(screen.getByText('Owner: not bound — not bound to a person.')).toBeInTheDocument()
+  })
+
+  it('renders a real bound identity fact from live status data, not the pane-a card', async () => {
+    const { useStatusQuery } = await import('@/features/network/api/use-status-query')
+    vi.mocked(useStatusQuery).mockReturnValue({ data: BOUND_OWNER_STATUS_PAYLOAD } as never)
+
+    const user = userEvent.setup()
+    render(<LedgerPageContent />, { wrapper: makeWrapper() })
+    await user.click(screen.getByRole('tab', { name: /integrity/i }))
+
+    expect(await screen.findByText('Owner: bound (self-asserted) — not bound to a person.')).toBeInTheDocument()
+    // The setup checklist's step 2 flips too -- same live owner data.
+    expect(screen.getByText('bound')).toBeInTheDocument()
+  })
+
+  it('shows the default continuity sentence naming what would establish it', async () => {
+    const user = userEvent.setup()
+    render(<LedgerPageContent />, { wrapper: makeWrapper() })
+    await user.click(screen.getByRole('tab', { name: /integrity/i }))
+
+    expect(
+      await screen.findByText(
+        'Continuity: not established. It needs a registered checkpoint and a prior one to bind to.'
+      )
+    ).toBeInTheDocument()
+  })
+
+  it('offers a range-wide "Save evidence file" action, distinct from the Exchanges one', async () => {
+    const user = userEvent.setup()
+    render(<LedgerPageContent />, { wrapper: makeWrapper() })
+    await user.click(screen.getByRole('tab', { name: /integrity/i }))
+
+    expect(await screen.findByRole('button', { name: /save evidence file/i })).toBeInTheDocument()
+  })
+
+  it('never renders "timestamped" or bare "witnessed" anywhere on the Integrity section', async () => {
+    const { fetchPaneA } = await import('@/features/capsules/api/sidecarClient')
+    vi.mocked(fetchPaneA).mockResolvedValue({
+      operator: null,
+      witness_checkpoint_supplied: true,
+      rows: [],
+      card: {
+        checkpoint_count: 2,
+        continuity: 'unbroken',
+        witnesses: [{ operated_by_producer: false }],
+        registered_no_later_than: '2026-09-10'
+      }
+    })
+    const { useStatusQuery } = await import('@/features/network/api/use-status-query')
+    vi.mocked(useStatusQuery).mockReturnValue({ data: BOUND_OWNER_STATUS_PAYLOAD } as never)
+
+    const user = userEvent.setup()
+    const { container } = render(<LedgerPageContent />, { wrapper: makeWrapper() })
+    await user.click(screen.getByRole('tab', { name: /integrity/i }))
+    await screen.findByText('registered no later than 2026-09-10')
+
+    const sectionText = (container.textContent ?? '').toLowerCase()
+    expect(sectionText).not.toMatch(/timestamped/)
+    expect(sectionText).not.toMatch(/\bwitnessed\b/)
   })
 })
 
