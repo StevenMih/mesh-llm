@@ -6,16 +6,27 @@
 // functions rather than only through component snapshots.
 import { describe, expect, it } from 'vitest'
 import type { PaneBRow } from '@/features/capsules/api/sidecarTypes'
+import { LatencySource } from '@/lib/api/types'
+import type { PeerMeshStatus } from '@/features/capsules/lib/peer-mesh-status'
 import {
+  admissionStateLabel,
+  advertisedOnlyRowView,
   adjudicationSummary,
   adjudicationSummaryText,
   alarmSignal,
+  answeredWhenAskedText,
+  blockAAnnouncementLine,
+  dealtWithRowView,
   isUnattributedPeerRow,
+  latencyWithProvenanceText,
   peerDisplayId,
   peerSortKey,
+  ROUTE_DISABLED_REASON,
+  SELF_REPORTED_NOTE,
   sortPeerRows,
   theirChainSummary,
   unattributedExchangesLine,
+  WITNESS_COVERAGE_UNAVAILABLE_TEXT,
   withYouCounts,
   withYouCountsText
 } from '@/features/capsules/lib/peer-row-view'
@@ -235,5 +246,164 @@ describe('unattributedExchangesLine', () => {
 
   it('uses singular grammar for a count of one', () => {
     expect(unattributedExchangesLine(1)).toBe('1 exchange has no counterparty recorded yet. They appear under Exchanges.')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// [ledger-T7-peers-table] Block A/B/C view-model.
+// ---------------------------------------------------------------------------
+
+function meshStatus(overrides: Partial<PeerMeshStatus> = {}): PeerMeshStatus {
+  return {
+    modelName: 'Qwen3.6-27B-UD',
+    quant: 'Q4_K_XL',
+    contextLengthK: 256,
+    latencyMs: 38,
+    latencySource: LatencySource.DIRECT,
+    online: true,
+    ...overrides
+  }
+}
+
+describe('admissionStateLabel — never renders the literal word "rung" (ledger grep gate)', () => {
+  it('humanizes the raw ladder value', () => {
+    const row = baseRow({ rung: { state: 'present', text: '', rung: 'full_bilateral' } })
+    expect(admissionStateLabel(row)).toBe('full bilateral')
+  })
+
+  it('never contains the word "rung" for any known ladder value', () => {
+    for (const value of ['unilateral_fallback', 'acknowledged_receipt', 'full_bilateral']) {
+      const label = admissionStateLabel(baseRow({ rung: { state: 'present', text: '', rung: value } }))
+      expect(label).not.toMatch(/\brung\b/i)
+    }
+  })
+
+  it('is null when the cell carries no rung value, never a fabricated default', () => {
+    expect(admissionStateLabel(baseRow({ rung: { state: 'absent', text: null } }))).toBeNull()
+  })
+})
+
+describe('blockAAnnouncementLine — self-reported, "self-reported" stated once by the caller', () => {
+  it('joins model/quant/context with the admission state', () => {
+    expect(blockAAnnouncementLine(meshStatus(), 'full bilateral')).toBe(
+      'Qwen3.6-27B-UD · Q4_K_XL · 256k ctx · full bilateral'
+    )
+  })
+
+  it('degrades to null (never a fabricated line) when nothing is known', () => {
+    expect(blockAAnnouncementLine(null, null)).toBeNull()
+  })
+
+  it('SELF_REPORTED_NOTE is a distinct constant, never baked into the announcement line itself', () => {
+    expect(blockAAnnouncementLine(meshStatus(), null)).not.toContain(SELF_REPORTED_NOTE)
+  })
+})
+
+describe('latencyWithProvenanceText — chooser-v2 §3: latency always carries its source', () => {
+  it('DIRECT reads "you measured"', () => {
+    expect(latencyWithProvenanceText(meshStatus({ latencyMs: 38, latencySource: LatencySource.DIRECT }))).toBe(
+      '38 ms (you measured)'
+    )
+  })
+
+  it('ESTIMATED reads "reported by another node", never "you measured"', () => {
+    const text = latencyWithProvenanceText(meshStatus({ latencyMs: 145, latencySource: LatencySource.ESTIMATED }))
+    expect(text).toBe('145 ms (reported by another node)')
+    expect(text).not.toContain('you measured')
+  })
+
+  it('an unspecified/unknown source renders the bare figure, never guessing a provenance', () => {
+    expect(latencyWithProvenanceText(meshStatus({ latencyMs: 90, latencySource: LatencySource.UNKNOWN }))).toBe('90 ms')
+  })
+
+  it('is "latency unknown" when no mesh status resolved, never a fabricated number', () => {
+    expect(latencyWithProvenanceText(null)).toBe('latency unknown')
+  })
+})
+
+describe('answeredWhenAskedText', () => {
+  it('surfaces the asked_cell text verbatim, never re-derives a rate from it', () => {
+    const row = baseRow({ asked: { state: 'absent', text: "this node doesn't persist a send log yet", count: 0 } })
+    expect(answeredWhenAskedText(row)).toBe("this node doesn't persist a send log yet")
+  })
+
+  it('degrades honestly when the cell carries no text', () => {
+    const row = baseRow({ asked: { state: 'absent', text: null, count: 0 } })
+    expect(answeredWhenAskedText(row)).toBe('Answered when asked: not available yet.')
+  })
+})
+
+describe('dealtWithRowView / advertisedOnlyRowView — one shape, honest degradation', () => {
+  it('a dealt-with row carries the real Pane B row and its counts/adjudication text', () => {
+    const row = baseRow({
+      peer_id: 'node:abc',
+      role: {
+        state: 'present',
+        text: '',
+        role: 'both',
+        you_to_them_count: 16,
+        them_to_you_count: 8,
+        exchange_count: 24
+      },
+      pair: { state: 'verified', text: '', verified: 16, failed: 0, missing: 0, details: [] },
+      exchange_count: 24,
+      verdicts: { state: 'present', text: '', tally: { corroborated: 8, contradicted: 0, inconclusive: 0 } }
+    })
+    const view = dealtWithRowView(row, meshStatus())
+    expect(view.hasDealings).toBe(true)
+    expect(view.row).toBe(row)
+    expect(view.blockBCounts).toBe('16 requested · 8 served · 16 confirmed')
+    expect(view.blockCAdjudication).toBe('8 of 24 adjudicated · 8 corroborated')
+    expect(view.canRouteToChat).toBe(true)
+    expect(view.routeDisabledReason).toBeNull()
+  })
+
+  it('a zero-dealings advertised-only peer shows "No exchanges yet" with block C still populated, never blank', () => {
+    const view = advertisedOnlyRowView('node:unused', meshStatus())
+    expect(view.hasDealings).toBe(false)
+    expect(view.row).toBeNull()
+    expect(view.blockBCounts).toBe('No exchanges yet')
+    // block C is POPULATED (a real, honest sentence), not omitted/blank --
+    // review §3-F's acceptance check.
+    expect(view.blockCAdjudication.length).toBeGreaterThan(0)
+    expect(view.blockCAdjudication.toLowerCase()).toContain('not yet checked')
+    expect(view.blockCWitness).toBe(WITNESS_COVERAGE_UNAVAILABLE_TEXT)
+  })
+
+  it('Route here is disabled by the FACT of no mesh status, never by an outcome, and carries a visible reason', () => {
+    const dealtWith = dealtWithRowView(baseRow(), null)
+    const advertised = advertisedOnlyRowView('node:unused', null)
+    for (const view of [dealtWith, advertised]) {
+      expect(view.canRouteToChat).toBe(false)
+      expect(view.routeDisabledReason).toBe(ROUTE_DISABLED_REASON)
+    }
+  })
+
+  it('no peer figure in either block ever renders a percentage or ratio ramp (R-D)', () => {
+    const row = baseRow({
+      role: {
+        state: 'present',
+        text: '',
+        role: 'both',
+        you_to_them_count: 16,
+        them_to_you_count: 8,
+        exchange_count: 24
+      },
+      exchange_count: 24,
+      verdicts: { state: 'present', text: '', tally: { corroborated: 8, contradicted: 0, inconclusive: 0 } }
+    })
+    const dealtWith = dealtWithRowView(row, meshStatus())
+    const advertised = advertisedOnlyRowView('node:unused', meshStatus())
+    for (const view of [dealtWith, advertised]) {
+      for (const text of [
+        view.blockA,
+        view.blockBCounts,
+        view.blockBLatency,
+        view.blockCAdjudication,
+        view.blockCWitness
+      ]) {
+        expect(text ?? '').not.toContain('%')
+      }
+    }
   })
 })

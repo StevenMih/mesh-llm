@@ -22,7 +22,7 @@ import { fetchCapsuleLedger } from '@/features/capsules/api/client'
 import type { CapsuleRecord, JsonRecord } from '@/features/capsules/api/types'
 import { PaneFetchError, fetchPaneA, fetchPaneB, fetchPaneCList } from '@/features/capsules/api/sidecarClient'
 import { balanceCoverage } from '@/features/capsules/lib/balance-view'
-import { PeerCard } from '@/features/capsules/components/PeerCard'
+import { LedgerPeersTable } from '@/features/capsules/components/LedgerPeersTable'
 import { ExchangeInspector } from '@/features/capsules/components/ExchangeInspector'
 import { ExchangeStreamRow } from '@/features/capsules/components/ExchangeStreamRow'
 import {
@@ -54,9 +54,11 @@ import {
   PEER_TAB_HARNESS_MESH_MODELS,
   PEER_TAB_HARNESS_MESH_PEERS
 } from '@/features/capsules/lib/peer-fixtures'
-import { livePeerExchangeSources } from '@/features/capsules/lib/peer-exchange-timeline'
-import { usePeerMeshStatusIndex } from '@/features/capsules/lib/peer-mesh-status'
+import { livePeerExchangeSources, type PeerExchangeSource } from '@/features/capsules/lib/peer-exchange-timeline'
+import { advertisedOnlyPeers, usePeerMeshStatusIndex } from '@/features/capsules/lib/peer-mesh-status'
 import {
+  advertisedOnlyRowView,
+  dealtWithRowView,
   peerDisplayId,
   peerSortKey,
   sortPeerRows,
@@ -147,22 +149,46 @@ function PeersSection({ recordsById }: { recordsById: Map<string, CapsuleRecord>
   if (query.isError) {
     return <p className="text-sm text-amber-500">{describePaneError(query.error)}</p>
   }
-  if (!query.data || query.data.peer_count === 0) {
-    return <p className="text-sm text-muted-foreground">No peer exchanges recorded yet.</p>
-  }
 
-  // No card is ever rendered for a row with no counterparty identity
+  // No card/row is ever rendered for a row with no counterparty identity
   // (design chooser-v1 §7 S1.1) -- those exchanges are rolled into the
-  // headline count below instead of a synthetic "unknown peer" card.
-  const attributedRows = query.data.rows.filter((row) => peerDisplayId(row) !== null)
-  const unattributedExchangeCount = query.data.rows
+  // headline count below instead of a synthetic "unknown peer" row.
+  const allRawRows = query.data?.rows ?? []
+  const dealtWithRawRows = allRawRows.filter((row) => peerDisplayId(row) !== null)
+  const unattributedExchangeCount = allRawRows
     .filter((row) => peerDisplayId(row) === null)
     .reduce((sum, row) => sum + (row.exchange_count ?? 0), 0)
 
   // Closest-first (latency asc); any row carrying an alarm floats to top.
-  const sortedRows = sortPeerRows(attributedRows, (row) =>
+  const sortedDealtWithRawRows = sortPeerRows(dealtWithRawRows, (row) =>
     peerSortKey(row, meshStatus.statusFor(peerDisplayId(row) ?? '')?.latencyMs ?? null)
   )
+  // [ledger-T7-peers-table] "Nodes advertised but unused" -- mesh-known
+  // peers Pane B carries no row for at all (no exchange has ever
+  // happened). A different group, never merged with the rows above.
+  const advertisedPeers = advertisedOnlyPeers(dealtWithRawRows, meshStatus.peers)
+
+  const sourcesByPeerId = new Map<string, readonly PeerExchangeSource[]>()
+  for (const row of sortedDealtWithRawRows) {
+    const peerId = peerDisplayId(row) ?? ''
+    sourcesByPeerId.set(
+      peerId,
+      harnessMode
+        ? (PEER_TAB_HARNESS_EXCHANGE_SOURCES[peerId] ?? [])
+        : livePeerExchangeSources(row, paneCQuery.data?.rows ?? [])
+    )
+  }
+
+  const dealtWithViews = sortedDealtWithRawRows.map((row) =>
+    dealtWithRowView(row, meshStatus.statusFor(peerDisplayId(row) ?? ''), resolveTimestamp)
+  )
+  const advertisedViews = advertisedPeers.map((peer) =>
+    advertisedOnlyRowView(peer.shortId ?? peer.id, meshStatus.statusFor(peer.id))
+  )
+
+  if (dealtWithViews.length === 0 && advertisedViews.length === 0) {
+    return <p className="text-sm text-muted-foreground">No peer exchanges recorded yet.</p>
+  }
 
   return (
     <div className="flex flex-col gap-2">
@@ -173,22 +199,15 @@ function PeersSection({ recordsById }: { recordsById: Map<string, CapsuleRecord>
       {unattributedExchangeCount > 0 ? (
         <p className="text-sm text-foreground">{unattributedExchangesLine(unattributedExchangeCount)}</p>
       ) : null}
-      {sortedRows.map((row) => {
-        const peerId = peerDisplayId(row) ?? ''
-        const exchangeSources = harnessMode
-          ? (PEER_TAB_HARNESS_EXCHANGE_SOURCES[peerId] ?? [])
-          : livePeerExchangeSources(row, paneCQuery.data?.rows ?? [])
-        return (
-          <PeerCard
-            exchangeSources={exchangeSources}
-            key={row.peer_id ?? peerId}
-            meshStatus={meshStatus.statusFor(peerId)}
-            recordsById={effectiveRecordsById}
-            resolveTimestamp={resolveTimestamp}
-            row={row}
-          />
-        )
-      })}
+      <LedgerPeersTable
+        advertisedUnused={advertisedViews}
+        advertisedUnusedRawPeers={advertisedPeers}
+        dealtWith={dealtWithViews}
+        dealtWithRawRows={sortedDealtWithRawRows}
+        exchangeSourcesFor={(peerId) => sourcesByPeerId.get(peerId) ?? []}
+        meshStatus={meshStatus}
+        recordsById={effectiveRecordsById}
+      />
     </div>
   )
 }
