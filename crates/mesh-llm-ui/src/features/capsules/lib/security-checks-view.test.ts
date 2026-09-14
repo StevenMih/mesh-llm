@@ -366,3 +366,31 @@ describe('buildHeaderRows / buildCommitsToRows — no fabricated fields', () => 
     expect(requestDigest?.yours).toBe('digest-a')
   })
 })
+
+describe('[ledger-T4-inline-inspector] buildCommitsToRows — theirs column follows L-G', () => {
+  it('a CLOSED row (default paneCRow: theirs present, no FAIL) mirrors yours with a ✓ same marker', () => {
+    const rows = buildCommitsToRows(paneCRow(), {
+      effect: { request_digest: 'digest-a', response_digest: 'digest-b' }
+    } as never)
+    const requestDigest = rows.find((r) => r.label === 'request digest')
+    expect(requestDigest?.theirs).toEqual({ value: 'digest-a', note: '✓ same' })
+  })
+
+  it('an OPEN row (theirs absent) has no theirs column at all -- MUTANT: never render a ✓/✕ marker with nothing to compare', () => {
+    const rows = buildCommitsToRows(paneCRow({ theirs: { state: 'absent', capsule_id: null } }), null)
+    for (const row of rows) {
+      expect(row.theirs).toBeNull()
+    }
+  })
+
+  it('a CONTRADICTED row names the disagreement without fabricating a value this page never held', () => {
+    const rows = buildCommitsToRows(
+      paneCRow({ properties: { outcome_corroboration: { state: 'FAIL', text: null } } }),
+      { effect: { request_digest: 'digest-a' } } as never
+    )
+    const requestDigest = rows.find((r) => r.label === 'request digest')
+    expect(requestDigest?.theirs?.note).toBe('✕ differs')
+    // Never the fabricated claim that we hold their (disagreeing) digest.
+    expect(requestDigest?.theirs?.value).not.toBe('digest-a')
+  })
+})

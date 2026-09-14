@@ -14,7 +14,7 @@
 //      copy] it renders NOTHING on a null card rather than a "no data" line
 //   6. The exceptions-first line above the table, and the Ledger badge's
 //      "This node's copy" rename ([ledger-T8-header-copy])
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -332,7 +332,7 @@ describe('LedgerPageContent — Part 3: Exchanges two-sided stream + row inspect
     vi.clearAllMocks()
   })
 
-  it('renders a two-sided row per exchange (CLOSED for an agreeing artifact, OPEN for a unilateral one), row opens the full-detail modal', async () => {
+  it('[ledger-T4-inline-inspector] renders a two-sided row per exchange (CLOSED for an agreeing artifact, OPEN for a unilateral one), the `▸ checks` toggle expands full detail inline', async () => {
     const { fetchPaneCList } = await import('@/features/capsules/api/sidecarClient')
     vi.mocked(fetchPaneCList).mockResolvedValue({
       rows: [
@@ -390,16 +390,17 @@ describe('LedgerPageContent — Part 3: Exchanges two-sided stream + row inspect
     expect(screen.queryByText("You haven't asked for their half.")).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Ask them for their half' })).not.toBeInTheDocument()
 
-    // Row click opens the full nine-property detail modal.
-    await user.click(screen.getByLabelText('Open exchange inspector for exch-alarm-07'))
-    const dialog = screen.getByRole('dialog')
-    expect(dialog).toHaveTextContent('exch-alarm-07')
-    expect(dialog).toHaveTextContent('checkpoint signature: FAIL')
-    expect(dialog).toHaveTextContent('content binding')
-    expect(dialog).toHaveTextContent('producer signature')
+    // `▸ checks` expands the full nine-property detail inline, under the
+    // row -- never a dialog.
+    const alarmRow = screen.getByLabelText('Exchange exch-alarm-07')
+    await user.click(within(alarmRow).getByRole('button', { name: '▸ checks' }))
+    const checksRegion = await screen.findByRole('region', { name: /Security checks for exch-alarm-07/ })
+    expect(checksRegion).toHaveTextContent('content binding')
+    expect(checksRegion).toHaveTextContent('producer signature')
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   })
 
-  it('[ledger-T1-ask-half-action] a row with a recorded counterparty shows the ask action; clicking it never opens the inspector', async () => {
+  it('[ledger-T1-ask-half-action] a row with a recorded counterparty shows the ask action; clicking it never opens a dialog', async () => {
     const { fetchPaneB, fetchPaneCList } = await import('@/features/capsules/api/sidecarClient')
     vi.mocked(fetchPaneCList).mockResolvedValue({
       rows: [
@@ -476,8 +477,12 @@ describe('LedgerPageContent — Part 3: Exchanges two-sided stream + row inspect
     await user.click(askButton)
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
 
-    await user.click(screen.getByLabelText('Open exchange inspector for exch-known-peer'))
-    expect(screen.getByRole('dialog')).toBeInTheDocument()
+    // Nothing on this row ever opens a dialog -- not the ask action, not
+    // the `▸ checks` toggle either.
+    const knownRow = screen.getByLabelText('Exchange exch-known-peer')
+    await user.click(within(knownRow).getByRole('button', { name: '▸ checks' }))
+    expect(await screen.findByRole('region', { name: /Security checks for exch-known-peer/ })).toBeInTheDocument()
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   })
 
   it('Export view (CSV) and Save evidence file are two distinct, present toolbar actions', async () => {
@@ -710,15 +715,14 @@ describe('LedgerPageContent — Part B3: windowed paging + sticky header', () =>
     expect(screen.getAllByText('THEIR RECORD, AS GIVEN TO YOU')).toHaveLength(1)
   })
 
-  it('a deep-linked exchange key jumps to its page, highlights the row, and opens its inspector', async () => {
+  it('[ledger-T4-inline-inspector] a deep-linked exchange key jumps to its page, highlights the row, and expands its checks inline', async () => {
     const { fetchPaneCList } = await import('@/features/capsules/api/sidecarClient')
     vi.mocked(fetchPaneCList).mockResolvedValue(b3PaneCPayload(makeManyPaneCRows(120)))
 
     render(<LedgerPageContent focusExchangeKey="exch-75" />, { wrapper: makeWrapper() })
 
-    // Auto-selects the Exchanges tab -- no manual click needed. (The
-    // inspector modal it opens ALSO renders "mine-75", so scope to the row.)
-    const row = await screen.findByLabelText('Open exchange inspector for exch-75')
+    // Auto-selects the Exchanges tab -- no manual click needed.
+    const row = await screen.findByLabelText('Exchange exch-75')
     expect(row).toHaveTextContent('mine-75')
     // Page 2 (exch-50..exch-99), never page 1's exch-0.
     expect(screen.queryByText('mine-0')).not.toBeInTheDocument()
@@ -726,9 +730,11 @@ describe('LedgerPageContent — Part B3: windowed paging + sticky header', () =>
     expect(row).toHaveAttribute('aria-current', 'true')
     expect(row).toHaveAttribute('data-highlighted', 'true')
 
-    // Opens the same full-detail inspector a click would.
-    const dialog = await screen.findByRole('dialog')
-    expect(dialog).toHaveTextContent('exch-75')
+    // Expands the same full-detail checks view inline a click would --
+    // never a dialog.
+    const checksRegion = await screen.findByRole('region', { name: /Security checks for exch-75/ })
+    expect(checksRegion).toHaveTextContent('exch-75')
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   })
 
   it('Next contradiction ▸ reaches an off-page contradiction regardless of the current page', async () => {
@@ -785,7 +791,7 @@ describe('LedgerPageContent — Part B3: windowed paging + sticky header', () =>
     await user.click(screen.getByRole('tab', { name: /exchanges/i }))
     await screen.findByText('mine-0')
 
-    const rowAt = (exchangeKey: string) => screen.getByLabelText(`Open exchange inspector for ${exchangeKey}`)
+    const rowAt = (exchangeKey: string) => screen.getByLabelText(`Exchange ${exchangeKey}`)
     expect(rowAt('exch-0')).toHaveAttribute('data-focused', 'true')
 
     await user.keyboard('j')
@@ -811,6 +817,30 @@ describe('LedgerPageContent — Part B3: windowed paging + sticky header', () =>
     expect(await screen.findByRole('region', { name: /Security checks for exch-0/ })).toBeInTheDocument()
   })
 
+  it('[ledger-T4-inline-inspector] Escape closes whichever expansion is open', async () => {
+    const { fetchPaneCList } = await import('@/features/capsules/api/sidecarClient')
+    vi.mocked(fetchPaneCList).mockResolvedValue(b3PaneCPayload(makeManyPaneCRows(3)))
+
+    const user = userEvent.setup()
+    render(<LedgerPageContent />, { wrapper: makeWrapper() })
+    await user.click(screen.getByRole('tab', { name: /exchanges/i }))
+    await screen.findByText('mine-0')
+
+    await user.keyboard('c')
+    expect(await screen.findByRole('region', { name: /Security checks for exch-0/ })).toBeInTheDocument()
+    await user.keyboard('{Escape}')
+    expect(screen.queryByRole('region', { name: /Security checks/ })).not.toBeInTheDocument()
+
+    await user.keyboard('o')
+    expect(await screen.findByText('Not asked. They would be expected to hold none.')).toBeInTheDocument()
+    await user.keyboard('{Escape}')
+    expect(screen.queryByText('Not asked. They would be expected to hold none.')).not.toBeInTheDocument()
+
+    // Escape with nothing expanded is a no-op -- doesn't error, doesn't
+    // swallow the event (nothing else to assert here beyond "it didn't throw").
+    await user.keyboard('{Escape}')
+  })
+
   it('keyboard shortcuts never fire while typing in the search box (e.g. typing "exch" never toggles anything)', async () => {
     const { fetchPaneCList } = await import('@/features/capsules/api/sidecarClient')
     vi.mocked(fetchPaneCList).mockResolvedValue(b3PaneCPayload(makeManyPaneCRows(3)))
@@ -826,7 +856,7 @@ describe('LedgerPageContent — Part B3: windowed paging + sticky header', () =>
     // 'c' it contains never toggles Checks while typing.
     await user.keyboard('exch')
 
-    expect(screen.getByLabelText('Open exchange inspector for exch-0')).toHaveAttribute('data-focused', 'true')
+    expect(screen.getByLabelText('Exchange exch-0')).toHaveAttribute('data-focused', 'true')
     expect(screen.queryByRole('region', { name: /Security checks/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   })

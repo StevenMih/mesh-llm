@@ -198,14 +198,49 @@ describe('SecurityChecksView — rendered property set', () => {
   })
 })
 
-describe('SecurityChecksView — WHAT IT COMMITS TO block: theirs column stays honestly empty', () => {
-  it('does not claim a theirs-side digest it never held', () => {
+describe('[ledger-T4-inline-inspector] SecurityChecksView — WHAT IT COMMITS TO block: ✓ same on CLOSED, absent on OPEN', () => {
+  it('a CLOSED row (the default fixture: theirs present, outcome_corroboration PASS) renders "✓ same" beside every commits-to row -- scoped to this block, since HEADER also legitimately renders its own "✓ same"', () => {
     const { container } = render(
       <SecurityChecksView identity={RECOMPUTED_MATCH} localRecord={null} row={ledgerRow(paneCRow())} />
     )
     const commitsBlock = Array.from(container.querySelectorAll('[data-block-heading]')).find(
       (el) => el.getAttribute('data-block-heading') === 'what it commits to'
-    )?.parentElement
-    expect(within(commitsBlock as HTMLElement).getByText('request digest')).toBeInTheDocument()
+    )?.parentElement as HTMLElement
+    // request digest, response digest, task binding, model identity, served by
+    expect(within(commitsBlock).getAllByText('✓ same')).toHaveLength(5)
+  })
+
+  it('an OPEN row (theirs absent) never renders a theirs value for "what it commits to" -- MUTANT: no ✓/✕ marker with nothing to compare', () => {
+    const { container } = render(
+      <SecurityChecksView
+        identity={RECOMPUTED_MATCH}
+        localRecord={null}
+        row={ledgerRow(paneCRow({ theirs: { state: 'absent', capsule_id: null } }))}
+      />
+    )
+    const commitsBlock = Array.from(container.querySelectorAll('[data-block-heading]')).find(
+      (el) => el.getAttribute('data-block-heading') === 'what it commits to'
+    )?.parentElement as HTMLElement
+    expect(within(commitsBlock).getByText('request digest')).toBeInTheDocument()
+    expect(within(commitsBlock).queryByText('✓ same')).not.toBeInTheDocument()
+    expect(within(commitsBlock).queryByText('✕ differs')).not.toBeInTheDocument()
+  })
+})
+
+describe('[ledger-T4-inline-inspector] SecurityChecksView — per-row "Save evidence file" and "open in Logs"', () => {
+  it('renders the 40-word evidence-file sentence and both controls', () => {
+    render(<SecurityChecksView identity={RECOMPUTED_MATCH} localRecord={null} row={ledgerRow(paneCRow())} />)
+    expect(screen.getByRole('button', { name: 'Save evidence file' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'open in Logs' })).toBeInTheDocument()
+    expect(
+      screen.getByText(
+        'A file: what you asked, what you got, which machine and model answered, when it was registered, plus your own copy. Anyone can check it, no account needed. Not included: the text, a score, or proof the answer was right.'
+      )
+    ).toBeInTheDocument()
+  })
+
+  it('"open in Logs" is disabled -- [ledger-T5-join-key] fills the target, not this task', () => {
+    render(<SecurityChecksView identity={RECOMPUTED_MATCH} localRecord={null} row={ledgerRow(paneCRow())} />)
+    expect(screen.getByRole('button', { name: 'open in Logs' })).toBeDisabled()
   })
 })

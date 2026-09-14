@@ -40,6 +40,13 @@ export function exchangeEvidenceBundle(rows: readonly PaneCRow[]): string {
   return `${JSON.stringify({ schema: 'mesh-ledger-exchanges-evidence/1', exchanges: rows }, null, 2)}\n`
 }
 
+/** [ledger-T4-inline-inspector] -- the design note's own "§7 in 40 words"
+ *  (`mesh-ledger-tab-design-2026-09-07.md`), verbatim, exactly 40 words.
+ *  Never paraphrased: the plain sentence that goes with every evidence file,
+ *  per row and per range alike. */
+export const EVIDENCE_FILE_SENTENCE =
+  'A file: what you asked, what you got, which machine and model answered, when it was registered, plus your own copy. Anyone can check it, no account needed. Not included: the text, a score, or proof the answer was right.'
+
 export function saveTextFile(fileName: string, content: string, mediaType: string): boolean {
   if (
     typeof document === 'undefined' ||

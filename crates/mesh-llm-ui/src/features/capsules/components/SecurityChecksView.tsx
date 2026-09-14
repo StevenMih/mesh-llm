@@ -19,6 +19,7 @@ import {
   type ChecksSideCell
 } from '@/features/capsules/lib/security-checks-view'
 import { ChipExplanationPopover } from '@/features/capsules/components/ChipExplanationPopover'
+import { EVIDENCE_FILE_SENTENCE, exchangeEvidenceBundle, saveTextFile } from '@/features/capsules/lib/exchange-export'
 
 function badgeToneFor(state: string): StatusBadgeTone {
   const tone = toneForState(state)
@@ -111,8 +112,10 @@ export function SecurityChecksView({ row, identity, localRecord }: SecurityCheck
       onClick={(event) => event.stopPropagation()}
       role="region"
     >
-      <div className="flex items-center justify-between gap-2">
-        <p className="type-caption font-mono text-fg-faint">▾ checks</p>
+      <div className="flex items-center justify-end gap-2">
+        {/* The row's own `▾ checks` toggle (`ExchangeStreamRow`) is this
+           panel's only header label -- not repeated here, so there is one
+           source of the "is this expanded" fact, not two. */}
         <div className="flex items-center gap-2">
           <div className="flex overflow-hidden rounded border border-border-soft" role="group">
             <Button
@@ -199,9 +202,19 @@ export function SecurityChecksView({ row, identity, localRecord }: SecurityCheck
           <div className="flex flex-col gap-1.5">
             <BlockHeading>what it commits to</BlockHeading>
             {commitsToRows.map((commitsRow) => (
-              <div className="flex items-baseline justify-between gap-2 text-xs" key={commitsRow.label}>
-                <span className="text-fg-faint">{commitsRow.label}</span>
-                <span className="truncate font-mono text-foreground">{commitsRow.yours}</span>
+              <div className="flex flex-col gap-0.5" key={commitsRow.label}>
+                <p className="type-caption text-fg-faint">{commitsRow.label}</p>
+                <TwoCol
+                  theirs={
+                    commitsRow.theirs ? (
+                      <p className="truncate font-mono text-xs text-foreground">
+                        {commitsRow.theirs.value}
+                        <span className="ml-1 text-fg-faint">{commitsRow.theirs.note}</span>
+                      </p>
+                    ) : null
+                  }
+                  yours={<p className="truncate font-mono text-xs text-foreground">{commitsRow.yours}</p>}
+                />
               </div>
             ))}
           </div>
@@ -266,6 +279,42 @@ export function SecurityChecksView({ row, identity, localRecord }: SecurityCheck
           </div>
         </>
       )}
+
+      {/* [ledger-T4-inline-inspector] "Save evidence file" acts on the
+         current scope (v3 §4) -- from a row it saves that exchange. `open in
+         Logs` is a shell only: the Ledger and Logs sides of one call don't
+         yet share a single id to link through -- [ledger-T5-join-key]
+         supplies the target. */}
+      <div className="flex flex-col gap-1.5 border-t border-border-soft pt-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            className="ui-control h-7 gap-1 rounded-[var(--radius)] px-2 text-[length:var(--density-type-caption)]"
+            onClick={() =>
+              saveTextFile(
+                `mesh-exchange-${row.exchangeKey}-evidence.json`,
+                exchangeEvidenceBundle([row.raw]),
+                'application/json'
+              )
+            }
+            size="sm"
+            type="button"
+            variant="outline"
+          >
+            Save evidence file
+          </Button>
+          <Button
+            className="ui-control h-7 gap-1 rounded-[var(--radius)] px-2 text-[length:var(--density-type-caption)]"
+            disabled
+            size="sm"
+            title="Needs one id shared with Logs before this can link there — see ledger-T5-join-key"
+            type="button"
+            variant="outline"
+          >
+            open in Logs
+          </Button>
+        </div>
+        <p className="text-xs text-fg-faint">{EVIDENCE_FILE_SENTENCE}</p>
+      </div>
     </div>
   )
 }

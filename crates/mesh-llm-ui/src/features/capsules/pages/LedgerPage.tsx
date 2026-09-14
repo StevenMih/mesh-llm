@@ -23,7 +23,6 @@ import type { CapsuleRecord, JsonRecord } from '@/features/capsules/api/types'
 import { PaneFetchError, fetchPaneA, fetchPaneB, fetchPaneCList } from '@/features/capsules/api/sidecarClient'
 import { balanceCoverage } from '@/features/capsules/lib/balance-view'
 import { PeerCard } from '@/features/capsules/components/PeerCard'
-import { ExchangeInspector } from '@/features/capsules/components/ExchangeInspector'
 import { ExchangeStreamRow } from '@/features/capsules/components/ExchangeStreamRow'
 import {
   buildExchangeCounterpartyIndex,
@@ -294,16 +293,13 @@ function ExchangesSection({
   const [roleFilter, setRoleFilter] = useState<Set<string>>(new Set(ALL_ROLE_VALUES))
   const [checksFilter, setChecksFilter] = useState<Set<string>>(new Set(ALL_CHECKS_VALUES))
   const [stateFilter, setStateFilter] = useState<Set<string>>(new Set(ALL_STATE_FILTER_VALUES))
-  const [selectedExchangeKey, setSelectedExchangeKey] = useState<string | null>(null)
-  const handleExchangeRowActivate = useCallback((row: ExchangeLedgerRow) => setSelectedExchangeKey(row.exchangeKey), [])
-  // [ledger-T1-ask-half-action] -- deliberately distinct from
-  // handleExchangeRowActivate: the row's action cell must never open the
-  // inspector. The evidence-request carrier this would actually dispatch
-  // through is still unwired end-to-end (exchange-row-state.ts's own
-  // forward-compat note; capsule-emit-mesh's evidence_responder.py: "not
-  // yet reachable over the wire"), so this stays a no-op stub -- honest
-  // absence of a real ask, never a fabricated one -- until that carrier
-  // lands.
+  // [ledger-T1-ask-half-action] -- the row's action cell must never open a
+  // detail surface of its own. The evidence-request carrier this would
+  // actually dispatch through is still unwired end-to-end (exchange-row-
+  // state.ts's own forward-compat note; capsule-emit-mesh's evidence_
+  // responder.py: "not yet reachable over the wire"), so this stays a no-op
+  // stub -- honest absence of a real ask, never a fabricated one -- until
+  // that carrier lands.
   const handleAskForHalf = useCallback((_row: ExchangeLedgerRow) => {}, [])
 
   // [mesh-ledger-b3-paging] -- windowed paging (v3 §2a) state. `pageIndex`
@@ -315,6 +311,17 @@ function ExchangesSection({
   const [highlightedKey, setHighlightedKey] = useState<string | null>(null)
   const [checksExpandedKey, setChecksExpandedKey] = useState<string | null>(null)
   const [contentExpandedKey, setContentExpandedKey] = useState<string | null>(null)
+  // [ledger-T4-inline-inspector] -- the row's own `▸/▾ content` / `▸/▾
+  // checks` toggles (the `o`/`c` keyboard shortcuts below drive the same
+  // state for the keyboard-focused row).
+  const handleToggleContent = useCallback(
+    (row: ExchangeLedgerRow) => setContentExpandedKey((prev) => (prev === row.exchangeKey ? null : row.exchangeKey)),
+    []
+  )
+  const handleToggleChecks = useCallback(
+    (row: ExchangeLedgerRow) => setChecksExpandedKey((prev) => (prev === row.exchangeKey ? null : row.exchangeKey)),
+    []
+  )
   const searchInputRef = useRef<HTMLInputElement>(null)
   const handledFocusKeyRef = useRef<string | null>(null)
 
@@ -375,9 +382,9 @@ function ExchangesSection({
   }, [filterSignature])
 
   // v3 §2a per-row deep link: jump to the page containing `focusExchangeKey`,
-  // highlight it, and open its inspector -- once per distinct key (guarded
-  // by the ref) so a background refetch never silently reopens a modal the
-  // reader already closed.
+  // highlight it, and expand its checks inline -- once per distinct key
+  // (guarded by the ref) so a background refetch never silently re-expands a
+  // panel the reader already collapsed.
   useEffect(() => {
     if (!focusExchangeKey || focusExchangeKey === handledFocusKeyRef.current) return
     const targetPage = pageIndexForGroupKey(pages, focusExchangeKey)
@@ -386,7 +393,7 @@ function ExchangesSection({
     // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional deep-link (external URL) to state sync, guarded above to run once per key
     setPageIndex(targetPage)
     setHighlightedKey(focusExchangeKey)
-    setSelectedExchangeKey(focusExchangeKey)
+    setChecksExpandedKey(focusExchangeKey)
     const rowIndexOnPage = flattenPage(pages[targetPage]).findIndex((row) => row.exchangeKey === focusExchangeKey)
     setFocusedRowIndex(rowIndexOnPage >= 0 ? rowIndexOnPage : 0)
   }, [focusExchangeKey, pages])
@@ -420,11 +427,14 @@ function ExchangesSection({
 
   // Keyboard map (v3 §2a): j/k row, o toggle content ([mesh-ledger-b4-
   // toggle-content], v3 §3's real inline toggle -- one populated side, one
-  // empty side, flipping with role), c toggle checks (reveals this row's
-  // Checks value inline -- v3 §4's real toggle is a later batch), / search,
-  // n next contradiction. Ignored while
-  // typing in a text field so normal typing (e.g. "close" in the search
-  // box) never fires a shortcut.
+  // empty side, flipping with role), c toggle checks ([ledger-T4-inline-
+  // inspector], v3 §4's real inline toggle), / search, n next contradiction,
+  // Escape closes whichever expansion is open ([ledger-T4-inline-inspector]
+  // -- there is no modal left to close, so Escape's job is the two per-row
+  // toggles). Ignored while typing in a text field so normal typing (e.g.
+  // "close" in the search box) never fires a shortcut -- Escape is the one
+  // exception, checked before that guard, since closing an expansion should
+  // work even if the search box happens to hold focus.
   useEffect(() => {
     function isTypingTarget(target: EventTarget | null): boolean {
       return (
@@ -438,6 +448,13 @@ function ExchangesSection({
         if (isTypingTarget(event.target)) return
         event.preventDefault()
         searchInputRef.current?.focus()
+        return
+      }
+      if (event.key === 'Escape') {
+        if (checksExpandedKey === null && contentExpandedKey === null) return
+        event.preventDefault()
+        setChecksExpandedKey(null)
+        setContentExpandedKey(null)
         return
       }
       if (isTypingTarget(event.target) || currentPageRows.length === 0) return
@@ -472,14 +489,7 @@ function ExchangesSection({
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [currentPageRows, focusedRowIndex, jumpToNextContradiction])
-
-  const selectedRow = selectedExchangeKey
-    ? (allRows.find((r) => r.exchangeKey === selectedExchangeKey)?.raw ?? null)
-    : null
-  const selectedCounterparty = selectedExchangeKey ? (counterpartyIndex.get(selectedExchangeKey) ?? null) : null
-  const selectedLocalRecord =
-    selectedRow?.mine.capsule_id != null ? (recordsById.get(selectedRow.mine.capsule_id) ?? null) : null
+  }, [currentPageRows, focusedRowIndex, jumpToNextContradiction, checksExpandedKey, contentExpandedKey])
 
   const balanceHeader = <ExchangesBalanceHeader card={balanceQuery.data?.card ?? null} />
 
@@ -732,7 +742,8 @@ function ExchangesSection({
                   localRecord={row.raw.mine.capsule_id ? (recordsById.get(row.raw.mine.capsule_id) ?? null) : null}
                   nodePubKeyPem={nodePubKeyPem}
                   onAction={handleAskForHalf}
-                  onActivate={handleExchangeRowActivate}
+                  onToggleChecks={handleToggleChecks}
+                  onToggleContent={handleToggleContent}
                   rail={railSegments[pageStart + index]}
                   row={row}
                 />
@@ -744,14 +755,6 @@ function ExchangesSection({
           </div>
         </>
       )}
-
-      <ExchangeInspector
-        counterparty={selectedCounterparty}
-        localRecord={selectedLocalRecord}
-        nodePubKeyPem={nodePubKeyPem}
-        onClose={() => setSelectedExchangeKey(null)}
-        row={selectedRow}
-      />
     </div>
   )
 }
