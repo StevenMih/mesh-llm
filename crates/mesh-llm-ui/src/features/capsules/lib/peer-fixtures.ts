@@ -1,14 +1,18 @@
 // Harness fixtures for the Peers tab ([mesh-ledger-peers-tab] Phase 1) --
 // so `pnpm dev` (:5173, harness data mode) renders a populated Peers
-// column without a live sidecar/mesh. Two rows, matching the acceptance
-// check: one clean peer, one peer carrying an alarm (a contradicted
-// adjudication AND a failed chain-continuity check). Field shapes mirror
-// `peer_accountability_tab.build_peer_row` on capsule-emit-mesh main
-// verbatim -- see `sidecarTypes.ts`'s Pane B cell types.
+// column without a live sidecar/mesh. Two Pane B rows, matching the
+// acceptance check: one clean peer, one peer carrying an alarm (a
+// contradicted adjudication AND a failed chain-continuity check). Field
+// shapes mirror `peer_accountability_tab.build_peer_row` on
+// capsule-emit-mesh main verbatim -- see `sidecarTypes.ts`'s Pane B cell
+// types. `PEER_TAB_HARNESS_MESH_PEERS` carries a THIRD peer with no
+// matching Pane B row at all -- [ledger-T7-peers-table]'s "advertised but
+// unused" row group fixture.
 import type { CapsuleRecord } from '@/features/capsules/api/types'
 import type { ModelSummary, Peer } from '@/features/app-tabs/types'
 import type { PaneBJson, PaneBRow } from '@/features/capsules/api/sidecarTypes'
 import type { PeerExchangeSource } from '@/features/capsules/lib/peer-exchange-timeline'
+import { LatencySource } from '@/lib/api/types'
 
 const CLEAN_PEER_ID = 'node:aa11bb22cc33dd44'
 const ALARMED_PEER_ID = 'node:ff99ee88dd77cc66'
@@ -182,6 +186,7 @@ export const PEER_TAB_HARNESS_MESH_PEERS: Peer[] = [
     hostedModels: ['Qwen3.6-27B-UD'],
     sharePct: 12,
     latencyMs: 38,
+    latencySource: LatencySource.DIRECT,
     loadPct: 22,
     shortId: 'aa11bb22'
   },
@@ -193,8 +198,25 @@ export const PEER_TAB_HARNESS_MESH_PEERS: Peer[] = [
     hostedModels: ['Qwen3.6-35B-A3B-UD'],
     sharePct: 6,
     latencyMs: 145,
+    latencySource: LatencySource.ESTIMATED,
     loadPct: 61,
     shortId: 'ff99ee88'
+  },
+  // [ledger-T7-peers-table] -- no Pane B row matches this id anywhere:
+  // the "Nodes advertised but unused" row group's one fixture. Mesh knows
+  // about it (announced a model, is online) but this node has never
+  // exchanged with it.
+  {
+    id: '1122334455667788',
+    hostname: 'unused-node.local',
+    region: 'ap-south',
+    status: 'online',
+    hostedModels: ['Qwen3.6-27B-UD'],
+    sharePct: 4,
+    latencyMs: 210,
+    latencySource: LatencySource.ESTIMATED,
+    loadPct: 9,
+    shortId: '11223344'
   }
 ]
 

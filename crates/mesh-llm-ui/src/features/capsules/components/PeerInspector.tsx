@@ -1,6 +1,8 @@
 // [mesh-ledger-phase3-tables-and-modal] Part 2 — the Peer Inspector modal,
-// replacing PeerCard's inline `expanded` accordion. Mirrors the Logs
-// Request Inspector shell (SharedModal + TabPanel) verbatim -- Overview /
+// replacing the old card's inline `expanded` accordion. Opened today from
+// a `PeerTableRow` click ([ledger-T7-peers-table] rebuilt the row as a
+// table cell, not a card). Mirrors the Logs Request Inspector shell
+// (SharedModal + TabPanel) verbatim -- Overview /
 // Timeline / Exchanges tabs, same as `LogRequestDetails`. The per-exchange
 // drill-down (`PeerExchangeInspector`) nests inside this modal, opened from
 // either the Timeline chart or the Exchanges list -- both drive the SAME

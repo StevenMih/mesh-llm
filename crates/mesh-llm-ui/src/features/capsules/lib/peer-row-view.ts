@@ -3,6 +3,7 @@
 // invariants (denominators always present, NOT_CHECKED never summarized as
 // corroborated, with-you and their-chain never summed) are unit-testable
 // without mounting a component.
+import { LatencySource } from '@/lib/api/types'
 import type { PaneBRow } from '@/features/capsules/api/sidecarTypes'
 import type { PeerMeshStatus } from '@/features/capsules/lib/peer-mesh-status'
 
@@ -35,7 +36,7 @@ export function unattributedExchangesLine(count: number): string {
   return `${count} ${subject} no counterparty recorded yet. They appear under Exchanges.`
 }
 
-/** Shared by the collapsed row (`PeerCard`) and the modal's Overview tab
+/** Shared by the table row (`PeerTableRow`) and the modal's Overview tab
  *  (`PeerInspector`) so the two never drift into different wording for the
  *  same mesh-status facts. */
 export function meshMetaLine(meshStatus: PeerMeshStatus | null): string | null {
@@ -205,4 +206,171 @@ export function sortPeerRows<T>(rows: readonly T[], keyOf: (row: T) => readonly 
     const [bRank, bLatency] = keyOf(b)
     return aRank - bRank || aLatency - bLatency
   })
+}
+
+// ---------------------------------------------------------------------------
+// [ledger-T7-peers-table] Block A/B/C view-model (chooser-v2 §3). Rendered
+// by the table row, never blended into one paragraph -- see
+// `LedgerPeersTable.tsx`.
+// ---------------------------------------------------------------------------
+
+/** `rung_cell.rung`'s raw ladder values are internal identifiers -- humanize
+ *  for display, and NEVER render the literal word "rung" (ledger grep
+ *  gate). */
+function humanizeToken(token: string): string {
+  return token.replace(/_/g, ' ')
+}
+
+export function admissionStateLabel(row: PaneBRow): string | null {
+  const value = row.rung?.rung
+  return typeof value === 'string' && value.length > 0 ? humanizeToken(value) : null
+}
+
+/** Block A's one line: model/quant/context (`meshMetaLine`) plus the
+ *  admission state, both self-reported. The "self-reported" note itself
+ *  (`SELF_REPORTED_NOTE`) is rendered once by the caller, never repeated
+ *  per field -- chooser-v2 §3: "self-reported" stated once. */
+export function blockAAnnouncementLine(
+  meshStatus: PeerMeshStatus | null,
+  admissionState: string | null
+): string | null {
+  const parts = [meshMetaLine(meshStatus), admissionState].filter((part): part is string => Boolean(part))
+  return parts.length > 0 ? parts.join(' · ') : null
+}
+
+export const SELF_REPORTED_NOTE = 'self-reported — not independently attested'
+
+// ---------------------------------------------------------------------------
+// Block B — what you have: latency with provenance, answered-when-asked as
+// a presence fact (never a rate).
+// ---------------------------------------------------------------------------
+
+export function latencyWithProvenanceText(meshStatus: PeerMeshStatus | null): string {
+  if (meshStatus?.latencyMs == null) return 'latency unknown'
+  const base = `${meshStatus.latencyMs} ms`
+  switch (meshStatus.latencySource) {
+    case LatencySource.DIRECT:
+      return `${base} (you measured)`
+    case LatencySource.ESTIMATED:
+      return `${base} (reported by another node)`
+    default:
+      return base
+  }
+}
+
+/** `asked_cell.text` is already an honest presence/absence fact about
+ *  evidence requests THIS node sent this peer (e.g. "this node doesn't
+ *  persist a send log yet") -- surface it verbatim under the
+ *  "answered when asked" heading rather than deriving a rate from it. */
+export function answeredWhenAskedText(row: PaneBRow): string {
+  return row.asked?.text ?? 'Answered when asked: not available yet.'
+}
+
+// ---------------------------------------------------------------------------
+// Block C — what anyone can check: adjudication outcomes (denominator-
+// honest, `adjudicationSummaryText` above) plus witness coverage. No pane
+// exposes a peer-scoped witness registration count today --
+// `history.mine_for_reference.witnessed` is documented as THIS node's OWN
+// chain, carried for reference only, never the peer's (see
+// `PaneBHistoryCell`) -- so this states the absence honestly instead of
+// borrowing that field.
+// ---------------------------------------------------------------------------
+
+export const WITNESS_COVERAGE_UNAVAILABLE_TEXT = 'Witness coverage: not available for this peer yet.'
+
+// ---------------------------------------------------------------------------
+// Unified row view -- one shape for both row groups ("dealt with" rows
+// carry the full Pane B row; "advertised but unused" rows have no
+// exchange history at all, so blocks B/C degrade to their honest empty
+// state rather than a fabricated zero).
+// ---------------------------------------------------------------------------
+
+export type PeerStatusValue = 'online' | 'offline' | 'unknown'
+
+export type PeerTableRowView = {
+  key: string
+  displayId: string
+  online: boolean
+  statusValue: PeerStatusValue
+  blockA: string | null
+  blockBCounts: string
+  blockBLatency: string
+  blockBAnswered: string | null
+  blockCAdjudication: string
+  blockCWitness: string
+  alarm: AlarmSignal
+  canRouteToChat: boolean
+  routeDisabledReason: string | null
+  hasDealings: boolean
+  row: PaneBRow | null
+}
+
+export const ROUTE_DISABLED_REASON = 'No mesh status available for this peer yet.'
+
+function statusValueFor(meshStatus: PeerMeshStatus | null): PeerStatusValue {
+  if (!meshStatus) return 'unknown'
+  return meshStatus.online ? 'online' : 'offline'
+}
+
+const ZERO_ADJUDICATION: AdjudicationSummary = {
+  checked: 0,
+  denominator: 0,
+  corroborated: 0,
+  contradicted: 0,
+  inconclusive: 0,
+  notChecked: true
+}
+
+export function dealtWithRowView(
+  row: PaneBRow,
+  meshStatus: PeerMeshStatus | null,
+  resolveTimestamp?: (capsuleId: string) => string | null
+): PeerTableRowView {
+  // `peerDisplayId` returns `null` for a row with no counterparty identity
+  // at all (see its own doc comment) -- callers filter those out before
+  // reaching here, but this fallback keeps the view honest, never `null`,
+  // if ever called directly with one.
+  const displayId = peerDisplayId(row) ?? 'counterparty not recorded'
+  return {
+    key: row.peer_id ?? displayId,
+    displayId,
+    online: meshStatus?.online ?? false,
+    statusValue: statusValueFor(meshStatus),
+    blockA: blockAAnnouncementLine(meshStatus, admissionStateLabel(row)),
+    blockBCounts: withYouCountsText(withYouCounts(row)),
+    blockBLatency: latencyWithProvenanceText(meshStatus),
+    blockBAnswered: answeredWhenAskedText(row),
+    blockCAdjudication: adjudicationSummaryText(adjudicationSummary(row)),
+    blockCWitness: WITNESS_COVERAGE_UNAVAILABLE_TEXT,
+    alarm: alarmSignal(row, resolveTimestamp),
+    canRouteToChat: Boolean(meshStatus?.modelName),
+    routeDisabledReason: meshStatus?.modelName ? null : ROUTE_DISABLED_REASON,
+    hasDealings: true,
+    row
+  }
+}
+
+/** "Nodes advertised but unused" -- a peer the mesh knows about but this
+ *  node has never exchanged with. Block B/C render their honest zero
+ *  state (never fabricated) -- `withYouCountsText`/`adjudicationSummaryText`
+ *  are not reused here on purpose: there is no `PaneBRow` to derive them
+ *  from, and "No exchanges yet" is the accurate statement, not "0 of 0". */
+export function advertisedOnlyRowView(displayId: string, meshStatus: PeerMeshStatus | null): PeerTableRowView {
+  return {
+    key: displayId,
+    displayId,
+    online: meshStatus?.online ?? false,
+    statusValue: statusValueFor(meshStatus),
+    blockA: blockAAnnouncementLine(meshStatus, null),
+    blockBCounts: 'No exchanges yet',
+    blockBLatency: latencyWithProvenanceText(meshStatus),
+    blockBAnswered: null,
+    blockCAdjudication: adjudicationSummaryText(ZERO_ADJUDICATION),
+    blockCWitness: WITNESS_COVERAGE_UNAVAILABLE_TEXT,
+    alarm: { present: false, text: '', tone: 'warn' },
+    canRouteToChat: Boolean(meshStatus?.modelName),
+    routeDisabledReason: meshStatus?.modelName ? null : ROUTE_DISABLED_REASON,
+    hasDealings: false,
+    row: null
+  }
 }
