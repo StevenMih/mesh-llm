@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   deriveRightCellState,
   isAlarmState,
+  isAskAction,
   ledgerStateFilterValue,
   rightCellAction,
   rightCellStatusLabel,
@@ -195,6 +196,16 @@ describe('isAlarmState — L-A/L-B enforcement', () => {
   it('L-A: every OPEN state, and CLOSED, is never styled as a problem', () => {
     for (const kind of ALL_KINDS.filter((k) => k !== 'contradicted')) {
       expect(isAlarmState(stateOf(kind))).toBe(false)
+    }
+  })
+})
+
+describe('isAskAction — [ledger-T1-ask-half-action] counterparty-gating predicate', () => {
+  it('only open_not_asked and open_asked are ask actions', () => {
+    expect(isAskAction('open_not_asked')).toBe(true)
+    expect(isAskAction('open_asked')).toBe(true)
+    for (const kind of ALL_KINDS.filter((k) => k !== 'open_not_asked' && k !== 'open_asked')) {
+      expect(isAskAction(kind)).toBe(false)
     }
   })
 })
