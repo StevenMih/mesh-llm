@@ -262,6 +262,7 @@ async fn moa_single_worker_stays_in_gateway() {
             affinity: &affinity,
             plugin_manager: None,
             exchange_channel: None,
+            twin_exchange_channel: None,
         },
     };
     let lifecycle = OpenAiLifecycleAttachment::unowned();
@@ -703,6 +704,7 @@ async fn api_proxy_tokenizer_route_ignores_generation_context_budget() {
         affinity: &affinity,
         plugin_manager: None,
         exchange_channel: None,
+        twin_exchange_channel: None,
     };
     let raw_before_decision = request.raw.clone();
 
@@ -1221,6 +1223,7 @@ fn remote_mesh_test_ctx<'a>(
         affinity,
         plugin_manager: None,
         exchange_channel: None,
+        twin_exchange_channel: None,
     }
 }
 
@@ -1564,6 +1567,7 @@ async fn route_self_targeted_model_attempts_a_registered_plugin_instead_of_faili
         affinity: &affinity,
         plugin_manager: Some(&plugin_manager),
         exchange_channel: None,
+        twin_exchange_channel: None,
     };
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -1644,6 +1648,7 @@ async fn route_missing_local_model_excluding_self_blocks_local_plugin_fallback()
         affinity: &affinity,
         plugin_manager: Some(&plugin_manager),
         exchange_channel: None,
+        twin_exchange_channel: None,
     };
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -1787,6 +1792,7 @@ async fn route_missing_local_model_enters_remote_mesh_branch_when_peer_serves_mo
         // Inject the recording double so both publish calls are observable
         // even though plugin_manager is None.
         exchange_channel: Some(&recording),
+        twin_exchange_channel: None,
     };
     let lifecycle = OpenAiLifecycleAttachment::unowned();
 
@@ -1950,6 +1956,7 @@ async fn route_missing_local_model_sidecar_generated_nonce_origin_sets_sidecar_f
         affinity: &affinity,
         plugin_manager: None,
         exchange_channel: Some(&recording),
+        twin_exchange_channel: None,
     };
     let lifecycle = OpenAiLifecycleAttachment::unowned();
 
@@ -2063,4 +2070,369 @@ fn exchange_usage_from_outcome_extracts_real_counts_and_omits_otherwise() {
         },
     };
     assert!(exchange_usage_from_outcome(&empty).is_none());
+}
+
+// --- [ledger-T11-twins-visible] hot-path follow-up: ambient-twin dual-dispatch ---
+
+/// Serializes every test in this section against `MESH_LLM_TWIN_SAMPLE_RATE`,
+/// mirroring `capture.rs`'s `EnvVarGuard` pattern for exactly the same
+/// reason: mutating real process env across parallel tests would race.
+/// Every caller below is `#[serial_test::serial]`.
+struct TwinRateEnvGuard {
+    previous: Option<std::ffi::OsString>,
+}
+
+impl TwinRateEnvGuard {
+    fn set(rate: &str) -> Self {
+        let previous = std::env::var_os(crate::runtime::twin_sample::TWIN_SAMPLE_RATE_ENV);
+        // SAFETY: the enclosing test contract is `#[serial_test::serial]`, so
+        // this process environment mutation cannot race another test.
+        unsafe { std::env::set_var(crate::runtime::twin_sample::TWIN_SAMPLE_RATE_ENV, rate) };
+        Self { previous }
+    }
+}
+
+impl Drop for TwinRateEnvGuard {
+    fn drop(&mut self) {
+        match &self.previous {
+            // SAFETY: see `Self::set`.
+            Some(value) => unsafe {
+                std::env::set_var(crate::runtime::twin_sample::TWIN_SAMPLE_RATE_ENV, value)
+            },
+            // SAFETY: see `Self::set`.
+            None => unsafe {
+                std::env::remove_var(crate::runtime::twin_sample::TWIN_SAMPLE_RATE_ENV)
+            },
+        }
+    }
+}
+
+/// Two distinct admitted remote peers serving `model` -- the minimum pool
+/// `select_twin_target` needs to have a second, distinct candidate to pick.
+async fn insert_two_remote_peers(node: &mesh::Node, model: &str) {
+    node.insert_test_peer(test_remote_peer(101, model)).await;
+    node.insert_test_peer(test_remote_peer(102, model)).await;
+}
+
+/// A minimal chat-completion request stamped with a client nonce -- same
+/// shape `route_missing_local_model_enters_remote_mesh_branch_when_peer_serves_model`
+/// builds inline, factored out here so the twin-dispatch tests below share
+/// one build path instead of repeating it three times.
+fn twin_test_chat_request(model: &str, nonce: &str) -> proxy::BufferedHttpRequest {
+    let body =
+        format!(r#"{{"model":"{model}","messages":[{{"role":"user","content":"hi"}}]}}"#)
+            .into_bytes();
+    let raw = format!(
+        "POST /v1/chat/completions HTTP/1.1\r\nHost: t\r\nContent-Type: application/json\r\nContent-Length: {len}\r\nx-capsule-client-nonce: {nonce}\r\n\r\n",
+        len = body.len(),
+    )
+    .into_bytes()
+    .into_iter()
+    .chain(body.iter().copied())
+    .collect::<Vec<u8>>();
+    proxy::BufferedHttpRequest {
+        raw,
+        method: "POST".to_owned(),
+        path: "/v1/chat/completions".to_owned(),
+        client_path: "/v1/chat/completions".to_owned(),
+        request_id: RequestId::default(),
+        body_json: None,
+        body_json_attempted: false,
+        body_bytes: None,
+        body_len_bytes: body.len(),
+        completion_tokens: None,
+        stream: None,
+        model_name: Some(model.to_owned()),
+        request_object_request_ids: Vec::new(),
+        response_adapter: proxy::ResponseAdapter::OpenAiChatCompletionsJson,
+        correlation_id: None,
+    }
+}
+
+/// Poll `recording`'s event count until it reaches `expected` or a short
+/// deadline elapses. The twin dispatch runs on a detached background task
+/// with no join handle by design (see `spawn_ambient_twin_dispatch` --
+/// OBSERVE-ONLY means the primary path never awaits it), so a test observing
+/// its publish calls has nothing else to synchronize on.
+async fn wait_for_event_count(recording: &RecordingChannel, expected: usize) {
+    for _ in 0..200 {
+        if recording.events.lock().unwrap().len() >= expected {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+}
+
+async fn accept_loopback_tcp() -> (tokio::net::TcpStream, tokio::net::TcpStream) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind loopback listener");
+    let addr = listener.local_addr().expect("local addr");
+    let client_connect = tokio::net::TcpStream::connect(addr);
+    let server_accept = async { listener.accept().await.map(|(stream, _)| stream) };
+    let (client_side, server_side) = tokio::join!(client_connect, server_accept);
+    (
+        client_side.expect("connect"),
+        server_side.expect("accept server side"),
+    )
+}
+
+/// Sampled exchange => the primary and the background twin publish two
+/// DISTINCT exchanges that carry the SAME `twin_bracket_id`. Forces
+/// rate=1.0 so sampling always fires, and registers two distinct remote
+/// peers so `select_twin_target` has something distinct to pick.
+#[tokio::test]
+#[serial_test::serial]
+async fn ambient_twin_sampled_shares_bracket_id_across_two_exchanges() {
+    let _env = TwinRateEnvGuard::set("1");
+    let model = "acme/twin-model-sampled:Q4_K_M";
+    let node = mesh::Node::new_for_tests(mesh::NodeRole::Worker)
+        .await
+        .expect("test node");
+    insert_two_remote_peers(&node, model).await;
+
+    let targets = election::ModelTargets::default();
+    let affinity = affinity::AffinityRouter::new();
+    let recording = std::sync::Arc::new(RecordingChannel::default());
+    let (_client_side, server_side) = accept_loopback_tcp().await;
+    let request = twin_test_chat_request(model, "nonce-twin-sampled");
+
+    let ctx = IngressRouteContext {
+        node: &node,
+        targets: &targets,
+        affinity: &affinity,
+        plugin_manager: None,
+        exchange_channel: Some(&*recording),
+        twin_exchange_channel: Some(
+            std::sync::Arc::clone(&recording) as std::sync::Arc<dyn OpenAiExchangeChannel>
+        ),
+    };
+    let lifecycle = OpenAiLifecycleAttachment::unowned();
+
+    let _outcome = route_missing_local_model(
+        server_side.into(),
+        &request,
+        &ctx,
+        model,
+        None,
+        &[],
+        None,
+        lifecycle.route_observer(),
+    )
+    .await;
+
+    wait_for_event_count(&recording, 4).await;
+    let events = recording.events.lock().unwrap();
+
+    let mut by_exchange: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for event in events.iter() {
+        *by_exchange.entry(event.exchange_id.clone()).or_default() += 1;
+    }
+    assert_eq!(
+        by_exchange.len(),
+        2,
+        "sampling must produce exactly two DISTINCT exchanges (primary + twin), \
+         got {} distinct exchange id(s) across {} event(s)",
+        by_exchange.len(),
+        events.len()
+    );
+
+    let bracket_ids: std::collections::HashSet<Option<String>> = events
+        .iter()
+        .map(|event| event.twin_bracket_id.clone())
+        .collect();
+    assert_eq!(
+        bracket_ids.len(),
+        1,
+        "both exchanges must carry the SAME twin_bracket_id, got {bracket_ids:?}"
+    );
+    let bracket_id = bracket_ids
+        .into_iter()
+        .next()
+        .flatten()
+        .expect("sampled exchanges must carry a real twin_bracket_id, not None");
+    assert!(bracket_id.starts_with("twin-"));
+}
+
+/// The ticket's own mutant test: rate=0 must never dual-dispatch, even with
+/// two distinct remote peers registered (a twin WOULD be selectable if
+/// sampling wrongly allowed it) -- only the primary's own effective/terminal
+/// pair may be published, and neither may carry a `twin_bracket_id`.
+#[tokio::test]
+#[serial_test::serial]
+async fn ambient_twin_rate_zero_never_dual_dispatches() {
+    let _env = TwinRateEnvGuard::set("0");
+    let model = "acme/twin-model-rate-zero:Q4_K_M";
+    let node = mesh::Node::new_for_tests(mesh::NodeRole::Worker)
+        .await
+        .expect("test node");
+    insert_two_remote_peers(&node, model).await;
+
+    let targets = election::ModelTargets::default();
+    let affinity = affinity::AffinityRouter::new();
+    let recording = std::sync::Arc::new(RecordingChannel::default());
+    let (_client_side, server_side) = accept_loopback_tcp().await;
+    let request = twin_test_chat_request(model, "nonce-twin-rate-zero");
+
+    let ctx = IngressRouteContext {
+        node: &node,
+        targets: &targets,
+        affinity: &affinity,
+        plugin_manager: None,
+        exchange_channel: Some(&*recording),
+        twin_exchange_channel: Some(
+            std::sync::Arc::clone(&recording) as std::sync::Arc<dyn OpenAiExchangeChannel>
+        ),
+    };
+    let lifecycle = OpenAiLifecycleAttachment::unowned();
+
+    let _outcome = route_missing_local_model(
+        server_side.into(),
+        &request,
+        &ctx,
+        model,
+        None,
+        &[],
+        None,
+        lifecycle.route_observer(),
+    )
+    .await;
+
+    // Give a spawned-but-shouldn't-exist twin task a chance to show up
+    // before asserting its absence, instead of racing a false negative.
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    let events = recording.events.lock().unwrap();
+    assert_eq!(
+        events.len(),
+        2,
+        "rate=0 must publish only the primary's own effective/terminal pair, got {} event(s)",
+        events.len()
+    );
+    assert!(
+        events.iter().all(|event| event.twin_bracket_id.is_none()),
+        "rate=0 must never attach a twin_bracket_id"
+    );
+}
+
+/// The twin peer is unreachable (a synthetic test `EndpointId` with no real
+/// listener), so the background dispatch fails -- and that failure must not
+/// block or break the primary response: the same "entered remote-mesh, not a
+/// spurious 404" proof the non-twinned sibling test above uses.
+#[tokio::test]
+#[serial_test::serial]
+async fn ambient_twin_call_failure_does_not_block_or_break_the_primary_response() {
+    let _env = TwinRateEnvGuard::set("1");
+    let model = "acme/twin-model-failure:Q4_K_M";
+    let node = mesh::Node::new_for_tests(mesh::NodeRole::Worker)
+        .await
+        .expect("test node");
+    insert_two_remote_peers(&node, model).await;
+
+    let targets = election::ModelTargets::default();
+    let affinity = affinity::AffinityRouter::new();
+    let (_client_side, server_side) = accept_loopback_tcp().await;
+    let request = twin_test_chat_request(model, "nonce-twin-failure");
+
+    let ctx = IngressRouteContext {
+        node: &node,
+        targets: &targets,
+        affinity: &affinity,
+        plugin_manager: None,
+        exchange_channel: None,
+        twin_exchange_channel: None,
+    };
+    let lifecycle = OpenAiLifecycleAttachment::unowned();
+
+    let outcome = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        route_missing_local_model(
+            server_side.into(),
+            &request,
+            &ctx,
+            model,
+            None,
+            &[],
+            None,
+            lifecycle.route_observer(),
+        ),
+    )
+    .await
+    .expect(
+        "the primary response must not hang waiting on the unreachable, \
+         detached background twin",
+    );
+
+    assert!(
+        !matches!(outcome, proxy::RouteDispatchOutcome::Responded(404)),
+        "expected remote-mesh branch (not 404) despite the twin peer being \
+         unreachable, got {outcome:?}"
+    );
+}
+
+/// The strongest form of "twinning must not perturb the sealed primary":
+/// run the identical request through two structurally-identical peer pools
+/// (deterministic `test_remote_peer` seeds, so both runs see the SAME
+/// `EndpointId`s) -- once with ambient-twin sampling forced on, once forced
+/// off -- and assert the primary's outcome AND the raw response bytes
+/// actually written to the client are byte-for-byte identical either way.
+#[tokio::test]
+#[serial_test::serial]
+async fn ambient_twin_primary_response_is_byte_identical_whether_or_not_twinned() {
+    async fn run_once(model: &str, rate: &str) -> (proxy::RouteDispatchOutcome, Vec<u8>) {
+        let _env = TwinRateEnvGuard::set(rate);
+        let node = mesh::Node::new_for_tests(mesh::NodeRole::Worker)
+            .await
+            .expect("test node");
+        insert_two_remote_peers(&node, model).await;
+
+        let targets = election::ModelTargets::default();
+        let affinity = affinity::AffinityRouter::new();
+        let (mut client_side, server_side) = accept_loopback_tcp().await;
+        let request = twin_test_chat_request(model, "nonce-twin-byte-identical");
+
+        let ctx = IngressRouteContext {
+            node: &node,
+            targets: &targets,
+            affinity: &affinity,
+            plugin_manager: None,
+            exchange_channel: None,
+            twin_exchange_channel: None,
+        };
+        let lifecycle = OpenAiLifecycleAttachment::unowned();
+
+        let outcome = route_missing_local_model(
+            server_side.into(),
+            &request,
+            &ctx,
+            model,
+            None,
+            &[],
+            None,
+            lifecycle.route_observer(),
+        )
+        .await;
+
+        use tokio::io::AsyncReadExt;
+        let mut response = Vec::new();
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            client_side.read_to_end(&mut response),
+        )
+        .await;
+        (outcome, response)
+    }
+
+    let model = "acme/twin-model-byte-identical:Q4_K_M";
+    let (twinned_outcome, twinned_response) = run_once(model, "1").await;
+    let (solo_outcome, solo_response) = run_once(model, "0").await;
+
+    assert_eq!(
+        twinned_outcome, solo_outcome,
+        "twinning must not perturb the primary outcome: twinned={twinned_outcome:?} solo={solo_outcome:?}"
+    );
+    assert_eq!(
+        twinned_response, solo_response,
+        "the primary response bytes must be byte-identical whether or not \
+         the exchange was ambiently twinned"
+    );
 }
