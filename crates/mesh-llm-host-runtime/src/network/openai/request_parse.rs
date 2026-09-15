@@ -123,7 +123,7 @@ impl std::fmt::Display for OpenAiRequestReadError {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct BufferedHttpRequest {
     pub raw: Vec<u8>,
     pub method: String,
