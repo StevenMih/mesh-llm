@@ -31,6 +31,7 @@ import {
   type ExchangeLedgerRow
 } from '@/features/capsules/lib/exchange-ledger'
 import { buildRailSegments, sortStreamByTime } from '@/features/capsules/lib/exchange-stream'
+import { exceptionsFirstLine, exceptionsFirstTally } from '@/features/capsules/lib/exceptions-first-line'
 import {
   LEDGER_PAGE_SIZE,
   exchangeRowDomId,
@@ -55,7 +56,12 @@ import {
 } from '@/features/capsules/lib/peer-fixtures'
 import { livePeerExchangeSources } from '@/features/capsules/lib/peer-exchange-timeline'
 import { usePeerMeshStatusIndex } from '@/features/capsules/lib/peer-mesh-status'
-import { peerDisplayId, peerSortKey, sortPeerRows } from '@/features/capsules/lib/peer-row-view'
+import {
+  peerDisplayId,
+  peerSortKey,
+  sortPeerRows,
+  unattributedExchangesLine
+} from '@/features/capsules/lib/peer-row-view'
 import { useDataMode } from '@/lib/data-mode'
 
 // ---------------------------------------------------------------------------
@@ -86,12 +92,12 @@ type LedgerTab = 'peers' | 'exchanges' | 'integrity'
 function ExchangesBalanceHeader({ card }: { card: JsonRecord | null | undefined }) {
   const coverage = balanceCoverage(card)
 
+  // No served-summary fold exists yet (`card` null, or a present card with
+  // no witnessed range) -- render nothing rather than a "no data" line
+  // sitting above real rows. The coverage statement is a later item, once
+  // the fold is wired and `coverage.kind` can actually be `'verified'`.
   if (coverage.kind === 'absent') {
-    return (
-      <div className="rounded border border-border-soft bg-panel-strong/40 px-3 py-2 text-xs text-fg-dim">
-        {coverage.headline}
-      </div>
-    )
+    return null
   }
   if (coverage.kind === 'failed') {
     return (
@@ -145,9 +151,17 @@ function PeersSection({ recordsById }: { recordsById: Map<string, CapsuleRecord>
     return <p className="text-sm text-muted-foreground">No peer exchanges recorded yet.</p>
   }
 
+  // No card is ever rendered for a row with no counterparty identity
+  // (design chooser-v1 §7 S1.1) -- those exchanges are rolled into the
+  // headline count below instead of a synthetic "unknown peer" card.
+  const attributedRows = query.data.rows.filter((row) => peerDisplayId(row) !== null)
+  const unattributedExchangeCount = query.data.rows
+    .filter((row) => peerDisplayId(row) === null)
+    .reduce((sum, row) => sum + (row.exchange_count ?? 0), 0)
+
   // Closest-first (latency asc); any row carrying an alarm floats to top.
-  const sortedRows = sortPeerRows(query.data.rows, (row) =>
-    peerSortKey(row, meshStatus.statusFor(peerDisplayId(row))?.latencyMs ?? null)
+  const sortedRows = sortPeerRows(attributedRows, (row) =>
+    peerSortKey(row, meshStatus.statusFor(peerDisplayId(row) ?? '')?.latencyMs ?? null)
   )
 
   return (
@@ -156,8 +170,11 @@ function PeersSection({ recordsById }: { recordsById: Map<string, CapsuleRecord>
       <p className="text-sm text-fg-dim">
         Nodes this node has exchanged with. What you sent, what they sent back, and whether it matched.
       </p>
+      {unattributedExchangeCount > 0 ? (
+        <p className="text-sm text-foreground">{unattributedExchangesLine(unattributedExchangeCount)}</p>
+      ) : null}
       {sortedRows.map((row) => {
-        const peerId = peerDisplayId(row)
+        const peerId = peerDisplayId(row) ?? ''
         const exchangeSources = harnessMode
           ? (PEER_TAB_HARNESS_EXCHANGE_SOURCES[peerId] ?? [])
           : livePeerExchangeSources(row, paneCQuery.data?.rows ?? [])
@@ -279,6 +296,15 @@ function ExchangesSection({
   const [stateFilter, setStateFilter] = useState<Set<string>>(new Set(ALL_STATE_FILTER_VALUES))
   const [selectedExchangeKey, setSelectedExchangeKey] = useState<string | null>(null)
   const handleExchangeRowActivate = useCallback((row: ExchangeLedgerRow) => setSelectedExchangeKey(row.exchangeKey), [])
+  // [ledger-T1-ask-half-action] -- deliberately distinct from
+  // handleExchangeRowActivate: the row's action cell must never open the
+  // inspector. The evidence-request carrier this would actually dispatch
+  // through is still unwired end-to-end (exchange-row-state.ts's own
+  // forward-compat note; capsule-emit-mesh's evidence_responder.py: "not
+  // yet reachable over the wire"), so this stays a no-op stub -- honest
+  // absence of a real ask, never a fabricated one -- until that carrier
+  // lands.
+  const handleAskForHalf = useCallback((_row: ExchangeLedgerRow) => {}, [])
 
   // [mesh-ledger-b3-paging] -- windowed paging (v3 §2a) state. `pageIndex`
   // is the source of truth; render/handlers read `safePageIndex` so a
@@ -329,6 +355,10 @@ function ExchangesSection({
   )
   const fullRangeText = fullRangeLabel(streamRows)
   const hasContradiction = streamRows.some((row) => row.rightCellState.kind === 'contradicted')
+  // Exceptions-first line (below) describes the FULL set, not the current
+  // filter/search view -- its own range must match that same full set,
+  // never the narrower `streamRows` range above.
+  const allRowsRangeText = fullRangeLabel(allRows)
 
   // Filters/search changing the result set (not the page itself) resets to
   // page 0 -- a stale page index into a re-shaped result set would show the
@@ -518,6 +548,9 @@ function ExchangesSection({
       <p className="text-sm font-medium text-foreground">
         {total} exchange{total === 1 ? '' : 's'} · {confirmed} confirmed by the other side
       </p>
+      {/* Exceptions-first line — leads with what needs attention, range
+         stated, never a flat count that buries a failure below it. */}
+      <p className="text-sm text-fg-dim">{exceptionsFirstLine(exceptionsFirstTally(allRows), allRowsRangeText)}</p>
 
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border-soft pb-2">
         <p className="type-caption font-mono text-fg-dim">
@@ -698,7 +731,7 @@ function ExchangesSection({
                   key={row.exchangeKey}
                   localRecord={row.raw.mine.capsule_id ? (recordsById.get(row.raw.mine.capsule_id) ?? null) : null}
                   nodePubKeyPem={nodePubKeyPem}
-                  onAction={handleExchangeRowActivate}
+                  onAction={handleAskForHalf}
                   onActivate={handleExchangeRowActivate}
                   rail={railSegments[pageStart + index]}
                   row={row}
@@ -912,13 +945,16 @@ export function LedgerPageContent({ focusExchangeKey }: { focusExchangeKey?: str
           description="Everything here is recomputed from sealed records. Nothing is a score."
           leadingIcon={<ShieldCheck aria-hidden="true" className="size-4" />}
           status={
-            <div className="flex flex-wrap items-center gap-2">
-              <StatusBadge dot size="caption" tone={sidecarConnected ? 'good' : 'muted'}>
-                {sidecarConnected ? 'Live' : 'Local'}
-              </StatusBadge>
-              <StatusBadge tone="muted" size="caption">
-                Local only
-              </StatusBadge>
+            <div className="flex flex-col gap-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <StatusBadge dot size="caption" tone={sidecarConnected ? 'good' : 'muted'}>
+                  {sidecarConnected ? 'Live' : 'Local'}
+                </StatusBadge>
+                <StatusBadge tone="muted" size="caption">
+                  This node's copy
+                </StatusBadge>
+              </div>
+              <p className="type-caption text-fg-faint">Their halves appear here as they give them to you.</p>
             </div>
           }
           title="Ledger"

@@ -12,8 +12,27 @@ export const STATE_FAILED = 'failed'
 export const STATE_REFUSED = 'refused'
 export const STATE_VERIFIED = 'verified'
 
-export function peerDisplayId(row: PaneBRow): string {
-  return row.peer_id ?? row.node?.peer_id ?? 'unknown peer'
+/** `null` means this row carries no counterparty identity at all -- pane-b's
+ *  own honest signal that these exchanges are unattributed, not that one
+ *  peer's identity failed to resolve (design chooser-v1 §7 S1.1). Never
+ *  invent a placeholder string for this case; callers render "counterparty
+ *  not recorded" / exclude the row from the Peers list instead. */
+export function peerDisplayId(row: PaneBRow): string | null {
+  return row.peer_id ?? row.node?.peer_id ?? null
+}
+
+/** True when this row has no counterparty identity (see `peerDisplayId`) --
+ *  the Peers list never renders a card for these; they're rolled into the
+ *  unattributed-exchanges line instead. */
+export function isUnattributedPeerRow(row: PaneBRow): boolean {
+  return peerDisplayId(row) === null
+}
+
+/** The Peers-section headline for exchanges with no counterparty evidence
+ *  at all -- a stated fact (R-C), never phrased as pending work. */
+export function unattributedExchangesLine(count: number): string {
+  const subject = count === 1 ? 'exchange has' : 'exchanges have'
+  return `${count} ${subject} no counterparty recorded yet. They appear under Exchanges.`
 }
 
 /** Shared by the collapsed row (`PeerCard`) and the modal's Overview tab

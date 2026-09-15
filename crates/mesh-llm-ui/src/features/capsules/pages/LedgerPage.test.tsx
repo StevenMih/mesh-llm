@@ -10,7 +10,10 @@
 //      sidecar URL box anywhere
 //   4. Exchanges header shows two counts, never a ratio
 //   5. The Balance header strip on Exchanges never crashes on an absent
-//      served-summary and never fabricates a number
+//      served-summary and never fabricates a number; per [ledger-T8-header-
+//      copy] it renders NOTHING on a null card rather than a "no data" line
+//   6. The exceptions-first line above the table, and the Ledger badge's
+//      "This node's copy" rename ([ledger-T8-header-copy])
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -147,6 +150,69 @@ describe('LedgerPageContent', () => {
     expect(await screen.findByText('peer-1')).toBeInTheDocument()
   })
 
+  it('[ledger-T2-counterparty-not-recorded] Peers: no card for an unattributed row — its exchanges roll into one headline count, never "unknown peer"', async () => {
+    const { fetchPaneB } = await import('@/features/capsules/api/sidecarClient')
+    vi.mocked(fetchPaneB).mockResolvedValueOnce({
+      rows: [
+        {
+          peer_id: 'peer-1',
+          node: { state: 'present', text: 'peer-1', peer_id: 'peer-1', member_kind: 'member', exchange_count: 1 },
+          rung: { state: 'present', text: 'full_bilateral', rung: 'full_bilateral', distinct_rungs: ['full_bilateral'] },
+          role: {
+            state: 'present',
+            text: 'you_to_them · 1',
+            role: 'you_to_them',
+            you_to_them_count: 1,
+            them_to_you_count: 0,
+            exchange_count: 1
+          },
+          history: { state: 'NOT_CHECKED', text: null },
+          served: { state: 'NOT_CHECKED', text: null },
+          pair: { state: 'absent', text: null, verified: 0, failed: 0, missing: 0, details: [] },
+          verdicts: { state: 'NOT_CHECKED', text: null, tally: { corroborated: 0, contradicted: 0, inconclusive: 0 } },
+          asked: { state: 'absent', text: null, count: 0 },
+          exchange_count: 1,
+          first_seen: null,
+          last_seen: null
+        },
+        {
+          // No `peer_id`, no `node.peer_id` — no counterparty evidence at
+          // all for these 3 exchanges (the case that used to render a
+          // synthetic "unknown peer" card).
+          peer_id: null,
+          node: { state: 'present', text: null },
+          rung: { state: 'present', text: 'unilateral_fallback', rung: 'unilateral_fallback' },
+          role: {
+            state: 'present',
+            text: 'you_to_them · 3',
+            role: 'you_to_them',
+            you_to_them_count: 3,
+            them_to_you_count: 0,
+            exchange_count: 3
+          },
+          history: { state: 'NOT_CHECKED', text: null },
+          served: { state: 'NOT_CHECKED', text: null },
+          pair: { state: 'absent', text: null, verified: 0, failed: 0, missing: 0, details: [] },
+          verdicts: { state: 'NOT_CHECKED', text: null, tally: { corroborated: 0, contradicted: 0, inconclusive: 0 } },
+          asked: { state: 'absent', text: null, count: 0 },
+          exchange_count: 3,
+          first_seen: null,
+          last_seen: null
+        }
+      ],
+      peer_count: 2
+    })
+
+    const user = userEvent.setup()
+    render(<LedgerPageContent />, { wrapper: makeWrapper() })
+    await user.click(screen.getByRole('tab', { name: /peers/i }))
+
+    expect(await screen.findByText('peer-1')).toBeInTheDocument()
+    expect(screen.getByText('3 exchanges have no counterparty recorded yet. They appear under Exchanges.')).toBeInTheDocument()
+    expect(screen.queryByText(/unknown peer/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/peer identity not resolved yet/i)).not.toBeInTheDocument()
+  })
+
   it('Exchanges header shows two counts not a ratio', async () => {
     // Set up mock with 3 rows, 1 of which is bilateral (not unilateral).
     // `mockResolvedValue` (persistent, not `...Once`): Peers is now the
@@ -207,8 +273,11 @@ describe('LedgerPageContent', () => {
     // Navigate to Exchanges tab
     await user.click(screen.getByRole('tab', { name: /exchanges/i }))
 
-    // Wait for data
-    const headerEl = await screen.findByText(/3 exchange/i)
+    // Wait for data. Matched on "confirmed by the other side" (unique to
+    // this line) rather than "3 exchange" -- the exceptions-first line
+    // below it also states the same total, so a bare "3 exchange" query is
+    // ambiguous between the two.
+    const headerEl = await screen.findByText(/confirmed by the other side/i)
     expect(headerEl.textContent).toMatch(/3 exchange/)
     expect(headerEl.textContent).toMatch(/1 confirmed by the other side/)
 
@@ -218,19 +287,43 @@ describe('LedgerPageContent', () => {
     expect(bodyText).not.toMatch(/33%/)
   })
 
-  it('Exchanges shows the balance header strip above the records, honest absence when unwitnessed', async () => {
+  it('Exchanges hides the balance header strip entirely on a null card — never a "no data" line above real rows', async () => {
     const user = userEvent.setup()
     render(<LedgerPageContent />, { wrapper: makeWrapper() })
     await user.click(screen.getByRole('tab', { name: /exchanges/i }))
 
     // fetchPaneA's default mock (card: null) — never a crash, never a
-    // fabricated number, an honest absence message instead. The coverage-
+    // fabricated number, and (per [ledger-T8-header-copy]) no absence
+    // message either: the card renders nothing at all. The coverage-
     // statement branches themselves (witnessed / not-reconciled / failed)
     // are unit-tested directly against the pure `balanceCoverage` function
     // in balance-view.test.ts — fetchPaneA is shared by three query sites
     // on this page, so asserting a specific override's exact caller here
     // would be an order-dependent test, not a real wiring check.
-    expect(await screen.findByText('No served-summary data available yet.')).toBeInTheDocument()
+    await screen.findByText(/exchanges need your attention|Nothing needs your attention/)
+    expect(screen.queryByText('No served-summary data available yet.')).not.toBeInTheDocument()
+  })
+
+  it('never renders the retired "No served-summary data available yet." string, even off the empty-state path', async () => {
+    render(<LedgerPageContent />, { wrapper: makeWrapper() })
+    const bodyText = document.body.textContent ?? ''
+    expect(bodyText).not.toMatch(/No served-summary data available yet\./)
+  })
+
+  it('shows the exceptions-first line above the Exchanges table', async () => {
+    const user = userEvent.setup()
+    render(<LedgerPageContent />, { wrapper: makeWrapper() })
+    await user.click(screen.getByRole('tab', { name: /exchanges/i }))
+
+    expect(await screen.findByText(/^Nothing needs your attention\./)).toBeInTheDocument()
+  })
+
+  it('Ledger badge reads "This node\'s copy" with the two-sided-provenance subtext, never the retired "Local only"', () => {
+    render(<LedgerPageContent />, { wrapper: makeWrapper() })
+
+    expect(screen.getByText("This node's copy")).toBeInTheDocument()
+    expect(screen.getByText('Their halves appear here as they give them to you.')).toBeInTheDocument()
+    expect(screen.queryByText('Local only')).not.toBeInTheDocument()
   })
 })
 
@@ -289,8 +382,13 @@ describe('LedgerPageContent — Part 3: Exchanges two-sided stream + row inspect
     expect(screen.getByText('CLOSED')).toBeInTheDocument()
     expect(screen.getByText('OPEN')).toBeInTheDocument()
     expect(screen.getByText('✓ cites your half by digest')).toBeInTheDocument()
-    expect(screen.getByText("You haven't asked for their half.")).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Ask them for their half' })).toBeInTheDocument()
+    // [ledger-T1-ask-half-action]: neither row carries a counterparty (the
+    // default fetchPaneB mock returns no rows), so the OPEN row's ask
+    // action is gated -- a fact, never a fabricated "not yet asked" ask
+    // button pointed at nobody.
+    expect(screen.getByText('Counterparty not recorded — nothing to ask yet.')).toBeInTheDocument()
+    expect(screen.queryByText("You haven't asked for their half.")).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Ask them for their half' })).not.toBeInTheDocument()
 
     // Row click opens the full nine-property detail modal.
     await user.click(screen.getByLabelText('Open exchange inspector for exch-alarm-07'))
@@ -299,6 +397,87 @@ describe('LedgerPageContent — Part 3: Exchanges two-sided stream + row inspect
     expect(dialog).toHaveTextContent('checkpoint signature: FAIL')
     expect(dialog).toHaveTextContent('content binding')
     expect(dialog).toHaveTextContent('producer signature')
+  })
+
+  it('[ledger-T1-ask-half-action] a row with a recorded counterparty shows the ask action; clicking it never opens the inspector', async () => {
+    const { fetchPaneB, fetchPaneCList } = await import('@/features/capsules/api/sidecarClient')
+    vi.mocked(fetchPaneCList).mockResolvedValue({
+      rows: [
+        {
+          exchange_key: 'exch-known-peer',
+          role_tag: 'ASKED',
+          header_state: 'issue',
+          properties: null,
+          has_issue: true,
+          mine: { state: 'present', capsule_id: 'mine-known' },
+          theirs: { state: 'absent', capsule_id: null },
+          unilateral: true,
+          timestamp: '2026-09-08T08:03:00Z'
+        }
+      ],
+      row_count: 1,
+      default_sort: '',
+      filters: [],
+      next_after_seq: null,
+      archived_segments: []
+    })
+    vi.mocked(fetchPaneB).mockResolvedValue({
+      rows: [
+        {
+          peer_id: 'peer-known',
+          node: {
+            state: 'present',
+            text: 'peer-known',
+            peer_id: 'peer-known',
+            member_kind: 'member',
+            exchange_count: 1
+          },
+          rung: {
+            state: 'present',
+            text: 'full_bilateral',
+            rung: 'full_bilateral',
+            distinct_rungs: ['full_bilateral']
+          },
+          role: {
+            state: 'present',
+            text: 'you_to_them · 1',
+            role: 'you_to_them',
+            you_to_them_count: 1,
+            them_to_you_count: 0,
+            exchange_count: 1
+          },
+          history: { state: 'NOT_CHECKED', text: null },
+          served: { state: 'NOT_CHECKED', text: null },
+          pair: {
+            state: 'present',
+            text: null,
+            verified: 0,
+            failed: 0,
+            missing: 1,
+            details: [{ exchange_id: 'exch-known-peer', state: 'missing' }]
+          },
+          verdicts: { state: 'NOT_CHECKED', text: null, tally: { corroborated: 0, contradicted: 0, inconclusive: 0 } },
+          asked: { state: 'absent', text: null, count: 0 },
+          exchange_count: 1,
+          first_seen: null,
+          last_seen: null
+        }
+      ],
+      peer_count: 1
+    })
+
+    const user = userEvent.setup()
+    render(<LedgerPageContent />, { wrapper: makeWrapper() })
+    await user.click(screen.getByRole('tab', { name: /exchanges/i }))
+
+    expect(await screen.findByText("You haven't asked for their half.")).toBeInTheDocument()
+    const askButton = screen.getByRole('button', { name: 'Ask them for their half' })
+
+    await user.click(askButton)
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+
+    await user.click(screen.getByLabelText('Open exchange inspector for exch-known-peer'))
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
   })
 
   it('Export view (CSV) and Save evidence file are two distinct, present toolbar actions', async () => {

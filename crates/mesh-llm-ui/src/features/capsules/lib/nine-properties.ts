@@ -21,3 +21,24 @@ export const NINE_PROPERTY_LABELS: Record<string, string> = {
 
 // These two are ALWAYS recomputed in-browser — never trusted from sidecar.
 export const RECOMPUTED_PROPERTIES = new Set(['content_binding', 'producer_signature'])
+
+// [ledger-T3-vocabulary-and-states] Two labelled groups, no counts (v3 §4 /
+// tab-design v2.1): nine properties are this node's own claim about the
+// record; `outcome_corroboration` alone is the one axis that isn't this
+// node's claim at all -- it is always visible, `not present` today (no
+// counterparty ever asked). Never merge the two into one flat list again.
+export const WHAT_NODE_SAID_GROUP = 'What this node said it did'
+export const WHAT_ACTUALLY_HAPPENED_GROUP = 'What actually happened'
+
+export const PROPERTY_GROUP: Record<string, string> = {
+  content_binding: WHAT_NODE_SAID_GROUP,
+  producer_signature: WHAT_NODE_SAID_GROUP,
+  task_binding: WHAT_NODE_SAID_GROUP,
+  local_inclusion: WHAT_NODE_SAID_GROUP,
+  checkpoint_signature: WHAT_NODE_SAID_GROUP,
+  external_registration: WHAT_NODE_SAID_GROUP,
+  continuity: WHAT_NODE_SAID_GROUP,
+  identity_authority: WHAT_NODE_SAID_GROUP,
+  capture_coverage: WHAT_NODE_SAID_GROUP,
+  outcome_corroboration: WHAT_ACTUALLY_HAPPENED_GROUP
+}
