@@ -40,6 +40,18 @@ pub(crate) enum ClientStream {
         stream: QuicBiStream,
         prefix: std::io::Cursor<Vec<u8>>,
     },
+    /// Discards every byte written and reports immediate EOF on read, with no
+    /// real downstream socket behind it.
+    ///
+    /// Used only for the ambient-twin background dispatch
+    /// ([ledger-T11-twins-visible]) — that dispatch forwards a request to a
+    /// second peer for observation only, with no client waiting on the
+    /// response, so the existing proxy machinery (which streams response
+    /// bytes to a `ClientStream` by design, `route_model_request` and
+    /// everything under it) needs somewhere real to write to that isn't an
+    /// actual client's socket. See
+    /// `network::openai::ingress::spawn_ambient_twin_dispatch`.
+    Null,
 }
 
 impl From<TcpStream> for ClientStream {
@@ -64,10 +76,16 @@ impl ClientStream {
         TcpStream::connect(addr).await.map(Self::Tcp)
     }
 
+    /// A discard sink with no real downstream socket — see [`Self::Null`].
+    pub(crate) fn null() -> Self {
+        Self::Null
+    }
+
     pub(crate) fn set_nodelay(&self, nodelay: bool) -> std::io::Result<()> {
         match self {
             Self::Tcp(stream) => stream.set_nodelay(nodelay),
             Self::Quic { .. } => Ok(()),
+            Self::Null => Ok(()),
         }
     }
 
@@ -87,6 +105,10 @@ impl ClientStream {
                 Ok(Some(_)) | Err(_) => true,
                 Ok(None) => std::future::pending::<bool>().await,
             },
+            // No real client to disconnect -- never report one, so a
+            // background twin dispatch always runs to its own natural
+            // completion instead of racing a phantom cancellation.
+            Self::Null => std::future::pending::<bool>().await,
         }
     }
 
@@ -96,6 +118,10 @@ impl ClientStream {
             Self::Quic { .. } => Err(std::io::Error::new(
                 std::io::ErrorKind::Unsupported,
                 "QUIC ingress does not expose a socket address",
+            )),
+            Self::Null => Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "the ambient-twin discard sink has no socket address",
             )),
         }
     }
@@ -121,6 +147,10 @@ impl AsyncRead for ClientStream {
                     Pin::new(stream).poll_read(cx, buf)
                 }
             }
+            // Immediate EOF -- 0 bytes filled, buf untouched -- rather than
+            // pending forever, so nothing that unexpectedly tries to read a
+            // request body back off this sink can hang.
+            Self::Null => Poll::Ready(Ok(())),
         }
     }
 }
@@ -134,6 +164,9 @@ impl AsyncWrite for ClientStream {
         match self.get_mut() {
             Self::Tcp(stream) => Pin::new(stream).poll_write(cx, buf),
             Self::Quic { stream, .. } => Pin::new(stream).poll_write(cx, buf),
+            // Discard -- claim the whole buffer was written, same as writing
+            // to `/dev/null`, so callers see no backpressure and no error.
+            Self::Null => Poll::Ready(Ok(buf.len())),
         }
     }
 
@@ -141,6 +174,7 @@ impl AsyncWrite for ClientStream {
         match self.get_mut() {
             Self::Tcp(stream) => Pin::new(stream).poll_flush(cx),
             Self::Quic { stream, .. } => Pin::new(stream).poll_flush(cx),
+            Self::Null => Poll::Ready(Ok(())),
         }
     }
 
@@ -148,6 +182,7 @@ impl AsyncWrite for ClientStream {
         match self.get_mut() {
             Self::Tcp(stream) => Pin::new(stream).poll_shutdown(cx),
             Self::Quic { stream, .. } => Pin::new(stream).poll_shutdown(cx),
+            Self::Null => Poll::Ready(Ok(())),
         }
     }
 }
@@ -159,6 +194,47 @@ mod tests {
     use tokio::time::{Duration, timeout};
 
     const TEST_ALPN: &[u8] = b"mesh-llm/client-stream-test/1";
+
+    #[tokio::test]
+    async fn null_stream_discards_writes_without_error() {
+        use tokio::io::AsyncWriteExt;
+
+        let mut sink = ClientStream::null();
+        let written = sink.write(b"twin dispatch response bytes").await.unwrap();
+        assert_eq!(written, "twin dispatch response bytes".len());
+        sink.flush().await.unwrap();
+        sink.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn null_stream_read_reports_immediate_eof() {
+        use tokio::io::AsyncReadExt;
+
+        let mut sink = ClientStream::null();
+        let mut buf = [0u8; 8];
+        let n = sink.read(&mut buf).await.unwrap();
+        assert_eq!(n, 0, "the discard sink must report EOF, never pend forever");
+    }
+
+    #[tokio::test]
+    async fn null_stream_never_reports_a_response_disconnect() {
+        let sink = ClientStream::null();
+        // No real client to disconnect; the twin dispatch must run to its
+        // own natural completion rather than racing a phantom cancellation.
+        assert!(
+            timeout(Duration::from_millis(50), sink.wait_for_response_disconnect())
+                .await
+                .is_err(),
+            "the discard sink must never resolve a disconnect signal"
+        );
+    }
+
+    #[test]
+    fn null_stream_set_nodelay_and_peer_addr_are_inert() {
+        let sink = ClientStream::null();
+        assert!(sink.set_nodelay(true).is_ok());
+        assert!(sink.peer_addr().is_err());
+    }
 
     #[tokio::test]
     async fn quic_stop_sending_reports_response_disconnect() {
