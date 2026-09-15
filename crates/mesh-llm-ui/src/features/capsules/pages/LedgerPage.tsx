@@ -24,6 +24,7 @@ import { PaneFetchError, fetchPaneA, fetchPaneB, fetchPaneCList } from '@/featur
 import { balanceCoverage } from '@/features/capsules/lib/balance-view'
 import { LedgerPeersTable } from '@/features/capsules/components/LedgerPeersTable'
 import { ExchangeStreamRow } from '@/features/capsules/components/ExchangeStreamRow'
+import { TwinBracket } from '@/features/capsules/components/TwinBracket'
 import {
   buildExchangeCounterpartyIndex,
   buildExchangeLedgerRows,
@@ -37,6 +38,8 @@ import {
   flattenPage,
   fullRangeLabel,
   groupStreamRows,
+  indexGroupsWithinPage,
+  isTwinBracketGroup,
   pageBoundaryContinuity,
   pageIndexForGroupKey,
   pageRowRange,
@@ -264,11 +267,17 @@ function exchangeFilterOptionLabel(value: string): string {
   }
 }
 
-/** `twins` can never match today -- no payload carries a twin-bracket id
- *  until B6 -- but it stays wired here so turning it on later is a filter
- *  predicate change, not a UI rebuild. */
+/** `twins` is bracket membership, not a right-cell state -- orthogonal to
+ *  (not a replacement for) the state categories, so it's OR'd in as an
+ *  extra way for a row to match rather than folded into
+ *  `ledgerStateFilterValue`'s single bucket. With every value selected by
+ *  default (today's default), this changes nothing; deselecting every
+ *  state except `twins` is what makes this "Twins only" -- exactly what
+ *  [ledger-T11-twins-visible] wires up now that rows can actually carry a
+ *  bracket id. */
 function rowMatchesStateFilter(row: ExchangeLedgerRow, selected: ReadonlySet<string>): boolean {
-  return selected.has(ledgerStateFilterValue(row.rightCellState))
+  if (selected.has(ledgerStateFilterValue(row.rightCellState))) return true
+  return row.twinBracketId !== null && selected.has('twins')
 }
 
 function ExchangesSection({
@@ -381,14 +390,20 @@ function ExchangesSection({
   // pages") can be detected -- see `pageBoundaryContinuity`.
   const railSegments = useMemo(() => buildRailSegments(streamRows), [streamRows])
 
-  // v3 §2a: "twin brackets never split" -- every row is its own atomic
-  // group until B6 supplies real bracket data (see `groupStreamRows`), and
-  // the packer below never splits a group across a page.
+  // v3 §2a: "twin brackets never split" -- adjacent rows sharing a real
+  // twin-bracket id become one atomic group ([ledger-T11-twins-visible]);
+  // every other row is still its own atomic group (see `groupStreamRows`),
+  // and the packer below never splits a group across a page.
   const groups = useMemo(() => groupStreamRows(streamRows), [streamRows])
   const pages = useMemo(() => paginateGroups(groups, LEDGER_PAGE_SIZE), [groups])
   const safePageIndex = Math.min(pageIndex, Math.max(pages.length - 1, 0))
   const currentPage = useMemo(() => pages[safePageIndex] ?? [], [pages, safePageIndex])
   const currentPageRows = useMemo(() => flattenPage(currentPage), [currentPage])
+  const indexedGroups = useMemo(() => indexGroupsWithinPage(currentPage), [currentPage])
+  // [ledger-T11-twins-visible] item 3 -- the LIVE configured rate for the
+  // bracket's disclosure sentence; `null` (never a hardcoded 50) until a
+  // sidecar actually emits it.
+  const twinSampleRateDenominator = query.data?.twin_sample_rate_denominator ?? null
   const { start: pageStart, end: pageEnd } = useMemo(() => pageRowRange(pages, safePageIndex), [pages, safePageIndex])
   const continuity = useMemo(
     () => pageBoundaryContinuity(railSegments, pageStart, pageEnd),
@@ -766,22 +781,39 @@ function ExchangesSection({
               {continuity.continuesFromPreviousPage ? (
                 <p className="pl-3 pt-2 type-caption font-mono text-fg-faint">…session continues</p>
               ) : null}
-              {currentPageRows.map((row, index) => (
-                <ExchangeStreamRow
-                  checksExpanded={checksExpandedKey === row.exchangeKey}
-                  contentExpanded={contentExpandedKey === row.exchangeKey}
-                  focused={index === focusedRowIndex}
-                  highlighted={highlightedKey === row.exchangeKey}
-                  key={row.exchangeKey}
-                  localRecord={row.raw.mine.capsule_id ? (recordsById.get(row.raw.mine.capsule_id) ?? null) : null}
-                  nodePubKeyPem={nodePubKeyPem}
-                  onAction={handleAskForHalf}
-                  onToggleChecks={handleToggleChecks}
-                  onToggleContent={handleToggleContent}
-                  rail={railSegments[pageStart + index]}
-                  row={row}
-                />
-              ))}
+              {indexedGroups.map(({ group, startIndex }) => {
+                const rowElements = group.rows.map((row, offset) => {
+                  const index = startIndex + offset
+                  return (
+                    <ExchangeStreamRow
+                      checksExpanded={checksExpandedKey === row.exchangeKey}
+                      contentExpanded={contentExpandedKey === row.exchangeKey}
+                      focused={index === focusedRowIndex}
+                      highlighted={highlightedKey === row.exchangeKey}
+                      key={row.exchangeKey}
+                      localRecord={row.raw.mine.capsule_id ? (recordsById.get(row.raw.mine.capsule_id) ?? null) : null}
+                      nodePubKeyPem={nodePubKeyPem}
+                      onAction={handleAskForHalf}
+                      onToggleChecks={handleToggleChecks}
+                      onToggleContent={handleToggleContent}
+                      rail={railSegments[pageStart + index]}
+                      row={row}
+                    />
+                  )
+                })
+                if (isTwinBracketGroup(group)) {
+                  // group.rows[0].twinBracketId is guaranteed non-null here
+                  // -- that's exactly what made `groupStreamRows` bracket
+                  // these rows together in the first place.
+                  const bracketId = group.rows[0].twinBracketId as string
+                  return (
+                    <TwinBracket bracketId={bracketId} key={group.groupKey} rows={group.rows} twinSampleRateDenominator={twinSampleRateDenominator}>
+                      {rowElements}
+                    </TwinBracket>
+                  )
+                }
+                return rowElements
+              })}
               {continuity.continuesToNextPage ? (
                 <p className="pl-3 pb-2 type-caption font-mono text-fg-faint">…session continues</p>
               ) : null}

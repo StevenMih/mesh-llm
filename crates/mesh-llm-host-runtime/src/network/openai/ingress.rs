@@ -882,6 +882,40 @@ async fn route_missing_local_model(
             );
         }
         RemoteMeshRoute::Targets(mesh_targets) => {
+            // AMBIENT_TWIN_SEAM_NOT_WIRED [ledger-T11-twins-visible] item 5.
+            // This is where live ambient-twin dual-dispatch would hook in,
+            // and it is NOT wired this session -- see
+            // `crate::runtime::twin_sample`'s module doc for why. `mesh_targets`
+            // here is exactly the list a real implementation would draw a
+            // second, distinct peer from (same shape `capsule-emit-mesh`'s
+            // `twin_selection.select_twin` already expects, though independence
+            // scoring itself is out of this ticket's scope -- see that module).
+            // The seam, concretely:
+            //   1. `let rate = crate::runtime::twin_sample::configured_twin_sample_rate();`
+            //   2. `if crate::runtime::twin_sample::should_sample_ambient_twin(rate, &mut rand::rng())`
+            //      AND `mesh_targets` has a second entry distinct from whichever
+            //      one `route_model_request` below ends up using:
+            //        a. `let bracket_id = crate::runtime::twin_sample::mint_twin_bracket_id();`
+            //        b. spawn a BACKGROUND task (never block or alter the
+            //           primary response) that forwards the SAME buffered
+            //           request bytes to the second peer via the same
+            //           `proxy::route_model_request` primitive used below,
+            //           publishing its own effective/terminal envelope pair
+            //           tagged `.with_twin_bracket_id(bracket_id.clone())`.
+            //        c. tag the PRIMARY exchange's effective/terminal envelopes
+            //           (the `effective_remote_mesh`/`terminal_remote_mesh`
+            //           calls just below) with `.with_twin_bracket_id(bracket_id)`
+            //           too, so the UI can bracket both rows.
+            //   3. Never seal/publish a twin envelope for a dispatch that did
+            //      not actually happen (item 1's "never seal anything other
+            //      than what actually ran").
+            // This is real-traffic-affecting (a second live inference call
+            // per sampled exchange, real network/compute cost, streaming and
+            // failure-mode questions of its own) and is deliberately left for
+            // a separate change -- the fleet soak task
+            // ([ledger-batch2-integrate]) is where it gets wired and proven
+            // at scale, not here.
+            //
             // This node is routing the exchange to a peer, not serving it --
             // publish the same effective/terminal pair try_route_plugin_model
             // already does for its own dispatch below, with `RemoteMesh` in
