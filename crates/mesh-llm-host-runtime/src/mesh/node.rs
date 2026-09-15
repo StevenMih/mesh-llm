@@ -1449,6 +1449,23 @@ impl Node {
         })
     }
 
+    /// Whether `peer_id` currently carries a `Verified` owner-signed
+    /// ownership certificate -- the same [`OwnershipSummary`] gossip already
+    /// maintains per peer (see [`PeerInfo::owner_summary`]), not a new trust
+    /// primitive. `false` for an unknown peer id.
+    ///
+    /// Used by ambient-twin target selection to restrict a public
+    /// (`--publish`'d) mesh's twin candidates to peers the operator has
+    /// explicitly opted to trust -- see
+    /// `network::openai::ingress::trusted_twin_candidates`.
+    pub(crate) async fn peer_ownership_verified(&self, peer_id: EndpointId) -> bool {
+        let state = self.state.lock().await;
+        state
+            .peers
+            .get(&peer_id)
+            .is_some_and(|peer| peer.owner_summary.status == OwnershipStatus::Verified)
+    }
+
     /// Locally served descriptors only -- unlike [`Self::all_served_model_descriptors`],
     /// never includes a peer's gossiped copy, so a caller matching on
     /// `model_name` cannot be handed a peer's descriptor for a same-named

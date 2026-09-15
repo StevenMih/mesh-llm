@@ -284,6 +284,22 @@ mesh-llm auth trust list
 mesh-llm auth trust remove <owner-id>
 ```
 
+## Ambient twin dispatch
+
+A small fraction of exchanges are ambiently twinned: in the background, the
+same request content is also sent to a second peer, and both exchanges are
+tagged with a shared bracket id so the console can show them side by side for
+comparison -- the comparison is observational only, and never blocks, delays,
+or changes the primary response, nor does it verify or prove anything about
+either peer's output. That background send is the reason the second peer
+matters: on a private mesh, twinning behaves as it always has, because every
+peer there already had to be invited to join; on a public (`--publish`'d)
+mesh, membership alone proves nothing, so twinning is off by default, and it
+resumes only once you configure `--trust-policy allowlist` (or
+`require-owned`) and add trusted owners with `mesh-llm auth trust add
+<owner-id>` -- at which point twinning is restricted to those trusted peers
+and the runtime logs a warning naming the exposure each time it happens.
+
 ## Networking notes
 
 - Discovery uses Nostr relays by default.

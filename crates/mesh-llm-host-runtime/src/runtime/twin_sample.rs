@@ -80,20 +80,35 @@ pub fn mint_twin_bracket_id() -> String {
     format!("twin-{}", uuid::Uuid::new_v4())
 }
 
-/// Pick a second, distinct peer for the ambient twin to dispatch to, out of
-/// the SAME candidate pool the primary dispatch is about to route through.
+/// Pick a second, distinct, TRUSTED peer for the ambient twin to dispatch
+/// to, out of the SAME candidate pool the primary dispatch is about to route
+/// through.
 ///
-/// Deterministic, not random: the second distinct candidate in `candidates`
-/// order is always the pick (never the first). This is a plain, generic
-/// helper — no dependency on `election::InferenceTarget` — so it stays
-/// exercised by ordinary unit tests without pulling routing types into this
-/// module; the caller in `network::openai::ingress` supplies
-/// `election::InferenceTarget` candidates.
+/// `is_trusted` is how a caller restricts ambient twinning to trusted peers
+/// — invite-only mesh membership, or a configured allowlist — per the
+/// [mesh-twin-trusted-peers-only] ruling: an ambient twin ships the SAME
+/// request content to whoever it targets, so on a public
+/// (`--publish`'d) mesh that pool must never include a stranger the
+/// requester never consented to. An untrusted candidate is skipped
+/// entirely, not merely deprioritized — it can never become the pick even
+/// if it is the only OTHER distinct candidate in the pool. Passing `|_|
+/// true` reproduces the pre-ruling, trust-blind behavior (e.g. on a private
+/// mesh, where every peer already had to be invited to join).
 ///
-/// `None` when fewer than two DISTINCT candidates exist — a single-candidate
-/// pool (e.g. an explicit `x-mesh-target`) has nothing distinct to twin
-/// against, so this must never invent a fallback that dual-dispatches to the
-/// same peer twice.
+/// Deterministic, not random, among trusted candidates: the second distinct
+/// TRUSTED candidate in `candidates` order is always the pick (never the
+/// first). This is a plain, generic helper — no dependency on
+/// `election::InferenceTarget` or on how trust is determined — so it stays
+/// exercised by ordinary unit tests without pulling routing or identity
+/// types into this module; the caller in `network::openai::ingress` supplies
+/// `election::InferenceTarget` candidates and its own trust predicate.
+///
+/// `None` when fewer than two DISTINCT TRUSTED candidates exist — a
+/// single-candidate pool (e.g. an explicit `x-mesh-target`), an all-untrusted
+/// pool (e.g. a public mesh with no trust-policy opt-in configured), or any
+/// mix of the two, has nothing distinct and trusted to twin against, so this
+/// must never invent a fallback that dual-dispatches to the same peer twice
+/// or to an untrusted one.
 ///
 /// This does not coordinate with the primary dispatch's own affinity/health
 /// based selection, so there is a small chance the primary independently
@@ -101,9 +116,15 @@ pub fn mint_twin_bracket_id() -> String {
 /// limitation documented at the call site, not a violation of
 /// "observe-only" (the twin dispatch still never affects what the primary
 /// returns).
-pub fn select_twin_target<T: Clone + PartialEq>(candidates: &[T]) -> Option<T> {
+pub fn select_twin_target<T: Clone + PartialEq>(
+    candidates: &[T],
+    is_trusted: impl Fn(&T) -> bool,
+) -> Option<T> {
     let mut distinct: Vec<&T> = Vec::with_capacity(2);
     for candidate in candidates {
+        if !is_trusted(candidate) {
+            continue;
+        }
         if !distinct.contains(&candidate) {
             distinct.push(candidate);
         }
@@ -133,6 +154,28 @@ pub fn twin_rate_denominator(rate: f64) -> Option<u32> {
         return None;
     }
     Some(denominator as u32)
+}
+
+/// [mesh-twin-trusted-peers-only] item 2's disclosure-sentence seam: WHY the
+/// effective ambient-twin rate is 0 on this node, when it is. `None` means
+/// twinning is not force-disabled by the trust ruling (a private mesh, or a
+/// public mesh with an explicit trust-policy opt-in) -- `configured_twin_sample_rate`
+/// and [`twin_rate_denominator`] alone already describe the live rate in
+/// that case. `Some(reason)` means [`select_twin_target`] can never find a
+/// trusted second candidate no matter what the configured rate says, so the
+/// UI must show `reason` instead of (not alongside) a "1 in N" sentence --
+/// same shape as [`twin_rate_denominator`]'s own `None`.
+///
+/// Already wired live in `network::openai::ingress::trusted_twin_candidates`,
+/// which is why this exchange's candidate pool is empty; the UI-facing
+/// disclosure-sentence READOUT that would surface `reason` to a person is
+/// the still-not-yet-built surface (see module doc and
+/// [`twin_rate_denominator`]).
+pub fn public_mesh_twin_disabled_reason(
+    is_public_mesh: bool,
+    has_trust_policy_opt_in: bool,
+) -> Option<&'static str> {
+    (is_public_mesh && !has_trust_policy_opt_in).then_some("twinning is off on the public mesh")
 }
 
 #[cfg(test)]
@@ -194,23 +237,32 @@ mod tests {
         assert!(b.starts_with("twin-"));
     }
 
+    /// Trust-blind predicate: reproduces the pre-ruling behavior so the
+    /// pool-shape tests below stay focused on distinctness, not trust.
+    fn all_trusted<T>(_: &T) -> bool {
+        true
+    }
+
     #[test]
     fn select_twin_target_none_for_empty_or_singleton_pool() {
-        assert_eq!(select_twin_target::<&str>(&[]), None);
-        assert_eq!(select_twin_target(&["peer-a"]), None);
+        assert_eq!(select_twin_target::<&str>(&[], all_trusted), None);
+        assert_eq!(select_twin_target(&["peer-a"], all_trusted), None);
     }
 
     #[test]
     fn select_twin_target_none_when_every_candidate_is_the_same_peer() {
         // A single logical peer listed twice (e.g. two health snapshots of
         // the same target) has nothing DISTINCT to twin against.
-        assert_eq!(select_twin_target(&["peer-a", "peer-a", "peer-a"]), None);
+        assert_eq!(
+            select_twin_target(&["peer-a", "peer-a", "peer-a"], all_trusted),
+            None
+        );
     }
 
     #[test]
     fn select_twin_target_picks_the_second_distinct_candidate() {
         assert_eq!(
-            select_twin_target(&["peer-a", "peer-b", "peer-c"]),
+            select_twin_target(&["peer-a", "peer-b", "peer-c"], all_trusted),
             Some("peer-b")
         );
     }
@@ -218,7 +270,7 @@ mod tests {
     #[test]
     fn select_twin_target_skips_a_duplicate_before_the_second_distinct_peer() {
         assert_eq!(
-            select_twin_target(&["peer-a", "peer-a", "peer-b"]),
+            select_twin_target(&["peer-a", "peer-a", "peer-b"], all_trusted),
             Some("peer-b")
         );
     }
@@ -232,9 +284,42 @@ mod tests {
             use rand::seq::SliceRandom;
             pool.shuffle(&mut rng);
             let first = pool[0];
-            let picked = select_twin_target(&pool).expect("at least 2 distinct candidates");
+            let picked =
+                select_twin_target(&pool, all_trusted).expect("at least 2 distinct candidates");
             assert_ne!(picked, first);
         }
+    }
+
+    #[test]
+    fn select_twin_target_skips_untrusted_candidates() {
+        // "peer-b" is distinct but untrusted -- the pick must skip past it
+        // to the next distinct TRUSTED candidate, never returning an
+        // untrusted peer just because it's second in pool order.
+        assert_eq!(
+            select_twin_target(&["peer-a", "peer-b", "peer-c"], |c: &&str| *c != "peer-b"),
+            Some("peer-c")
+        );
+    }
+
+    #[test]
+    fn select_twin_target_none_when_no_trusted_candidates() {
+        // The [mesh-twin-trusted-peers-only] mutant test: an all-untrusted
+        // pool (e.g. a public mesh with no trust-policy opt-in configured)
+        // must yield zero twins, never fall back to an untrusted peer.
+        assert_eq!(
+            select_twin_target(&["peer-a", "peer-b", "peer-c"], |_: &&str| false),
+            None
+        );
+    }
+
+    #[test]
+    fn select_twin_target_none_when_only_one_trusted_candidate() {
+        // Two distinct candidates exist, but only one is trusted -- still
+        // nothing DISTINCT-AND-TRUSTED to twin against.
+        assert_eq!(
+            select_twin_target(&["peer-a", "peer-b"], |c: &&str| *c == "peer-a"),
+            None
+        );
     }
 
     #[test]
@@ -252,6 +337,25 @@ mod tests {
     #[test]
     fn denominator_soak_override_is_one_in_two() {
         assert_eq!(twin_rate_denominator(0.5), Some(2));
+    }
+
+    #[test]
+    fn public_mesh_without_opt_in_has_a_disabled_reason() {
+        assert_eq!(
+            public_mesh_twin_disabled_reason(true, false),
+            Some("twinning is off on the public mesh")
+        );
+    }
+
+    #[test]
+    fn public_mesh_with_opt_in_has_no_disabled_reason() {
+        assert_eq!(public_mesh_twin_disabled_reason(true, true), None);
+    }
+
+    #[test]
+    fn private_mesh_never_has_a_disabled_reason_regardless_of_opt_in() {
+        assert_eq!(public_mesh_twin_disabled_reason(false, false), None);
+        assert_eq!(public_mesh_twin_disabled_reason(false, true), None);
     }
 
     #[test]

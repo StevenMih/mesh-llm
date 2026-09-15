@@ -2436,3 +2436,235 @@ async fn ambient_twin_primary_response_is_byte_identical_whether_or_not_twinned(
          the exchange was ambiently twinned"
     );
 }
+
+/// A peer whose owner-signed ownership certificate is already `Verified` in
+/// this node's own peer-gossip state -- the shape [`trusted_twin_candidates`]
+/// requires on a public mesh with an opt-in trust policy configured. Real
+/// gossip computes this via `verify_node_ownership`; the test just stamps
+/// the already-verified outcome directly onto the peer record, same as
+/// `test_remote_peer` stamps every other gossiped field.
+fn test_remote_peer_with_verified_owner(seed: u32, model: &str) -> mesh::PeerInfo {
+    mesh::PeerInfo {
+        owner_summary: crate::crypto::OwnershipSummary {
+            owner_id: Some(format!("owner-{seed}")),
+            status: crate::crypto::OwnershipStatus::Verified,
+            verified: true,
+            ..Default::default()
+        },
+        ..test_remote_peer(seed, model)
+    }
+}
+
+/// [mesh-twin-trusted-peers-only]'s own mutant test: a `--publish`'d
+/// (public) mesh with NO trust-policy opt-in configured (`TrustPolicy::Off`,
+/// the default) must produce ZERO ambient twins even with rate forced to
+/// 1.0 and two distinct, otherwise-twinnable remote peers registered -- the
+/// exact pool shape `ambient_twin_sampled_shares_bracket_id_across_two_exchanges`
+/// proves DOES twin on a private mesh. Removing the trust filter (the
+/// mutant) makes this go red: the twin would reappear against the public,
+/// unverified candidate pool.
+#[tokio::test]
+#[serial_test::serial]
+async fn ambient_twin_public_mesh_without_allowlist_opt_in_never_dual_dispatches() {
+    let _env = TwinRateEnvGuard::set("1");
+    let model = "acme/twin-model-public-no-allowlist:Q4_K_M";
+    let mut node = mesh::Node::new_for_tests(mesh::NodeRole::Worker)
+        .await
+        .expect("test node");
+    // Simulates a `--publish`'d node: publicly discoverable, default
+    // (Off) trust policy -- no allowlist / owned-peer opt-in configured.
+    node.public_mesh = true;
+    insert_two_remote_peers(&node, model).await;
+
+    let targets = election::ModelTargets::default();
+    let affinity = affinity::AffinityRouter::new();
+    let recording = std::sync::Arc::new(RecordingChannel::default());
+    let (_client_side, server_side) = accept_loopback_tcp().await;
+    let request = twin_test_chat_request(model, "nonce-twin-public-no-allowlist");
+
+    let ctx = IngressRouteContext {
+        node: &node,
+        targets: &targets,
+        affinity: &affinity,
+        plugin_manager: None,
+        exchange_channel: Some(&*recording),
+        twin_exchange_channel: Some(
+            std::sync::Arc::clone(&recording) as std::sync::Arc<dyn OpenAiExchangeChannel>
+        ),
+    };
+    let lifecycle = OpenAiLifecycleAttachment::unowned();
+
+    let _outcome = route_missing_local_model(
+        server_side.into(),
+        &request,
+        &ctx,
+        model,
+        None,
+        &[],
+        None,
+        lifecycle.route_observer(),
+    )
+    .await;
+
+    // Give a spawned-but-shouldn't-exist twin task a chance to show up
+    // before asserting its absence, instead of racing a false negative.
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    let events = recording.events.lock().unwrap();
+    assert_eq!(
+        events.len(),
+        2,
+        "public mesh with no trust-policy opt-in must publish only the \
+         primary's own effective/terminal pair, got {} event(s)",
+        events.len()
+    );
+    assert!(
+        events.iter().all(|event| event.twin_bracket_id.is_none()),
+        "public mesh with no trust-policy opt-in must never attach a twin_bracket_id"
+    );
+}
+
+/// A private mesh (no `--publish`) must twin exactly as before this
+/// ruling, REGARDLESS of trust policy -- membership itself (an invite was
+/// required to join) is the trust boundary, so an explicit `TrustPolicy::Off`
+/// (no allowlist configured at all) must not suppress twinning here the way
+/// it does on a public mesh.
+#[tokio::test]
+#[serial_test::serial]
+async fn ambient_twin_private_mesh_twins_regardless_of_trust_policy() {
+    let _env = TwinRateEnvGuard::set("1");
+    let model = "acme/twin-model-private-unchanged:Q4_K_M";
+    let node = mesh::Node::new_for_tests(mesh::NodeRole::Worker)
+        .await
+        .expect("test node");
+    assert!(!node.public_mesh, "test node must default to a private mesh");
+    assert_eq!(
+        node.trust_policy,
+        TrustPolicy::Off,
+        "test node must default to no trust-policy opt-in"
+    );
+    insert_two_remote_peers(&node, model).await;
+
+    let targets = election::ModelTargets::default();
+    let affinity = affinity::AffinityRouter::new();
+    let recording = std::sync::Arc::new(RecordingChannel::default());
+    let (_client_side, server_side) = accept_loopback_tcp().await;
+    let request = twin_test_chat_request(model, "nonce-twin-private-unchanged");
+
+    let ctx = IngressRouteContext {
+        node: &node,
+        targets: &targets,
+        affinity: &affinity,
+        plugin_manager: None,
+        exchange_channel: Some(&*recording),
+        twin_exchange_channel: Some(
+            std::sync::Arc::clone(&recording) as std::sync::Arc<dyn OpenAiExchangeChannel>
+        ),
+    };
+    let lifecycle = OpenAiLifecycleAttachment::unowned();
+
+    let _outcome = route_missing_local_model(
+        server_side.into(),
+        &request,
+        &ctx,
+        model,
+        None,
+        &[],
+        None,
+        lifecycle.route_observer(),
+    )
+    .await;
+
+    wait_for_event_count(&recording, 4).await;
+    let events = recording.events.lock().unwrap();
+    let bracket_ids: std::collections::HashSet<Option<String>> = events
+        .iter()
+        .map(|event| event.twin_bracket_id.clone())
+        .collect();
+    assert_eq!(
+        events.len(),
+        4,
+        "a private mesh must still dual-dispatch (primary + twin), got {} event(s)",
+        events.len()
+    );
+    assert_eq!(
+        bracket_ids.len(),
+        1,
+        "both exchanges must carry the SAME twin_bracket_id, got {bracket_ids:?}"
+    );
+    assert!(
+        bracket_ids.into_iter().next().flatten().is_some(),
+        "a private mesh's sampled exchange must still carry a real twin_bracket_id"
+    );
+}
+
+/// An explicit trust-policy opt-in (`TrustPolicy::Allowlist`) on a public
+/// mesh, with the second candidate peer carrying a `Verified` ownership
+/// certificate, must RESUME ambient twinning -- the ruling's item 3.
+#[tokio::test]
+#[serial_test::serial]
+async fn ambient_twin_public_mesh_allowlist_opt_in_resumes_dual_dispatch() {
+    let _env = TwinRateEnvGuard::set("1");
+    let model = "acme/twin-model-public-opt-in:Q4_K_M";
+    let mut node = mesh::Node::new_for_tests(mesh::NodeRole::Worker)
+        .await
+        .expect("test node");
+    node.public_mesh = true;
+    node.trust_policy = TrustPolicy::Allowlist;
+    node.insert_test_peer(test_remote_peer_with_verified_owner(201, model))
+        .await;
+    node.insert_test_peer(test_remote_peer_with_verified_owner(202, model))
+        .await;
+
+    let targets = election::ModelTargets::default();
+    let affinity = affinity::AffinityRouter::new();
+    let recording = std::sync::Arc::new(RecordingChannel::default());
+    let (_client_side, server_side) = accept_loopback_tcp().await;
+    let request = twin_test_chat_request(model, "nonce-twin-public-opt-in");
+
+    let ctx = IngressRouteContext {
+        node: &node,
+        targets: &targets,
+        affinity: &affinity,
+        plugin_manager: None,
+        exchange_channel: Some(&*recording),
+        twin_exchange_channel: Some(
+            std::sync::Arc::clone(&recording) as std::sync::Arc<dyn OpenAiExchangeChannel>
+        ),
+    };
+    let lifecycle = OpenAiLifecycleAttachment::unowned();
+
+    let _outcome = route_missing_local_model(
+        server_side.into(),
+        &request,
+        &ctx,
+        model,
+        None,
+        &[],
+        None,
+        lifecycle.route_observer(),
+    )
+    .await;
+
+    wait_for_event_count(&recording, 4).await;
+    let events = recording.events.lock().unwrap();
+    let bracket_ids: std::collections::HashSet<Option<String>> = events
+        .iter()
+        .map(|event| event.twin_bracket_id.clone())
+        .collect();
+    assert_eq!(
+        events.len(),
+        4,
+        "an allowlist opt-in on a public mesh must resume dual-dispatch \
+         (primary + twin) against verified peers, got {} event(s)",
+        events.len()
+    );
+    assert_eq!(
+        bracket_ids.len(),
+        1,
+        "both exchanges must carry the SAME twin_bracket_id, got {bracket_ids:?}"
+    );
+    assert!(
+        bracket_ids.into_iter().next().flatten().is_some(),
+        "the resumed twin exchange must carry a real twin_bracket_id"
+    );
+}

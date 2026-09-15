@@ -1,3 +1,4 @@
+use crate::crypto::TrustPolicy;
 use crate::inference::{election, pipeline};
 use crate::logging::{CallerPathType, OpenAiLifecycleAttachment, OpenAiRouteObserver};
 use crate::mesh;
@@ -753,7 +754,8 @@ async fn route_missing_local_model(
                 &mesh_targets,
                 request,
                 required_tokens,
-            );
+            )
+            .await;
 
             // This node is routing the exchange to a peer, not serving it --
             // publish the same effective/terminal pair try_route_plugin_model
@@ -892,6 +894,83 @@ async fn route_missing_local_model(
     )
 }
 
+/// [mesh-twin-trusted-peers-only]. Which of `candidates` an ambient twin is
+/// allowed to target -- an ambient twin ships the SAME request content to
+/// its target, and on a public mesh the candidate pool can contain
+/// strangers the requester never consented to send that content to.
+///
+/// Reuses the node's EXISTING trust concepts rather than inventing a new
+/// one:
+///   - **Private mesh** (`ctx.node.public_mesh` is `false`, the default --
+///     no `--publish`): every peer here already had to be invited to join,
+///     so membership itself is the trust boundary and every candidate is
+///     trusted, unchanged from pre-ruling behavior.
+///   - **Public mesh** (`--publish`'d): membership alone proves nothing --
+///     anyone can discover and join -- so twinning is off by default (an
+///     empty trusted set, i.e. `configured_twin_sample_rate` still applies
+///     but `select_twin_target` can never find a second trusted candidate).
+///     It resumes only when the operator has explicitly opted in via
+///     `TrustPolicy::RequireOwned` or `TrustPolicy::Allowlist` (the same
+///     policy that already gates connection admission in
+///     `mesh::policy_accepts_peer` / `stream_allowed_before_admission`),
+///     restricted to peers whose owner-signed ownership certificate is
+///     already `Verified` in the mesh's own peer-gossip state (see
+///     [`mesh::Node::peer_ownership_verified`]) -- i.e. peers the operator
+///     configured a trust store to recognize, not just any name that
+///     happened to connect.
+async fn trusted_twin_candidates(
+    ctx: &IngressRouteContext<'_>,
+    candidates: &[election::InferenceTarget],
+) -> std::collections::HashSet<election::InferenceTarget> {
+    if !ctx.node.public_mesh {
+        return candidates.iter().cloned().collect();
+    }
+    let has_trust_policy_opt_in = matches!(
+        ctx.node.trust_policy,
+        TrustPolicy::RequireOwned | TrustPolicy::Allowlist
+    );
+    let Some(no_opt_in_reason) = crate::runtime::twin_sample::public_mesh_twin_disabled_reason(
+        ctx.node.public_mesh,
+        has_trust_policy_opt_in,
+    ) else {
+        return verified_owner_candidates(ctx, candidates).await;
+    };
+    // No allowlist / owned-peer opt-in configured -- the ruling's default:
+    // effective ambient-twin rate is 0 on a public mesh. `no_opt_in_reason`
+    // is the same string the eventual UI disclosure sentence will show.
+    tracing::debug!(
+        reason = no_opt_in_reason,
+        "ambient-twin candidate pool suppressed"
+    );
+    std::collections::HashSet::new()
+}
+
+/// The public-mesh, trust-policy-opted-in half of [`trusted_twin_candidates`]
+/// -- split out purely to keep that function's branching within clippy's
+/// cognitive-complexity budget, not because this half is reusable elsewhere.
+async fn verified_owner_candidates(
+    ctx: &IngressRouteContext<'_>,
+    candidates: &[election::InferenceTarget],
+) -> std::collections::HashSet<election::InferenceTarget> {
+    let mut trusted = std::collections::HashSet::new();
+    for candidate in candidates {
+        if let election::InferenceTarget::Remote(peer_id) = candidate
+            && ctx.node.peer_ownership_verified(*peer_id).await
+        {
+            trusted.insert(candidate.clone());
+        }
+    }
+    if !trusted.is_empty() {
+        tracing::warn!(
+            trusted_candidate_count = trusted.len(),
+            "ambient-twin opt-in active on a public mesh: sampled request content for this \
+             exchange may be sent to a second, allowlisted peer in addition to the one \
+             actually serving it"
+        );
+    }
+    trusted
+}
+
 /// [ledger-T11-twins-visible] item 5, hot-path follow-up. Decides whether
 /// THIS exchange gets ambiently twinned and, if so, mints the bracket id and
 /// detaches the background second dispatch. Never blocks: this function only
@@ -902,10 +981,12 @@ async fn route_missing_local_model(
 ///
 /// Returns the bracket id both the PRIMARY and twin envelopes must carry, or
 /// `None` when this exchange isn't twinned -- rate=0, the sample roll
-/// missed, or `mesh_targets` has no second candidate distinct from the first
+/// missed, `mesh_targets` has no second candidate distinct from the first
 /// (an explicit `x-mesh-target` forces exactly one candidate, which has
-/// nothing distinct to twin against).
-fn maybe_spawn_ambient_twin(
+/// nothing distinct to twin against), or (per
+/// [mesh-twin-trusted-peers-only]) the candidate pool has no second
+/// candidate that is also TRUSTED -- see [`trusted_twin_candidates`].
+async fn maybe_spawn_ambient_twin(
     ctx: &IngressRouteContext<'_>,
     model_name: &str,
     mesh_targets: &election::ModelTargets,
@@ -917,7 +998,9 @@ fn maybe_spawn_ambient_twin(
         return None;
     }
     let candidates = mesh_targets.candidates(model_name);
-    let twin_target = crate::runtime::twin_sample::select_twin_target(&candidates)?;
+    let trusted = trusted_twin_candidates(ctx, &candidates).await;
+    let twin_target =
+        crate::runtime::twin_sample::select_twin_target(&candidates, |c| trusted.contains(c))?;
     let bracket_id = crate::runtime::twin_sample::mint_twin_bracket_id();
 
     #[cfg(test)]
