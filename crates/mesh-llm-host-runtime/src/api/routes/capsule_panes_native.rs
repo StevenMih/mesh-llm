@@ -154,6 +154,19 @@ fn exchange_key_for(record: &Value) -> Option<String> {
     request_digest(record).map(|digest| format!("digest:{digest}"))
 }
 
+/// [ledger-T11b-twin-bracket] the id shared by BOTH halves of an ambient
+/// twin comparison, forwarded verbatim by the capsule-producer plugin off
+/// the terminal envelope's own `twin_bracket_id` -- rides alongside
+/// `exchange_id` under `x-mesh-poc-v1.serving_provenance` (the sibling
+/// convention `exchange_key_for` already reads). `None` on every record
+/// that wasn't ambiently twinned (the overwhelming majority) -- never a
+/// fabricated bracket.
+fn twin_bracket_id(record: &Value) -> Option<&str> {
+    poc_block(record)
+        .and_then(|poc| poc.pointer("/serving_provenance/twin_bracket_id"))
+        .and_then(Value::as_str)
+}
+
 /// `capsule_mesh_view.label_role`, source_log fixed to `"plugin"` --
 /// this route's records are always plugin-ledger reads, never sidecar
 /// ones. `_EXPLICIT_POC_ROLES` = `{requested, served, conflict, unknown}`,
@@ -407,6 +420,10 @@ pub(super) fn build_pane_c_list(records: &[Value]) -> Value {
             },
             "unilateral": true,
             "timestamp": record.get("timestamp").cloned().unwrap_or(Value::Null),
+            // [ledger-T11b-twin-bracket] -- absent (never null) on every
+            // untwinned row; the UI's `twinBracketId` derivation already
+            // treats a missing key the same as an explicit `null`.
+            "twin_bracket_id": twin_bracket_id(record),
         }));
     }
     json!({
@@ -631,6 +648,24 @@ mod tests {
         // assurance map; this cut has not ported that verification.
         assert_eq!(pane["rows"][0]["header_state"], json!(STATE_ABSENT));
         assert_eq!(pane["rows"][0]["properties"], Value::Null);
+        // Untwinned rows (the overwhelming majority) carry no bracket.
+        assert_eq!(pane["rows"][0]["twin_bracket_id"], Value::Null);
+    }
+
+    /// [ledger-T11b-twin-bracket] a record whose `capsule-producer` plugin
+    /// forwarded a `twin_bracket_id` off the terminal envelope surfaces that
+    /// SAME id on its Pane C row, at the sibling JSON path `exchange_id`
+    /// already lives at (`x-mesh-poc-v1.serving_provenance`). MUTANT: drop
+    /// the `twin_bracket_id(record)` read in `build_pane_c_list` and this
+    /// assertion goes red.
+    #[test]
+    fn pane_c_row_carries_the_plugin_forwarded_twin_bracket_id() {
+        let mut record = fixture_record("cap-1", "2026-09-01T00:00:00Z", "req-1", None);
+        record["model_attestation"]["compute_attestation"]["x-mesh-poc-v1"] = json!({
+            "serving_provenance": { "exchange_id": "exch-real", "twin_bracket_id": "twin-abc123" }
+        });
+        let pane = build_pane_c_list(&[record]);
+        assert_eq!(pane["rows"][0]["twin_bracket_id"], json!("twin-abc123"));
     }
 
     #[test]
