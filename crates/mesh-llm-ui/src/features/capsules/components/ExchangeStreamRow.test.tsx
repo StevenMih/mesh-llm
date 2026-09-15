@@ -25,6 +25,7 @@ function makeRow(kind: RightCellStateKind, overrides: Partial<ExchangeLedgerRow>
       date: kind === 'open_refused' || kind === 'open_absent' || kind === 'open_asked' ? '4 Sep' : null
     },
     sessionId: null,
+    twinBracketId: null,
     contentToggleState: { your: { kind: 'populated', date: null }, their: { kind: 'not_asked', date: null } },
     raw: {
       mine: { state: 'present', capsule_id: 'mine-1' },

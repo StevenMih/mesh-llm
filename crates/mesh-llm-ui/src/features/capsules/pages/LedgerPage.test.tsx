@@ -14,7 +14,7 @@
 //      copy] it renders NOTHING on a null card rather than a "no data" line
 //   6. The exceptions-first line above the table, and the Ledger badge's
 //      "This node's copy" rename ([ledger-T8-header-copy])
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -761,10 +761,12 @@ describe('LedgerPageContent — Part B3: windowed paging + sticky header', () =>
   })
 
   it('a twin-sized atomic group never splits a page boundary (component-level smoke; pure-fn coverage in exchange-pages.test.ts)', async () => {
-    // Today's payload can't carry a real twin bracket (B6) -- this only
-    // re-confirms 50 rows/page holds at the component level; the load-
-    // bearing invariant itself is unit-tested against a synthetic 3-row
-    // group in exchange-pages.test.ts.
+    // Plain (non-bracket) rows -- this re-confirms 50 rows/page holds at
+    // the component level for ordinary singleton groups; the load-bearing
+    // multi-row-bracket invariant itself is unit-tested against a
+    // synthetic 3-row group in exchange-pages.test.ts, and the REAL
+    // bracket rendering is covered by the
+    // '[ledger-T11-twins-visible]' describe block below.
     const { fetchPaneCList } = await import('@/features/capsules/api/sidecarClient')
     vi.mocked(fetchPaneCList).mockResolvedValue(b3PaneCPayload(makeManyPaneCRows(51)))
 
@@ -829,5 +831,116 @@ describe('LedgerPageContent — Part B3: windowed paging + sticky header', () =>
     expect(screen.getByLabelText('Open exchange inspector for exch-0')).toHaveAttribute('data-focused', 'true')
     expect(screen.queryByRole('region', { name: /Security checks/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// [ledger-T11-twins-visible] — a real twin bracket sourced from the payload
+// (not the synthetic ExchangeRowGroup used in the pure-fn/paging tests
+// above), and the "Twins only" filter actually filtering by it now that
+// rows can carry a real `twin_bracket_id`.
+// ---------------------------------------------------------------------------
+
+const TWIN_BASE_TIMESTAMP = '2026-09-14T12:00:00.000Z'
+
+function twinPaneCRow(i: number, overrides: Partial<ReturnType<typeof makeManyPaneCRows>[number]> = {}) {
+  return {
+    exchange_key: `twin-exch-${i}`,
+    role_tag: 'ASKED',
+    header_state: 'ok',
+    properties: { outcome_corroboration: { state: 'PASS' } },
+    has_issue: false,
+    mine: { state: 'present', capsule_id: `twin-mine-${i}` },
+    theirs: { state: 'present', capsule_id: `twin-theirs-${i}` },
+    unilateral: false,
+    timestamp: new Date(new Date(TWIN_BASE_TIMESTAMP).getTime() - i * 1_000).toISOString(),
+    twin_bracket_id: 'twin-abc',
+    ...overrides
+  }
+}
+
+function twinBracketPayload() {
+  // Two adjacent twin rows (newest, indices 0/1) plus two ordinary rows
+  // further back in time -- the bracket must render, and the plain rows
+  // must render exactly as ordinary rows alongside it.
+  const plainRows = makeManyPaneCRows(2).map((row, i) => ({
+    ...row,
+    timestamp: new Date(new Date(TWIN_BASE_TIMESTAMP).getTime() - (10 + i) * 1_000).toISOString()
+  }))
+  const rows = [twinPaneCRow(0), twinPaneCRow(1), ...plainRows]
+  return b3PaneCPayload(rows as ReturnType<typeof makeManyPaneCRows>)
+}
+
+describe('LedgerPageContent — [ledger-T11-twins-visible]: real twin bracket + Twins-only filter', () => {
+  afterEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('brackets two adjacent rows sharing a real twin_bracket_id with a TWIN header, and renders the disclosure sentence', async () => {
+    const { fetchPaneCList } = await import('@/features/capsules/api/sidecarClient')
+    vi.mocked(fetchPaneCList).mockResolvedValue({ ...twinBracketPayload(), twin_sample_rate_denominator: 50 })
+
+    const user = userEvent.setup()
+    render(<LedgerPageContent />, { wrapper: makeWrapper() })
+    await user.click(screen.getByRole('tab', { name: /exchanges/i }))
+
+    expect(await screen.findByText('TWIN · twin-abc · same request, two peers')).toBeInTheDocument()
+    expect(screen.getByText('twin-mine-0')).toBeInTheDocument()
+    expect(screen.getByText('twin-mine-1')).toBeInTheDocument()
+    expect(
+      screen.getByText('This comparison ran automatically — 1 in 50 exchanges is sent to a second peer.')
+    ).toBeInTheDocument()
+    // Never a computed verdict.
+    expect(screen.getByText('no verdict')).toBeInTheDocument()
+  })
+
+  it('a lone row carrying a bracket id whose twin is absent from the payload renders as an ordinary row, never a half-bracket', async () => {
+    const { fetchPaneCList } = await import('@/features/capsules/api/sidecarClient')
+    vi.mocked(fetchPaneCList).mockResolvedValue(b3PaneCPayload([twinPaneCRow(0)] as ReturnType<typeof makeManyPaneCRows>))
+
+    const user = userEvent.setup()
+    render(<LedgerPageContent />, { wrapper: makeWrapper() })
+    await user.click(screen.getByRole('tab', { name: /exchanges/i }))
+
+    expect(await screen.findByText('twin-mine-0')).toBeInTheDocument()
+    expect(screen.queryByText(/TWIN ·/)).not.toBeInTheDocument()
+  })
+
+  it('the disclosure sentence uses the LIVE configured rate from the payload, not a hardcoded 1 in 50', async () => {
+    const { fetchPaneCList } = await import('@/features/capsules/api/sidecarClient')
+    vi.mocked(fetchPaneCList).mockResolvedValue({ ...twinBracketPayload(), twin_sample_rate_denominator: 2 })
+
+    const user = userEvent.setup()
+    render(<LedgerPageContent />, { wrapper: makeWrapper() })
+    await user.click(screen.getByRole('tab', { name: /exchanges/i }))
+
+    expect(
+      await screen.findByText('This comparison ran automatically — 1 in 2 exchanges is sent to a second peer.')
+    ).toBeInTheDocument()
+    expect(screen.queryByText(/1 in 50/)).not.toBeInTheDocument()
+  })
+
+  it('"Twins only" actually filters to bracket rows now that a real bracket id exists', async () => {
+    const { fetchPaneCList } = await import('@/features/capsules/api/sidecarClient')
+    vi.mocked(fetchPaneCList).mockResolvedValue({ ...twinBracketPayload(), twin_sample_rate_denominator: 50 })
+
+    const user = userEvent.setup()
+    render(<LedgerPageContent />, { wrapper: makeWrapper() })
+    await user.click(screen.getByRole('tab', { name: /exchanges/i }))
+
+    // Before filtering: both the bracket and the plain rows are visible.
+    expect(await screen.findByText('twin-mine-0')).toBeInTheDocument()
+    expect(screen.getByText('mine-0')).toBeInTheDocument()
+
+    await user.click(screen.getByLabelText('Filter exchanges'))
+    const stateSection = (await screen.findByText('State')).closest('section')
+    if (!stateSection) throw new Error('State filter section not found')
+    await user.click(within(stateSection).getByRole('button', { name: 'None' }))
+    await user.click(within(stateSection).getByLabelText(/Twins only,/))
+
+    expect(await screen.findByText('twin-mine-0')).toBeInTheDocument()
+    expect(screen.getByText('twin-mine-1')).toBeInTheDocument()
+    expect(screen.queryByText('mine-0')).not.toBeInTheDocument()
+    expect(screen.queryByText('mine-1')).not.toBeInTheDocument()
   })
 })

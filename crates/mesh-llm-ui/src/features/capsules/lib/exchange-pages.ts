@@ -14,21 +14,62 @@ export function exchangeRowDomId(exchangeKey: string): string {
 }
 
 export type ExchangeRowGroup = {
-  /** Stable identity for the group -- today always the sole row's
-   *  exchangeKey. A real multi-row twin bracket (B6) would key on the
-   *  bracket id instead, but the packing logic below doesn't care what the
-   *  key means, only that a group is atomic. */
+  /** Stable identity for the group -- a lone row's own exchangeKey, or
+   *  `twin-bracket:<id>` for a real multi-row twin bracket ([ledger-T11-
+   *  twins-visible]). The packing logic below doesn't care what the key
+   *  means, only that a group is atomic. */
   groupKey: string
   rows: readonly ExchangeLedgerRow[]
 }
 
 /**
- * Every stream row is its own atomic group until twin-bracket data exists
- * to group by (v3 §2a "twin brackets never split") -- there is nothing to
- * bracket yet, so every group here has exactly one row.
+ * Groups ADJACENT rows sharing the same non-null `twinBracketId` into one
+ * atomic bracket (v3 §2a "twin brackets never split"); every other row is
+ * its own singleton group, exactly as before [ledger-T11-twins-visible].
+ *
+ * Adjacency, not just a shared id, is required to merge: `streamRows` is
+ * already time-ordered (L-N) and nothing here may reorder it, so if a
+ * bracket's twin isn't next to it (interleaved by an unrelated exchange, or
+ * simply missing) this renders BOTH as ordinary singleton rows rather than
+ * forcing a reorder or a malformed one-row "bracket." This is also what
+ * keeps a lone/unmatched bracket id from ever rendering as a half-bracket:
+ * a bracket only exists once two (or more) adjacent rows actually agree on
+ * one id.
  */
 export function groupStreamRows(rows: readonly ExchangeLedgerRow[]): ExchangeRowGroup[] {
-  return rows.map((row) => ({ groupKey: row.exchangeKey, rows: [row] }))
+  const groups: ExchangeRowGroup[] = []
+  let i = 0
+  while (i < rows.length) {
+    const row = rows[i]
+    const bracketId = row.twinBracketId
+    if (bracketId !== null) {
+      const bracketRows: ExchangeLedgerRow[] = [row]
+      let j = i + 1
+      while (j < rows.length && rows[j].twinBracketId === bracketId) {
+        bracketRows.push(rows[j])
+        j++
+      }
+      if (bracketRows.length > 1) {
+        groups.push({ groupKey: `twin-bracket:${bracketId}`, rows: bracketRows })
+        i = j
+        continue
+      }
+      // Only one row carries this bracket id here (its twin is missing or
+      // not adjacent) -- never a half-bracket; falls through to render as
+      // an ordinary singleton, same as a row with no bracket id at all.
+    }
+    groups.push({ groupKey: row.exchangeKey, rows: [row] })
+    i++
+  }
+  return groups
+}
+
+/** Whether a group is a real, renderable twin bracket (>1 row). Mirrors the
+ *  `groupKey` prefix `groupStreamRows` uses, kept as one predicate so
+ *  callers never re-derive "is this a bracket" by string-matching the key
+ *  themselves. */
+export function isTwinBracketGroup(group: ExchangeRowGroup): boolean {
+  return group.rows.length > 1
 }
 
 /**
@@ -57,6 +98,29 @@ export function paginateGroups(groups: readonly ExchangeRowGroup[], pageSize: nu
 
 export function flattenPage(page: readonly ExchangeRowGroup[]): ExchangeLedgerRow[] {
   return page.flatMap((group) => group.rows)
+}
+
+export type IndexedGroup = {
+  group: ExchangeRowGroup
+  /** This group's first row's 0-based index within the page's flattened
+   *  (`flattenPage`) row order -- what a per-row prop like `rail` or
+   *  keyboard-cursor `focused` needs, since those still key off the FLAT
+   *  row position, not the group. */
+  startIndex: number
+}
+
+/** Pairs each group in a page with its starting flat-row index, so a
+ *  renderer can thread per-row props (rail segment, keyboard focus) to
+ *  rows inside a multi-row bracket exactly like it does for a singleton
+ *  row, without re-deriving the running offset itself. */
+export function indexGroupsWithinPage(page: readonly ExchangeRowGroup[]): IndexedGroup[] {
+  const indexed: IndexedGroup[] = []
+  let index = 0
+  for (const group of page) {
+    indexed.push({ group, startIndex: index })
+    index += group.rows.length
+  }
+  return indexed
 }
 
 /** 0-based index of the page containing `groupKey`, or null when it isn't
