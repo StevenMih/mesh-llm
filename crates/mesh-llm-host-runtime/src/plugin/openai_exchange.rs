@@ -418,6 +418,17 @@ pub struct OpenAiExchangeEnvelope {
     /// model — never fabricated.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_digest: Option<String>,
+    /// [ledger-T11-twins-visible] item 2 — the id shared by BOTH halves of
+    /// an ambient twin comparison, minted host-side by
+    /// [`crate::runtime::twin_sample::mint_twin_bracket_id`]. `None` on
+    /// every exchange that wasn't ambiently twinned (the overwhelming
+    /// majority) — never a fabricated id. As of this change nothing sets
+    /// this field in production; see
+    /// [`crate::runtime::twin_sample`]'s module doc for why the live
+    /// dual-dispatch that would set it on real traffic is a separate,
+    /// not-yet-wired change.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub twin_bracket_id: Option<String>,
 }
 
 impl OpenAiExchangeEnvelope {
@@ -442,6 +453,7 @@ impl OpenAiExchangeEnvelope {
             response_digest: None,
             tool_calls_digest: None,
             reasoning_digest: None,
+            twin_bracket_id: None,
         }
     }
 
@@ -469,6 +481,7 @@ impl OpenAiExchangeEnvelope {
             response_digest: None,
             tool_calls_digest: None,
             reasoning_digest: None,
+            twin_bracket_id: None,
         }
     }
 
@@ -527,6 +540,17 @@ impl OpenAiExchangeEnvelope {
         self
     }
 
+    /// Attach the twin-bracket id ([ledger-T11-twins-visible] item 2) shared
+    /// by both halves of an ambient twin comparison. Mirrors the other
+    /// builders. Only ever called with an id minted by
+    /// [`crate::runtime::twin_sample::mint_twin_bracket_id`]; the field stays
+    /// `None` on every exchange that wasn't ambiently twinned.
+    #[must_use]
+    pub fn with_twin_bracket_id(mut self, twin_bracket_id: String) -> Self {
+        self.twin_bracket_id = Some(twin_bracket_id);
+        self
+    }
+
     /// Effective-request envelope for the `RemoteMesh` dispatch path,
     /// carrying the nonce this node is about to forward to the peer
     /// unchanged — so a plugin observing only the effective event already
@@ -564,6 +588,7 @@ impl OpenAiExchangeEnvelope {
             response_digest: None,
             tool_calls_digest: None,
             reasoning_digest: None,
+            twin_bracket_id: None,
         }
     }
 
@@ -623,6 +648,7 @@ impl OpenAiExchangeEnvelope {
             response_digest: None,
             tool_calls_digest: None,
             reasoning_digest: None,
+            twin_bracket_id: None,
         }
     }
 }
@@ -1837,5 +1863,41 @@ mod tests {
         assert!(envelope.response_digest.is_none());
         assert!(envelope.tool_calls_digest.is_none());
         assert!(envelope.reasoning_digest.is_none());
+    }
+
+    /// [ledger-T11-twins-visible] item 2 — both halves of an ambient twin
+    /// carry the SAME bracket id; this only proves the wire shape round
+    /// trips, not that anything mints/attaches it in production yet (see
+    /// `runtime::twin_sample`'s module doc).
+    #[test]
+    fn twin_bracket_id_round_trips_on_both_dispatch_paths() {
+        let primary = OpenAiExchangeEnvelope::terminal_remote_mesh(
+            "exch-a", "m", Some(200), None, None, None,
+        )
+        .with_twin_bracket_id("twin-abc".to_string());
+        let twin = OpenAiExchangeEnvelope::terminal_remote_mesh(
+            "exch-b", "m", Some(200), None, None, None,
+        )
+        .with_twin_bracket_id("twin-abc".to_string());
+        assert_eq!(primary.twin_bracket_id, twin.twin_bracket_id);
+        let value = serde_json::to_value(&primary).expect("serialize");
+        assert_eq!(value["twin_bracket_id"], "twin-abc");
+    }
+
+    /// No bracket id attached -> the key is omitted entirely (never a
+    /// fabricated empty bracket), same honesty contract as every other
+    /// optional field on this envelope.
+    #[test]
+    fn twin_bracket_id_omitted_when_not_attached() {
+        let envelope = OpenAiExchangeEnvelope::terminal(
+            "exch-no-twin",
+            OpenAiExchangeDispatchPath::RawProxy,
+            "m",
+            Some(200),
+            None,
+            None,
+        );
+        let value = serde_json::to_value(&envelope).expect("serialize");
+        assert!(value.get("twin_bracket_id").is_none());
     }
 }
