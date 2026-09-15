@@ -15,6 +15,7 @@ function streamRow(overrides: Partial<ExchangeLedgerRow>): ExchangeLedgerRow {
     rightCellState: { kind: 'open_not_asked', date: null },
     contentToggleState: { your: { kind: 'populated', date: null }, their: { kind: 'not_asked', date: null } },
     sessionId: null,
+    twinBracketId: null,
     raw: {} as PaneCRow,
     ...overrides
   }

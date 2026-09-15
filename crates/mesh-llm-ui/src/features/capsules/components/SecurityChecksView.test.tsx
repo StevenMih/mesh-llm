@@ -42,6 +42,7 @@ function ledgerRow(raw: PaneCRow): ExchangeLedgerRow {
     rightCellState: { kind: 'closed', date: null },
     contentToggleState: { your: { kind: 'populated', date: null }, their: { kind: 'not_asked', date: null } },
     sessionId: null,
+    twinBracketId: null,
     raw
   }
 }

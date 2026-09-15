@@ -171,6 +171,22 @@ export type AssuranceProperties = Record<string, PaneState>
  *  three. */
 export type EvidenceRequestOutcome = 'signed_refusal' | 'recorded_absence' | 'unanswered' | 'not_asked'
 
+/** [ledger-T11-twins-visible] item 3 — the mechanical facts of an ambient
+ *  twin comparison, when this row is one half of one. Deliberately carries
+ *  NO computed verdict field (item 4: observe-only, no verdict published) --
+ *  only what the two dispatches themselves recorded. Every field
+ *  optional/forward-looking: no sidecar emits this yet (the host-side
+ *  dispatch that would populate it is an unwired seam, see
+ *  `runtime::twin_sample` on the Rust side), so it degrades to omission,
+ *  never a fabricated comparison. */
+export type TwinComparison = {
+  temperature?: number | null
+  seed?: number | null
+  model_identity_hash?: string | null
+  settings_label?: string | null
+  response_digest?: string | null
+}
+
 export type PaneCRow = {
   exchange_key: string
   role_tag: string
@@ -211,6 +227,16 @@ export type PaneCRow = {
    *  no sidecar emits it yet, so it degrades to `null` (no rail), never an
    *  invented grouping. */
   session_id?: string | null
+  /** [ledger-T11-twins-visible] item 2 — the id shared by BOTH halves of an
+   *  ambient twin comparison, minted host-side (Rust) per the ticket's
+   *  Rust-native ruling. `null`/absent on every row that wasn't ambiently
+   *  twinned (the overwhelming majority) -- optional/forward-looking, same
+   *  discipline as `session_id`: no sidecar emits it yet, degrades to no
+   *  bracket rather than a half-bracket. */
+  twin_bracket_id?: string | null
+  /** The comparison facts for this row's half of the bracket -- see
+   *  `TwinComparison`. Present only alongside a real `twin_bracket_id`. */
+  twin_comparison?: TwinComparison | null
 }
 
 export type PaneCListJson = {
@@ -220,6 +246,15 @@ export type PaneCListJson = {
   rows: PaneCRow[]
   next_after_seq: number | null
   archived_segments: unknown[]
+  /** [ledger-T11-twins-visible] item 3 — the LIVE configured ambient-twin
+   *  sample rate expressed as "1 in N", for the disclosure sentence
+   *  ("This comparison ran automatically — 1 in N exchanges is sent to a
+   *  second peer."). Optional/forward-looking: no sidecar emits it yet
+   *  (the Rust host's `twin_sample::configured_twin_sample_rate` isn't
+   *  wired to a live status endpoint this session) -- a bracket still
+   *  renders without it, just without a specific N in the sentence, never
+   *  a hardcoded "50". */
+  twin_sample_rate_denominator?: number | null
 }
 
 export type PaneCDrilldownJson =
