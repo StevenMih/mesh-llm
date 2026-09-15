@@ -4,9 +4,10 @@
 // (L-N), and the two-sided record itself -- `YOUR RECORD │ THEIR RECORD, AS
 // GIVEN TO YOU`. The column labels themselves now live in the sticky header
 // above the stream ([mesh-ledger-b3-paging], v3 §2a), not repeated per row.
-// Toggle ① content ([mesh-ledger-b4-toggle-content], v3 §3) -- inline, below
-// the always-visible right-cell row; a row click still opens the existing
-// full-detail inspector modal, a separate concern from this toggle.
+// [ledger-T4-inline-inspector] v3 §2/§3/§4 -- the row carries its own two
+// explicit toggles, `▸/▾ content` and `▸/▾ checks`, right below the summary
+// row. There is no modal and no whole-row click target: the two toggles are
+// the entire detail surface.
 import { Button } from '@/components/ui/button'
 import { StatusBadge } from '@/components/ui/StatusBadge'
 import { cn } from '@/lib/cn'
@@ -72,7 +73,10 @@ export type ExchangeStreamRowProps = {
    *  (never a stand-in for a trusted result). */
   localRecord?: CapsuleRecord | null
   nodePubKeyPem?: string | null
-  onActivate: (row: ExchangeLedgerRow) => void
+  /** Toggle ① -- flips `contentExpanded` for this row (the `▸/▾ content` control). */
+  onToggleContent: (row: ExchangeLedgerRow) => void
+  /** Toggle ② -- flips `checksExpanded` for this row (the `▸/▾ checks` control). */
+  onToggleChecks: (row: ExchangeLedgerRow) => void
   onAction: (row: ExchangeLedgerRow) => void
 }
 
@@ -85,7 +89,8 @@ export function ExchangeStreamRow({
   contentExpanded = false,
   localRecord = null,
   nodePubKeyPem = null,
-  onActivate,
+  onToggleContent,
+  onToggleChecks,
   onAction
 }: ExchangeStreamRowProps) {
   const state = row.rightCellState
@@ -108,14 +113,19 @@ export function ExchangeStreamRow({
         <p className="pl-3 pt-2 type-caption font-mono text-fg-faint">session {row.sessionId}</p>
       ) : null}
       <div
+        aria-current={highlighted ? 'true' : undefined}
+        aria-label={`Exchange ${row.exchangeKey}`}
         className={cn(
           'flex flex-col gap-2 border-l-2 py-3 pl-3 pr-1',
           rail.hasRail ? 'border-accent/50' : 'border-transparent',
           focused && 'ring-1 ring-inset ring-accent/70',
           highlighted && 'bg-[color-mix(in_oklab,var(--color-accent)_10%,transparent)]'
         )}
+        data-focused={focused ? 'true' : undefined}
+        data-highlighted={highlighted ? 'true' : undefined}
         data-right-cell-state={state.kind}
         data-role-tag={row.roleTag}
+        role="group"
       >
         <div className="flex flex-wrap items-center gap-2 text-xs text-fg-dim">
           <span aria-hidden="true">{marker}</span>
@@ -137,23 +147,11 @@ export function ExchangeStreamRow({
           </span>
         </div>
         <div className="grid grid-cols-2 gap-0 rounded border border-border-soft">
-          {/* The id/digest area is its own control -- it opens the
-             inspector. It is not nested inside, and does not nest, any
-             other interactive element ([ledger-T1-ask-half-action] Do (1)):
-             the cell action to its right is a sibling, never a descendant. */}
-          <button
-            aria-current={highlighted ? 'true' : undefined}
-            aria-label={`Open exchange inspector for ${row.exchangeKey}`}
-            className="flex flex-col gap-1 border-r border-border-soft px-3 py-2 text-left outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-accent/70"
-            data-focused={focused ? 'true' : undefined}
-            data-highlighted={highlighted ? 'true' : undefined}
-            onClick={() => onActivate(row)}
-            type="button"
-          >
+          <div className="flex flex-col gap-1 border-r border-border-soft px-3 py-2">
             <p className="font-mono text-xs text-foreground">
               <span>{row.exchangeKey}</span> · <span>{row.raw.mine.capsule_id ?? row.raw.mine.text ?? '—'}</span>
             </p>
-          </button>
+          </div>
           <div className="flex flex-col gap-1.5 px-3 py-2">
             <p className="text-xs text-fg-dim">{cellText}</p>
             {action ? (
@@ -168,6 +166,27 @@ export function ExchangeStreamRow({
               </Button>
             ) : null}
           </div>
+        </div>
+        {/* [ledger-T4-inline-inspector] v3 §2's row footer: two independent
+           disclosure toggles, never a modal. Always present, regardless of
+           the right-cell state. */}
+        <div className="flex items-center gap-3 text-xs text-fg-dim">
+          <button
+            aria-expanded={contentExpanded}
+            className="ui-control-ghost font-mono"
+            onClick={() => onToggleContent(row)}
+            type="button"
+          >
+            {contentExpanded ? '▾ content' : '▸ content'}
+          </button>
+          <button
+            aria-expanded={checksExpanded}
+            className="ui-control-ghost font-mono"
+            onClick={() => onToggleChecks(row)}
+            type="button"
+          >
+            {checksExpanded ? '▾ checks' : '▸ checks'}
+          </button>
         </div>
         {contentExpanded ? (
           <div className="grid grid-cols-2 gap-0 rounded border border-border-soft" data-content-toggle="expanded">
