@@ -31,6 +31,11 @@ export type ExchangeLedgerRow = {
   /** L-O: null for every served row and for any row the record itself
    *  carries no session for -- never invented. */
   sessionId: string | null
+  /** [ledger-T11-twins-visible] -- `null` for every row that isn't one half
+   *  of an ambient twin comparison (the overwhelming majority today). See
+   *  `twin-bracket.ts` for how two rows sharing a non-null id become one
+   *  bracket. */
+  twinBracketId: string | null
   raw: PaneCRow
 }
 
@@ -87,6 +92,7 @@ export function buildExchangeLedgerRows(
     // party to the requester's conversation), regardless of what the
     // record carries.
     sessionId: row.role_tag === 'ASKED' ? (row.session_id ?? null) : null,
+    twinBracketId: row.twin_bracket_id ?? null,
     raw: row
   }))
 }

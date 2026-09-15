@@ -3,6 +3,8 @@ import {
   flattenPage,
   fullRangeLabel,
   groupStreamRows,
+  indexGroupsWithinPage,
+  isTwinBracketGroup,
   pageBoundaryContinuity,
   pageIndexForGroupKey,
   pageRowRange,
@@ -25,6 +27,7 @@ function streamRow(overrides: Partial<ExchangeLedgerRow> = {}): ExchangeLedgerRo
     rightCellState: { kind: 'open_not_asked', date: null },
     contentToggleState: { your: { kind: 'populated', date: null }, their: { kind: 'not_asked', date: null } },
     sessionId: null,
+    twinBracketId: null,
     raw: {} as PaneCRow,
     ...overrides
   }
@@ -44,6 +47,50 @@ describe('groupStreamRows', () => {
       { groupKey: 'a', rows: [rows[0]] },
       { groupKey: 'b', rows: [rows[1]] }
     ])
+  })
+
+  it('[ledger-T11-twins-visible] merges two ADJACENT rows sharing a non-null twinBracketId into one bracket group', () => {
+    const rows = [
+      streamRow({ exchangeKey: 'twin-a', twinBracketId: 'twin-xyz' }),
+      streamRow({ exchangeKey: 'twin-b', twinBracketId: 'twin-xyz' })
+    ]
+    const groups = groupStreamRows(rows)
+    expect(groups).toEqual([{ groupKey: 'twin-bracket:twin-xyz', rows }])
+    expect(isTwinBracketGroup(groups[0])).toBe(true)
+  })
+
+  it('never renders a half-bracket: a lone row carrying a bracket id whose twin is missing renders as an ordinary singleton', () => {
+    const rows = [
+      streamRow({ exchangeKey: 'unmatched', twinBracketId: 'twin-orphan' }),
+      streamRow({ exchangeKey: 'plain', twinBracketId: null })
+    ]
+    const groups = groupStreamRows(rows)
+    expect(groups).toEqual([
+      { groupKey: 'unmatched', rows: [rows[0]] },
+      { groupKey: 'plain', rows: [rows[1]] }
+    ])
+    expect(groups.every((g) => !isTwinBracketGroup(g))).toBe(true)
+  })
+
+  it('never merges rows sharing a bracket id when a DIFFERENT exchange sits between them -- the time-ordered stream is never reordered', () => {
+    const rows = [
+      streamRow({ exchangeKey: 'twin-a', twinBracketId: 'twin-xyz' }),
+      streamRow({ exchangeKey: 'unrelated', twinBracketId: null }),
+      streamRow({ exchangeKey: 'twin-b', twinBracketId: 'twin-xyz' })
+    ]
+    const groups = groupStreamRows(rows)
+    expect(groups.map((g) => g.groupKey)).toEqual(['twin-a', 'unrelated', 'twin-b'])
+    expect(groups.every((g) => !isTwinBracketGroup(g))).toBe(true)
+  })
+
+  it('a real bracket of two never splits pagination-wise from a following unrelated row on the same page', () => {
+    const rows = [
+      streamRow({ exchangeKey: 'twin-a', twinBracketId: 'twin-xyz' }),
+      streamRow({ exchangeKey: 'twin-b', twinBracketId: 'twin-xyz' }),
+      streamRow({ exchangeKey: 'plain', twinBracketId: null })
+    ]
+    const groups = groupStreamRows(rows)
+    expect(flattenPage(groups).map((r) => r.exchangeKey)).toEqual(['twin-a', 'twin-b', 'plain'])
   })
 })
 
@@ -92,6 +139,28 @@ describe('paginateGroups', () => {
 
   it('returns no pages for an empty group list', () => {
     expect(paginateGroups([], 50)).toEqual([])
+  })
+})
+
+describe('indexGroupsWithinPage', () => {
+  it('gives each group its starting flat-row index, accounting for a multi-row bracket', () => {
+    const page: ExchangeRowGroup[] = [
+      { groupKey: 'plain-1', rows: [streamRow({ exchangeKey: 'plain-1' })] },
+      {
+        groupKey: 'twin-bracket:twin-xyz',
+        rows: [streamRow({ exchangeKey: 'twin-a' }), streamRow({ exchangeKey: 'twin-b' })]
+      },
+      { groupKey: 'plain-2', rows: [streamRow({ exchangeKey: 'plain-2' })] }
+    ]
+    expect(indexGroupsWithinPage(page)).toEqual([
+      { group: page[0], startIndex: 0 },
+      { group: page[1], startIndex: 1 },
+      { group: page[2], startIndex: 3 }
+    ])
+  })
+
+  it('is empty for an empty page', () => {
+    expect(indexGroupsWithinPage([])).toEqual([])
   })
 })
 

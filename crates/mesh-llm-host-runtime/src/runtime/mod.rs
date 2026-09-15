@@ -40,6 +40,7 @@ pub(crate) mod survey;
 #[cfg(test)]
 mod tests;
 mod tracing_writer;
+pub(crate) mod twin_sample;
 pub(crate) mod wakeable;
 
 pub(crate) use self::capacity::runtime_model_required_bytes;
