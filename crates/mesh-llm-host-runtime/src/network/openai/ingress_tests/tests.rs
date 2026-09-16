@@ -766,6 +766,7 @@ fn plugin_route_status_maps_responded_and_responded_with_usage() {
                 Some(2)
             )
             .unwrap(),
+            output_digests: Default::default(),
         }),
         Some(200)
     );
@@ -807,6 +808,7 @@ fn plugin_route_success_records_one_attempt_and_one_terminal_outcome() {
             status_code: 200,
             usage: None,
             cache_cost: None,
+            output_digests: Default::default(),
         },
     );
     assert!(matches!(
@@ -1042,6 +1044,7 @@ fn usage_never_turns_moa_or_pipeline_error_statuses_into_success() {
         terminal_outcome_for_dispatch(proxy::RouteDispatchOutcome::RespondedWithUsage {
             status_code: 400,
             usage,
+            output_digests: Default::default(),
         }),
         TerminalOutcome::RejectedWithStatus {
             status_code: 400,
@@ -1052,6 +1055,7 @@ fn usage_never_turns_moa_or_pipeline_error_statuses_into_success() {
         terminal_outcome_for_dispatch(proxy::RouteDispatchOutcome::RespondedWithUsage {
             status_code: 502,
             usage,
+            output_digests: Default::default(),
         }),
         TerminalOutcome::FailedWithStatus {
             status_code: 502,
@@ -1076,6 +1080,7 @@ fn streamed_moa_chat_and_responses_record_compatible_usage_lifecycle() {
         let outcome = proxy::RouteDispatchOutcome::RespondedWithUsage {
             status_code: 200,
             usage,
+            output_digests: Default::default(),
         };
         proxy::record_moa_stream_lifecycle(attachment.route_observer(), adapter, outcome);
         attachment.terminal(terminal_outcome_for_dispatch(outcome));
@@ -1147,6 +1152,7 @@ fn exchange_usage_from_outcome_extracts_real_counts_and_omits_otherwise() {
             completion_tokens: Some(6),
             total_tokens: Some(48),
         },
+        output_digests: Default::default(),
     };
     let usage = exchange_usage_from_outcome(&with_usage).expect("real usage present");
     assert_eq!(usage.prompt_tokens, 42);
@@ -1165,6 +1171,7 @@ fn exchange_usage_from_outcome_extracts_real_counts_and_omits_otherwise() {
             completion_tokens: Some(5),
             total_tokens: Some(23),
         },
+        output_digests: Default::default(),
     };
     assert_eq!(
         exchange_usage_from_outcome(&disagreeing_total)
@@ -1183,6 +1190,7 @@ fn exchange_usage_from_outcome_extracts_real_counts_and_omits_otherwise() {
             completion_tokens: Some(5),
             total_tokens: None,
         },
+        output_digests: Default::default(),
     };
     assert!(exchange_usage_from_outcome(&missing_total).is_none());
 
@@ -1196,6 +1204,7 @@ fn exchange_usage_from_outcome_extracts_real_counts_and_omits_otherwise() {
             completion_tokens: None,
             total_tokens: Some(42),
         },
+        output_digests: Default::default(),
     };
     assert!(exchange_usage_from_outcome(&missing_completion).is_none());
 
@@ -1208,6 +1217,7 @@ fn exchange_usage_from_outcome_extracts_real_counts_and_omits_otherwise() {
             completion_tokens: Some(6),
             total_tokens: Some(48),
         },
+        output_digests: Default::default(),
     };
     assert_eq!(
         exchange_usage_from_outcome(&with_cache)
@@ -1228,6 +1238,7 @@ fn exchange_usage_from_outcome_extracts_real_counts_and_omits_otherwise() {
             completion_tokens: None,
             total_tokens: None,
         },
+        output_digests: Default::default(),
     };
     assert!(exchange_usage_from_outcome(&empty).is_none());
 }
@@ -2539,5 +2550,58 @@ async fn ambient_twin_primary_response_is_byte_identical_whether_or_not_twinned(
         twinned_response, solo_response,
         "the primary response bytes must be byte-identical whether or not \
          the exchange was ambiently twinned"
+    );
+}
+
+/// Mirrors `exchange_usage_from_outcome_extracts_real_counts_and_omits_otherwise`
+/// for the output-digest lift: `exchange_output_digests_from_outcome` returns
+/// the real bundle a `RespondedWithUsage` outcome carries, and an all-`None`
+/// bundle for every other outcome — never fabricating one.
+#[test]
+fn exchange_output_digests_from_outcome_lifts_real_digests_and_omits_otherwise() {
+    use mesh_llm_events::logging::events::TokenUsage;
+
+    let digests = crate::plugin::openai_exchange::ExchangeOutputDigests::from_response_body(
+        br#"{"choices":[{"index":0,"message":{"role":"assistant","content":"hi"}}]}"#,
+    );
+    assert!(digests.response.is_some(), "fixture body must parse");
+
+    let with_digests = proxy::RouteDispatchOutcome::RespondedWithUsage {
+        status_code: 200,
+        usage: TokenUsage {
+            prompt_tokens: Some(1),
+            cached_prompt_tokens: None,
+            completion_tokens: Some(1),
+            total_tokens: Some(2),
+        },
+        output_digests: digests,
+    };
+    assert_eq!(exchange_output_digests_from_outcome(&with_digests), digests);
+
+    // Every non-`RespondedWithUsage` outcome yields an all-`None` bundle.
+    assert_eq!(
+        exchange_output_digests_from_outcome(&proxy::RouteDispatchOutcome::Responded(200)),
+        Default::default()
+    );
+    assert_eq!(
+        exchange_output_digests_from_outcome(&proxy::RouteDispatchOutcome::Failed("x")),
+        Default::default()
+    );
+
+    // A `RespondedWithUsage` outcome that itself carries no digests (a
+    // streamed or non-JSON delivery) yields the same honest absence.
+    let without_digests = proxy::RouteDispatchOutcome::RespondedWithUsage {
+        status_code: 200,
+        usage: TokenUsage {
+            prompt_tokens: None,
+            cached_prompt_tokens: None,
+            completion_tokens: None,
+            total_tokens: None,
+        },
+        output_digests: Default::default(),
+    };
+    assert_eq!(
+        exchange_output_digests_from_outcome(&without_digests),
+        Default::default()
     );
 }
