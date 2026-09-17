@@ -210,13 +210,68 @@ function buildFillerExchangeRows(count: number): PaneCRow[] {
 // `exch-closed-00` carries `mine.text`/`reply_text` matching v3 §3's Case A
 // worked example verbatim, so the content toggle has real quoted text to
 // show rather than the '—' fallback.
+// [ledger-T11-twins-visible] -- two adjacent curated rows sharing a real
+// `twin_bracket_id`, sorted newest-first ahead of everything else, so the
+// ambient-twin bracket + disclosure sentence + Compare diff + "Twins only"
+// filter are all reachable in harness mode without waiting on live 1-in-N
+// sampling to actually land one. `twin_sample_rate_denominator` at the list
+// level is the DEFAULT rate ([ledger-T11-twins-visible] item 1: "default
+// UNCHANGED 1/50") -- not a demo-only number, so the disclosure sentence
+// this fixture drives says exactly what production would.
+export const HARNESS_TWIN_SAMPLE_RATE_DENOMINATOR = 50
+
 export const HARNESS_PANE_C_PAYLOAD: PaneCListJson = {
-  row_count: 8 + HARNESS_LEDGER_FILLER_ROW_COUNT,
+  row_count: 10 + HARNESS_LEDGER_FILLER_ROW_COUNT,
   default_sort: 'timestamp',
   filters: [],
   next_after_seq: null,
   archived_segments: [],
+  twin_sample_rate_denominator: HARNESS_TWIN_SAMPLE_RATE_DENOMINATOR,
   rows: [
+    {
+      exchange_key: 'exch-twin-a-00',
+      role_tag: 'ASKED',
+      header_state: 'ok',
+      properties: CLEAN_EXCHANGE_PROPERTIES,
+      has_issue: false,
+      mine: {
+        state: 'present',
+        capsule_id: 'mine_exch-twin-a-00',
+        text: 'What is the capital of France?'
+      },
+      theirs: { state: 'present', capsule_id: 'theirs_exch-twin-a-00' },
+      unilateral: false,
+      timestamp: '2026-09-11T16:58:11Z',
+      twin_bracket_id: 'twin-b6-demo',
+      twin_comparison: {
+        temperature: 0,
+        seed: 1,
+        model_identity_hash: 'd41d8cd98f00b204e9800998ecf8427e',
+        settings_label: 'KV F16/F16'
+      }
+    },
+    {
+      exchange_key: 'exch-twin-b-00',
+      role_tag: 'ASKED',
+      header_state: 'ok',
+      properties: CLEAN_EXCHANGE_PROPERTIES,
+      has_issue: false,
+      mine: {
+        state: 'present',
+        capsule_id: 'mine_exch-twin-b-00',
+        text: 'What is the capital of France?'
+      },
+      theirs: { state: 'present', capsule_id: 'theirs_exch-twin-b-00' },
+      unilateral: false,
+      timestamp: '2026-09-11T16:58:10Z',
+      twin_bracket_id: 'twin-b6-demo',
+      twin_comparison: {
+        temperature: 0,
+        seed: 1,
+        model_identity_hash: 'd41d8cd98f00b204e9800998ecf8427e',
+        settings_label: 'KV F16/F16'
+      }
+    },
     {
       exchange_key: 'exch-closed-00',
       role_tag: 'ASKED',

@@ -186,6 +186,16 @@ struct IngressRouteContext<'a> {
     /// requiring a live `PluginManager`.
     #[cfg(test)]
     exchange_channel: Option<&'a dyn OpenAiExchangeChannel>,
+    /// Owned, `'static` channel handle for the ambient-twin BACKGROUND
+    /// dispatch's own publish calls (see `spawn_ambient_twin_dispatch`),
+    /// which run on a detached `tokio::spawn` task that outlives this
+    /// borrowed `ctx`. Production derives this from
+    /// `plugin_manager.cloned()` instead -- `PluginManager` is already
+    /// `Clone + Send + Sync + 'static` -- so this field exists only so
+    /// tests can inject a recording double without a live `PluginManager`,
+    /// mirroring `exchange_channel` above.
+    #[cfg(test)]
+    twin_exchange_channel: Option<std::sync::Arc<dyn OpenAiExchangeChannel>>,
 }
 
 struct ProxyConnectionContext<'a> {
@@ -722,6 +732,29 @@ async fn route_missing_local_model(
             );
         }
         RemoteMeshRoute::Targets(mesh_targets) => {
+            // [ledger-T11-twins-visible] item 5, hot-path follow-up: ambient
+            // twin dual-dispatch, wired live. `should_sample_ambient_twin`
+            // decides per-exchange; when it fires, `select_twin_target` picks
+            // a second, distinct peer out of the SAME `mesh_targets` pool the
+            // primary dispatch below draws from (same shape
+            // `capsule-emit-mesh`'s `twin_selection.select_twin` expects,
+            // though independence scoring itself stays out of scope -- see
+            // that module), and `spawn_ambient_twin_dispatch` detaches a
+            // BACKGROUND task that forwards the identical buffered request to
+            // it via the same `proxy::route_model_request` primitive used
+            // below. Both halves' effective/terminal envelopes carry the same
+            // `twin_bracket_id` so the UI can bracket them; a `None` here
+            // (rate=0, only one candidate, or the sample roll missed) means
+            // this exchange is untouched -- no twin id, no second dispatch,
+            // byte-identical to pre-twin behavior.
+            let twin_bracket_id = maybe_spawn_ambient_twin(
+                ctx,
+                model_name,
+                &mesh_targets,
+                request,
+                required_tokens,
+            );
+
             // This node is routing the exchange to a peer, not serving it --
             // publish the same effective/terminal pair try_route_plugin_model
             // already does for its own dispatch below, with `RemoteMesh` in
@@ -754,13 +787,16 @@ async fn route_missing_local_model(
                 .plugin_manager
                 .map(|pm| pm as &dyn OpenAiExchangeChannel);
             if let Some(ch) = channel {
-                ch.publish(&OpenAiExchangeEnvelope::effective_remote_mesh(
+                let mut effective = OpenAiExchangeEnvelope::effective_remote_mesh(
                     exchange_id.clone(),
                     model_name,
                     forwarded_nonce.clone(),
                     nonce_source,
-                ))
-                .await;
+                );
+                if let Some(bracket_id) = twin_bracket_id.clone() {
+                    effective = effective.with_twin_bracket_id(bracket_id);
+                }
+                ch.publish(&effective).await;
             }
             // Only echoed when the client asked for a specific peer via
             // `x-mesh-target` -- absent headers must produce today's
@@ -781,14 +817,17 @@ async fn route_missing_local_model(
             )
             .await;
             if let Some(ch) = channel {
-                ch.publish(&OpenAiExchangeEnvelope::terminal_remote_mesh(
+                let mut terminal = OpenAiExchangeEnvelope::terminal_remote_mesh(
                     exchange_id,
                     model_name,
                     plugin_route_status(&outcome),
                     forwarded_nonce,
                     nonce_source,
-                ))
-                .await;
+                );
+                if let Some(bracket_id) = twin_bracket_id {
+                    terminal = terminal.with_twin_bracket_id(bracket_id);
+                }
+                ch.publish(&terminal).await;
             }
             return outcome;
         }
@@ -851,6 +890,159 @@ async fn route_missing_local_model(
         )
         .await,
     )
+}
+
+/// [ledger-T11-twins-visible] item 5, hot-path follow-up. Decides whether
+/// THIS exchange gets ambiently twinned and, if so, mints the bracket id and
+/// detaches the background second dispatch. Never blocks: this function only
+/// decides, selects a peer, and spawns -- it does not await the twin, and it
+/// never touches `mesh_targets` (the primary dispatch's own candidate pool),
+/// so the primary call right after this returns is unperturbed whether or
+/// not a twin was spawned.
+///
+/// Returns the bracket id both the PRIMARY and twin envelopes must carry, or
+/// `None` when this exchange isn't twinned -- rate=0, the sample roll
+/// missed, or `mesh_targets` has no second candidate distinct from the first
+/// (an explicit `x-mesh-target` forces exactly one candidate, which has
+/// nothing distinct to twin against).
+fn maybe_spawn_ambient_twin(
+    ctx: &IngressRouteContext<'_>,
+    model_name: &str,
+    mesh_targets: &election::ModelTargets,
+    request: &proxy::BufferedHttpRequest,
+    required_tokens: Option<u32>,
+) -> Option<String> {
+    let rate = crate::runtime::twin_sample::configured_twin_sample_rate();
+    if !crate::runtime::twin_sample::should_sample_ambient_twin(rate, &mut rand::rng()) {
+        return None;
+    }
+    let candidates = mesh_targets.candidates(model_name);
+    let twin_target = crate::runtime::twin_sample::select_twin_target(&candidates)?;
+    let bracket_id = crate::runtime::twin_sample::mint_twin_bracket_id();
+
+    #[cfg(test)]
+    let channel: Option<std::sync::Arc<dyn OpenAiExchangeChannel>> =
+        ctx.twin_exchange_channel.clone().or_else(|| {
+            ctx.plugin_manager
+                .cloned()
+                .map(|pm| std::sync::Arc::new(pm) as std::sync::Arc<dyn OpenAiExchangeChannel>)
+        });
+    #[cfg(not(test))]
+    let channel: Option<std::sync::Arc<dyn OpenAiExchangeChannel>> = ctx
+        .plugin_manager
+        .cloned()
+        .map(|pm| std::sync::Arc::new(pm) as std::sync::Arc<dyn OpenAiExchangeChannel>);
+
+    spawn_ambient_twin_dispatch(AmbientTwinDispatchArgs {
+        node: ctx.node.clone(),
+        affinity: ctx.affinity.clone(),
+        channel,
+        model_name: model_name.to_string(),
+        twin_target,
+        request: request.clone(),
+        required_tokens,
+        bracket_id: bracket_id.clone(),
+    });
+    Some(bracket_id)
+}
+
+/// Owned inputs for [`spawn_ambient_twin_dispatch`]'s detached task --
+/// bundled into one struct (rather than 8 positional args) purely to satisfy
+/// `clippy::too_many_arguments`; every field is moved into the spawned
+/// `async move` block unchanged.
+struct AmbientTwinDispatchArgs {
+    node: mesh::Node,
+    affinity: affinity::AffinityRouter,
+    channel: Option<std::sync::Arc<dyn OpenAiExchangeChannel>>,
+    model_name: String,
+    twin_target: election::InferenceTarget,
+    request: proxy::BufferedHttpRequest,
+    required_tokens: Option<u32>,
+    bracket_id: String,
+}
+
+/// Detaches a BACKGROUND task that forwards the SAME buffered request bytes
+/// to `twin_target` -- a second, distinct peer from whatever the primary
+/// dispatch (running concurrently, separately, in the caller) ends up
+/// using -- via the same [`proxy::route_model_request`] primitive the
+/// primary call uses, publishing its own effective/terminal envelope pair
+/// tagged with `bracket_id`. OBSERVE-ONLY:
+///
+///   - The response is written to [`ClientStream::null`], a discard sink --
+///     there is no real client waiting on this call's response.
+///   - Both envelopes are published only around a dispatch that actually
+///     ran: the effective envelope right before the attempt, the terminal
+///     envelope right after, exactly mirroring how the primary path
+///     publishes its own pair. Nothing here fabricates a twin result for an
+///     attempt that didn't happen.
+///   - Any failure in this task -- the peer errors, times out, or is
+///     unreachable -- is swallowed here (published as a normal terminal
+///     envelope with whatever status the attempt produced, same as any
+///     other routed exchange's failure). It can never propagate to, block,
+///     or alter the primary response, because this function is called
+///     without being awaited by that primary path at all -- see
+///     `maybe_spawn_ambient_twin`.
+fn spawn_ambient_twin_dispatch(args: AmbientTwinDispatchArgs) {
+    let AmbientTwinDispatchArgs {
+        node,
+        affinity,
+        channel,
+        model_name,
+        twin_target,
+        request,
+        required_tokens,
+        bracket_id,
+    } = args;
+    tokio::spawn(async move {
+        let exchange_id = uuid::Uuid::new_v4().to_string();
+        let (forwarded_nonce, nonce_origin) = request.capsule_nonce_headers();
+        let nonce_source = remote_mesh_nonce_source(&forwarded_nonce, &nonce_origin);
+        if let Some(ch) = channel.as_ref() {
+            ch.publish(
+                &OpenAiExchangeEnvelope::effective_remote_mesh(
+                    exchange_id.clone(),
+                    model_name.clone(),
+                    forwarded_nonce.clone(),
+                    nonce_source,
+                )
+                .with_twin_bracket_id(bracket_id.clone()),
+            )
+            .await;
+        }
+
+        let mut twin_targets = election::ModelTargets::default();
+        twin_targets
+            .targets
+            .insert(model_name.clone(), vec![twin_target]);
+        let outcome = proxy::route_model_request(
+            node,
+            ClientStream::null(),
+            &twin_targets,
+            &model_name,
+            &request,
+            proxy::RouteModelRequestContext {
+                required_tokens,
+                affinity: &affinity,
+                route_observer: OpenAiRouteObserver::default(),
+                served_by_header: None,
+            },
+        )
+        .await;
+
+        if let Some(ch) = channel.as_ref() {
+            ch.publish(
+                &OpenAiExchangeEnvelope::terminal_remote_mesh(
+                    exchange_id,
+                    model_name,
+                    plugin_route_status(&outcome),
+                    forwarded_nonce,
+                    nonce_source,
+                )
+                .with_twin_bracket_id(bracket_id),
+            )
+            .await;
+        }
+    });
 }
 
 /// Resolve an explicit `x-mesh-target` naming THIS node against local
@@ -1899,6 +2091,8 @@ async fn handle_api_proxy_connection(
                 plugin_manager: plugin_manager.as_ref(),
                 #[cfg(test)]
                 exchange_channel: None,
+                #[cfg(test)]
+                twin_exchange_channel: None,
             };
             handle_buffered_api_request(
                 tcp_stream,
