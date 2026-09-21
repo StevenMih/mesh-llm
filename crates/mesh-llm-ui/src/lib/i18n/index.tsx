@@ -16,7 +16,7 @@ const messages: Record<DictionaryKey, string> = {
   'tabs.logs': 'Logs',
   'tabs.chat': 'Chat',
   'tabs.configuration': 'Configuration',
-  'tabs.capsules': 'Ledger'
+  'tabs.capsules': 'Evidence'
 }
 
 const I18nContext = createContext<I18nContextValue>({
