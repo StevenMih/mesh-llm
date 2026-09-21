@@ -103,7 +103,7 @@ function parseCapsulesSearch(search: Record<string, unknown>): { focusExchangeKe
 const capsulesRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/capsules',
-  head: () => ({ meta: [{ title: 'MeshLLM - Accountability' }] }),
+  head: () => ({ meta: [{ title: 'MeshLLM - Evidence' }] }),
   validateSearch: parseCapsulesSearch,
   component: lazyRouteComponent(
     () => import('@/features/capsules/pages/AccountabilityPage'),
