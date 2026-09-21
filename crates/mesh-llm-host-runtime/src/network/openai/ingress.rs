@@ -132,6 +132,52 @@ fn outcome_was_served(outcome: &proxy::RouteDispatchOutcome) -> bool {
     )
 }
 
+/// D1: name the real serving peer on a `RemoteMesh` terminal envelope,
+/// never this (routing) node -- `serving_provenance_for_model` above is only
+/// ever correct for a LOCALLY served exchange (it unconditionally stamps
+/// `node.id()`), so it must never be called on this dispatch path.
+///
+/// Only known with certainty when the caller pinned a single candidate via
+/// `x-mesh-target`: `resolve_remote_mesh_route` narrows `mesh_targets` to
+/// exactly that one peer in that case (see its own doc), so a served (2xx)
+/// outcome could only have come from it. Open multi-candidate routing
+/// (`target: None`) has no such guarantee -- `route_model_request`'s
+/// returned [`proxy::RouteDispatchOutcome`] does not carry which of several
+/// candidates actually served the request (the per-attempt
+/// `election::InferenceTarget` is used for metrics inside
+/// `route_model_request_inner` and never threaded back out) -- so this
+/// returns `None` rather than guessing.
+///
+/// Every other `ServingProvenance` field (hardware, model identity) is
+/// genuinely unknown for a peer this node never served, so only
+/// `served_by_node_id` is ever set on the result -- never a fabricated
+/// quant/architecture/gpu for hardware this node never touched.
+fn serving_provenance_for_remote_mesh(
+    target: Option<iroh::EndpointId>,
+    outcome: &proxy::RouteDispatchOutcome,
+) -> Option<ServingProvenance> {
+    let target_id = target?;
+    if !outcome_was_served(outcome) {
+        return None;
+    }
+    Some(ServingProvenance {
+        served_by_node_id: hex::encode(target_id.as_bytes()),
+        hostname: None,
+        quantization: None,
+        architecture: None,
+        context_length: None,
+        parameter_size: None,
+        layer_count: None,
+        model_identity_hash: None,
+        model_canonical_ref: None,
+        model_revision: None,
+        weights_digest: None,
+        gpu: None,
+        vram_bytes: None,
+        is_soc: None,
+    })
+}
+
 /// Publish the raw-proxy path's terminal event for a served exchange, enriched
 /// with the serving provenance the host resolved from the node (what ran / at
 /// what fidelity / on whose hardware), the real token usage the dispatch
@@ -907,13 +953,8 @@ async fn route_missing_local_model(
             // (rate=0, only one candidate, or the sample roll missed) means
             // this exchange is untouched -- no twin id, no second dispatch,
             // byte-identical to pre-twin behavior.
-            let twin_bracket_id = maybe_spawn_ambient_twin(
-                ctx,
-                model_name,
-                &mesh_targets,
-                request,
-                required_tokens,
-            );
+            let twin_bracket_id =
+                maybe_spawn_ambient_twin(ctx, model_name, &mesh_targets, request, required_tokens);
 
             // This node is routing the exchange to a peer, not serving it --
             // publish the same effective/terminal pair try_route_plugin_model
@@ -994,6 +1035,12 @@ async fn route_missing_local_model(
                 );
                 if let Some(bracket_id) = twin_bracket_id {
                     terminal = terminal.with_twin_bracket_id(bracket_id);
+                }
+                // D1: name the real serving peer, never this node -- see
+                // `serving_provenance_for_remote_mesh`'s doc for exactly when
+                // this is (and is not) knowable.
+                if let Some(provenance) = serving_provenance_for_remote_mesh(target, &outcome) {
+                    terminal = terminal.with_serving_provenance(provenance);
                 }
                 ch.publish(&terminal).await;
             }
