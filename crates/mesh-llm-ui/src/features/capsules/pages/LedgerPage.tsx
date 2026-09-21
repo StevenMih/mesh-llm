@@ -569,14 +569,14 @@ export function LedgerPageContent() {
               </StatusBadge>
             </div>
           }
-          title="Ledger"
-          titleId="ledger-title"
+          title="Evidence"
+          titleId="evidence-title"
           titleLevel="h1"
         />
 
         <Card className="overflow-hidden rounded-[var(--radius-lg)] border-border bg-panel p-4 shadow-none">
           <TabPanel<LedgerTab>
-            ariaLabel="Ledger sections"
+            ariaLabel="Evidence sections"
             defaultValue="peers"
             stretchTabs={false}
             contentClassName="px-0 pt-4"

@@ -93,7 +93,7 @@ const configurationTabRoute = createRoute({
 const capsulesRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/capsules',
-  head: () => ({ meta: [{ title: 'MeshLLM - Accountability' }] }),
+  head: () => ({ meta: [{ title: 'MeshLLM - Evidence' }] }),
   component: lazyRouteComponent(
     () => import('@/features/capsules/pages/AccountabilityPage'),
     'AccountabilityPageContent'
