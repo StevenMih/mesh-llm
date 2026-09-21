@@ -2313,6 +2313,74 @@ fn delivered_outcome_carries_digests_without_usage() {
     }
 }
 
+// --- D1: `serving_provenance_for_remote_mesh` names the real peer, never this node ---
+
+/// A pinned `x-mesh-target` (the only case `resolve_remote_mesh_route`
+/// guarantees a single candidate, so a served outcome can only have come
+/// from it) on a served (2xx) outcome must name that peer's real id --
+/// never this node's own id, and never a fabricated hardware/model field
+/// for a peer this node never served.
+#[test]
+fn serving_provenance_for_remote_mesh_names_the_pinned_peer_on_a_served_outcome() {
+    let peer = test_endpoint_id(7);
+
+    let provenance = serving_provenance_for_remote_mesh(
+        Some(peer),
+        &proxy::RouteDispatchOutcome::Responded(200),
+    )
+    .expect("a pinned target on a served outcome must yield provenance");
+
+    assert_eq!(provenance.served_by_node_id, hex::encode(peer.as_bytes()));
+    // Every other field is genuinely unknown for a peer this node never
+    // served -- must stay absent, never fabricated.
+    assert!(provenance.hostname.is_none());
+    assert!(provenance.quantization.is_none());
+    assert!(provenance.architecture.is_none());
+    assert!(provenance.context_length.is_none());
+    assert!(provenance.parameter_size.is_none());
+    assert!(provenance.layer_count.is_none());
+    assert!(provenance.model_identity_hash.is_none());
+    assert!(provenance.model_canonical_ref.is_none());
+    assert!(provenance.model_revision.is_none());
+    assert!(provenance.weights_digest.is_none());
+    assert!(provenance.gpu.is_none());
+    assert!(provenance.vram_bytes.is_none());
+    assert!(provenance.is_soc.is_none());
+}
+
+/// Open multi-candidate routing (`target: None`, the common case: no
+/// explicit `x-mesh-target` header) has no reliable way to know which of
+/// several peers actually served the request -- must stay `None` rather
+/// than guessing or naming this node.
+#[test]
+fn serving_provenance_for_remote_mesh_is_absent_without_a_pinned_target() {
+    assert!(
+        serving_provenance_for_remote_mesh(None, &proxy::RouteDispatchOutcome::Responded(200))
+            .is_none()
+    );
+}
+
+/// A pinned target on a NON-served outcome (nothing was actually returned to
+/// the client) must not claim the peer served anything.
+#[test]
+fn serving_provenance_for_remote_mesh_is_absent_on_an_unserved_outcome() {
+    let peer = test_endpoint_id(8);
+    assert!(
+        serving_provenance_for_remote_mesh(
+            Some(peer),
+            &proxy::RouteDispatchOutcome::FailedWithStatus {
+                status_code: 503,
+                reason: "no_target",
+            },
+        )
+        .is_none()
+    );
+    assert!(
+        serving_provenance_for_remote_mesh(Some(peer), &proxy::RouteDispatchOutcome::Dropped("x"))
+            .is_none()
+    );
+}
+
 // --- [ledger-T11-twins-visible] hot-path follow-up: ambient-twin dual-dispatch ---
 
 /// Serializes every test in this section against `MESH_LLM_TWIN_SAMPLE_RATE`,
@@ -2360,9 +2428,8 @@ async fn insert_two_remote_peers(node: &mesh::Node, model: &str) {
 /// builds inline, factored out here so the twin-dispatch tests below share
 /// one build path instead of repeating it three times.
 fn twin_test_chat_request(model: &str, nonce: &str) -> proxy::BufferedHttpRequest {
-    let body =
-        format!(r#"{{"model":"{model}","messages":[{{"role":"user","content":"hi"}}]}}"#)
-            .into_bytes();
+    let body = format!(r#"{{"model":"{model}","messages":[{{"role":"user","content":"hi"}}]}}"#)
+        .into_bytes();
     let raw = format!(
         "POST /v1/chat/completions HTTP/1.1\r\nHost: t\r\nContent-Type: application/json\r\nContent-Length: {len}\r\nx-capsule-client-nonce: {nonce}\r\n\r\n",
         len = body.len(),
@@ -2465,7 +2532,8 @@ async fn ambient_twin_sampled_shares_bracket_id_across_two_exchanges() {
     wait_for_event_count(&recording, 4).await;
     let events = recording.events.lock().unwrap();
 
-    let mut by_exchange: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut by_exchange: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
     for event in events.iter() {
         *by_exchange.entry(event.exchange_id.clone()).or_default() += 1;
     }
