@@ -222,9 +222,12 @@ mod tests {
         // No real client to disconnect; the twin dispatch must run to its
         // own natural completion rather than racing a phantom cancellation.
         assert!(
-            timeout(Duration::from_millis(50), sink.wait_for_response_disconnect())
-                .await
-                .is_err(),
+            timeout(
+                Duration::from_millis(50),
+                sink.wait_for_response_disconnect()
+            )
+            .await
+            .is_err(),
             "the discard sink must never resolve a disconnect signal"
         );
     }
