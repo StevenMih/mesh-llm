@@ -1193,6 +1193,12 @@ fn spawn_ambient_twin_dispatch(args: AmbientTwinDispatchArgs) {
         twin_targets
             .targets
             .insert(model_name.clone(), vec![twin_target]);
+        // Mirrors the primary dispatch's own `peer_capsule_id_sink` in
+        // `route_missing_local_model` -- the twin's peer response can carry
+        // an `X-Capsule-Id` header exactly like the primary's can, and there
+        // is no reason to leave that half's capsule_id_provenance untracked
+        // just because the dispatch is a background observation.
+        let peer_capsule_id_sink = proxy::PeerCapsuleIdSink::new();
         let outcome = proxy::route_model_request(
             node,
             ClientStream::null(),
@@ -1204,6 +1210,7 @@ fn spawn_ambient_twin_dispatch(args: AmbientTwinDispatchArgs) {
                 affinity: &affinity,
                 route_observer: OpenAiRouteObserver::default(),
                 served_by_header: None,
+                peer_capsule_id: Some(&peer_capsule_id_sink),
             },
         )
         .await;
@@ -1216,6 +1223,7 @@ fn spawn_ambient_twin_dispatch(args: AmbientTwinDispatchArgs) {
                     plugin_route_status(&outcome),
                     forwarded_nonce,
                     nonce_source,
+                    peer_capsule_id_sink.take(),
                 )
                 .with_twin_bracket_id(bracket_id),
             )
