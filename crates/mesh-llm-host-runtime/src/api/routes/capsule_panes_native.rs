@@ -741,6 +741,49 @@ mod tests {
 
     const RETIRED_PANE_VOCABULARY: &[&str] = &["rung", "unilateral_fallback"];
 
+    /// Whole-word containment: `haystack` carries `word` as a standalone
+    /// token (its own key/segment, or delimited by `_`/`-` on both sides),
+    /// never a mere substring. Distinguishes the retired `rung` ladder
+    /// token from `rungs` -- the current, sanctioned plural container name
+    /// for a row's five checks (see this module's own doc comment,
+    /// "the Pane-A rungs' structural defaults") -- which contains `rung`
+    /// as a substring but is not a reappearance of the retired vocabulary.
+    fn contains_retired_word(haystack: &str, word: &str) -> bool {
+        haystack.split(['_', '-']).any(|segment| segment == word)
+    }
+
+    /// Pins the exact boundary this gate depends on: `rungs` (the current,
+    /// sanctioned container key) must never trip the retired-word check
+    /// that `rung` (the actual retired token, alone or `_`/`-` delimited)
+    /// must always trip. Before this fix, a plain `.contains("rung")`
+    /// substring check made `pane_a_json_never_carries_retired_rung_vocabulary`
+    /// fail unconditionally the moment `build_pane_a` emitted its own
+    /// `"rungs"` key -- MUTANT: reverting `contains_retired_word` to
+    /// `haystack.contains(word)` turns this red on the `"rungs"` case.
+    #[test]
+    fn contains_retired_word_distinguishes_rungs_from_the_retired_rung_token() {
+        assert!(
+            !contains_retired_word("rungs", "rung"),
+            "current, sanctioned plural key must not match"
+        );
+        assert!(
+            contains_retired_word("rung", "rung"),
+            "the exact retired token must still match"
+        );
+        assert!(
+            contains_retired_word("rung_state", "rung"),
+            "an underscore-delimited retired token must still match"
+        );
+        assert!(
+            contains_retired_word("cross_party_rung", "rung"),
+            "a trailing underscore-delimited retired token must still match"
+        );
+        assert!(
+            !contains_retired_word("unilateral_fallbacks", "unilateral_fallback"),
+            "a hypothetical pluralized current key must not match either"
+        );
+    }
+
     fn assert_no_retired_vocabulary(value: &Value, path: &str) {
         match value {
             Value::Object(map) => {
@@ -748,7 +791,7 @@ mod tests {
                     let lowered_key = key.to_lowercase();
                     for word in RETIRED_PANE_VOCABULARY {
                         assert!(
-                            !lowered_key.contains(word),
+                            !contains_retired_word(&lowered_key, word),
                             "{path}.{key} carries retired vocabulary {word:?}"
                         );
                     }
