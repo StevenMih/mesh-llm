@@ -167,6 +167,52 @@ fn twin_bracket_id(record: &Value) -> Option<&str> {
         .and_then(Value::as_str)
 }
 
+/// `[mesh-e9e10-pieces-2-4]` piece 3: the join key piece 1
+/// (`admission-policy::lifecycle_channel::peer_capsule_id_for_seal`) already
+/// threads onto a `RemoteMesh` record -- `serving_provenance.peer_capsule_id`
+/// is only ever non-null when `peer_capsule_id_provenance` is the literal
+/// `"peer_asserted"` (never `self_minted`/`unknown`, the mislabeling guard's
+/// whole point). `None` here means "nothing this node knows how to fetch",
+/// never a guess.
+fn peer_fetch_join_key(record: &Value) -> Option<(&str, &str)> {
+    let sp = poc_block(record)?.get("serving_provenance")?;
+    if sp.get("peer_capsule_id_provenance").and_then(Value::as_str) != Some("peer_asserted") {
+        return None;
+    }
+    let capsule_id = sp
+        .get("peer_capsule_id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())?;
+    let peer_id = sp
+        .get("served_by_node_id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty() && *id != "unknown")?;
+    Some((capsule_id, peer_id))
+}
+
+/// Pane C row `theirs` cell (`capsule_exchange_tab`'s own field). `NOT_CHECKED`
+/// -- not `absent` -- the moment a real peer-asserted join key exists: the
+/// peer half is KNOWN to be fetchable (`ledger-fetch/1`, piece 2's
+/// `mesh_ledger_fetch` plugin tool, already reachable at
+/// `POST /api/plugins/admission-policy/tools/mesh_ledger_fetch`), only
+/// unverified until the browser's own recompute actually runs one -- this
+/// route never fetches, verifies, or fabricates a verdict itself.
+fn theirs_cell(record: &Value) -> Value {
+    match peer_fetch_join_key(record) {
+        Some((capsule_id, peer_id)) => json!({
+            "state": NOT_CHECKED,
+            "text": "peer capsule known -- fetch to recompute",
+            "capsule_id": capsule_id,
+            "peer_id": peer_id,
+        }),
+        None => json!({
+            "state": STATE_ABSENT,
+            "text": "none (unilateral)",
+            "capsule_id": Value::Null,
+        }),
+    }
+}
+
 /// `capsule_mesh_view.label_role`, source_log fixed to `"plugin"` --
 /// this route's records are always plugin-ledger reads, never sidecar
 /// ones. `_EXPLICIT_POC_ROLES` = `{requested, served, conflict, unknown}`,
@@ -413,11 +459,13 @@ pub(super) fn build_pane_c_list(records: &[Value]) -> Value {
                 "capsule_id": record.get("capsule_id").cloned().unwrap_or(Value::Null),
                 "role": label_role(record),
             },
-            "theirs": {
-                "state": STATE_ABSENT,
-                "text": "none (unilateral)",
-                "capsule_id": Value::Null,
-            },
+            "theirs": theirs_cell(record),
+            // Whether a real peer join key exists does not yet change
+            // `unilateral` -- that flag (and the `confirmed`/tone semantics
+            // it feeds, `exchange-ledger.ts`) is earned only once the
+            // browser has actually fetched and recomputed the peer half,
+            // which is not this route's job; NOT_CHECKED is the honest
+            // "known but unverified" middle state.
             "unilateral": true,
             "timestamp": record.get("timestamp").cloned().unwrap_or(Value::Null),
             // [ledger-T11b-twin-bracket] -- absent (never null) on every
@@ -666,6 +714,65 @@ mod tests {
         });
         let pane = build_pane_c_list(&[record]);
         assert_eq!(pane["rows"][0]["twin_bracket_id"], json!("twin-abc123"));
+    }
+
+    /// `[mesh-e9e10-pieces-2-4]` piece 3, positive: a record carrying a real
+    /// `peer_asserted` join key (piece 1) surfaces `theirs.state ==
+    /// NOT_CHECKED` (known + fetchable, not absent) with the exact
+    /// capsule_id/peer_id the browser needs to drive `mesh_ledger_fetch`
+    /// (piece 2). MUTANT: drop the `theirs_cell(record)` read in
+    /// `build_pane_c_list` and this assertion goes red.
+    #[test]
+    fn pane_c_row_surfaces_a_real_peer_asserted_join_key_as_not_checked() {
+        let mut record = fixture_record("cap-1", "2026-09-01T00:00:00Z", "req-1", None);
+        record["model_attestation"]["compute_attestation"]["x-mesh-poc-v1"] = json!({
+            "serving_provenance": {
+                "peer_capsule_id": "peer-cap-987",
+                "peer_capsule_id_provenance": "peer_asserted",
+                "served_by_node_id": "peer-node-3",
+            }
+        });
+        let pane = build_pane_c_list(&[record]);
+        let theirs = &pane["rows"][0]["theirs"];
+        assert_eq!(theirs["state"], json!(NOT_CHECKED));
+        assert_eq!(theirs["capsule_id"], json!("peer-cap-987"));
+        assert_eq!(theirs["peer_id"], json!("peer-node-3"));
+    }
+
+    /// (negative, R4 other half) `self_minted` is THIS node's own marker,
+    /// never a peer's claim (the exact mislabeling piece 1's
+    /// `peer_capsule_id_for_seal` guard exists to prevent) -- must stay
+    /// `absent`, never surfaced as fetchable.
+    #[test]
+    fn pane_c_row_never_surfaces_a_self_minted_capsule_id_as_theirs() {
+        let mut record = fixture_record("cap-1", "2026-09-01T00:00:00Z", "req-1", None);
+        record["model_attestation"]["compute_attestation"]["x-mesh-poc-v1"] = json!({
+            "serving_provenance": {
+                "peer_capsule_id": "not-actually-a-peer-id",
+                "peer_capsule_id_provenance": "self_minted",
+                "served_by_node_id": "peer-node-3",
+            }
+        });
+        let pane = build_pane_c_list(&[record]);
+        assert_eq!(pane["rows"][0]["theirs"]["state"], json!(STATE_ABSENT));
+        assert_eq!(pane["rows"][0]["theirs"]["capsule_id"], Value::Null);
+    }
+
+    /// (negative) A real `peer_asserted` capsule_id with no identifiable
+    /// `served_by_node_id` (still `"unknown"`, the honest default) has
+    /// nowhere to fetch FROM -- `absent`, not a join key naming no peer.
+    #[test]
+    fn pane_c_row_never_surfaces_a_join_key_with_no_identifiable_peer() {
+        let mut record = fixture_record("cap-1", "2026-09-01T00:00:00Z", "req-1", None);
+        record["model_attestation"]["compute_attestation"]["x-mesh-poc-v1"] = json!({
+            "serving_provenance": {
+                "peer_capsule_id": "peer-cap-987",
+                "peer_capsule_id_provenance": "peer_asserted",
+                "served_by_node_id": "unknown",
+            }
+        });
+        let pane = build_pane_c_list(&[record]);
+        assert_eq!(pane["rows"][0]["theirs"]["state"], json!(STATE_ABSENT));
     }
 
     #[test]
