@@ -1425,6 +1425,7 @@ async fn route_missing_local_model_enters_remote_mesh_branch_when_peer_serves_mo
         // Inject the recording double so both publish calls are observable
         // even though plugin_manager is None.
         exchange_channel: Some(&recording),
+        twin_exchange_channel: None,
     };
     let lifecycle = OpenAiLifecycleAttachment::unowned();
 
@@ -1588,6 +1589,7 @@ async fn route_missing_local_model_sidecar_generated_nonce_origin_sets_sidecar_f
         affinity: &affinity,
         plugin_manager: None,
         exchange_channel: Some(&recording),
+        twin_exchange_channel: None,
     };
     let lifecycle = OpenAiLifecycleAttachment::unowned();
 
