@@ -218,6 +218,13 @@ export type PaneCRow = {
     text?: string
     evidence_outcome?: EvidenceRequestOutcome
     evidence_outcome_date?: string | null
+    /** `[mesh-e9e10-pieces-3-4]` piece 3 -- the mesh peer id to fetch FROM
+     *  (`capsule_panes_native.rs::theirs_cell`'s `served_by_node_id`),
+     *  present only alongside `theirs.state === 'NOT_CHECKED'` and a real
+     *  `capsule_id`. Never guessed: `null`/absent means this row carries no
+     *  fetchable join key, same "never fabricate" discipline as every other
+     *  optional field in this file. */
+    peer_id?: string | null
   }
   unilateral: boolean
   timestamp: string | null

@@ -5,12 +5,14 @@ import {
   WHAT_ACTUALLY_HAPPENED_GROUP,
   WHAT_NODE_SAID_GROUP
 } from '@/features/capsules/lib/nine-properties'
-import type { RecomputedIdentity } from '@/features/capsules/lib/recompute-identity'
+import type { PeerRecomputeState, RecomputedIdentity } from '@/features/capsules/lib/recompute-identity'
+import { peerFetchJoinKey } from '@/features/capsules/lib/recompute-identity'
 import {
   buildChecksRows,
   buildCommitsToRows,
   buildHeaderRows,
-  buildIdentityRow
+  buildIdentityRow,
+  theirsFetchable
 } from '@/features/capsules/lib/security-checks-view'
 
 // The manifesto's ten names, verbatim from `manifesto-the-tenth-check-v6`'s
@@ -332,6 +334,119 @@ describe('buildChecksRows — THEIRS column (v1 §P5 / recompute-identity.ts: no
   })
 })
 
+// `[mesh-e9e10-pieces-3-4]` piece 4: once a real peer fetch actually
+// resolves (status 'found'), content_binding/producer_signature's THEIRS
+// cells render the REAL recomputed result -- but every other property still
+// has no bytes to check, so it stays NOT_CHECKED even with a `found` peer
+// fetch (R4 other half: a found fetch must not upgrade properties it never
+// touched).
+describe('buildChecksRows — THEIRS column reflects a real peer recompute once one has run', () => {
+  const FOUND_MATCH: PeerRecomputeState = { status: 'found', idMatch: true, signatureOk: true, fetch: () => {} }
+  const FOUND_MISMATCH: PeerRecomputeState = { status: 'found', idMatch: false, signatureOk: false, fetch: () => {} }
+  const NOT_FETCHED: PeerRecomputeState = { status: 'not_fetched', idMatch: null, signatureOk: null, fetch: () => {} }
+  const FETCHING: PeerRecomputeState = { status: 'fetching', idMatch: null, signatureOk: null, fetch: () => {} }
+  const NOT_FOUND: PeerRecomputeState = { status: 'not_found', idMatch: null, signatureOk: null, fetch: () => {} }
+  const ERRORED: PeerRecomputeState = {
+    status: 'error',
+    idMatch: null,
+    signatureOk: null,
+    errorMessage: 'peer unroutable',
+    fetch: () => {}
+  }
+
+  it('a found+matching peer fetch renders content_binding/producer_signature as PASS, recomputed:true, "recomputed here"', () => {
+    const rows = buildChecksRows(paneCRow(), NOT_RECOMPUTED, FOUND_MATCH)
+    const byKey = Object.fromEntries(rows.map((r) => [r.key, r]))
+    expect(byKey.content_binding.theirs?.state).toBe('PASS')
+    expect(byKey.content_binding.theirs?.recomputed).toBe(true)
+    expect(byKey.content_binding.theirs?.detail).toBe('recomputed here')
+    expect(byKey.producer_signature.theirs?.state).toBe('PASS')
+    expect(byKey.producer_signature.theirs?.recomputed).toBe(true)
+  })
+
+  it('a found+mismatching peer fetch renders FAIL, not a silently-passed match', () => {
+    const rows = buildChecksRows(paneCRow(), NOT_RECOMPUTED, FOUND_MISMATCH)
+    const byKey = Object.fromEntries(rows.map((r) => [r.key, r]))
+    expect(byKey.content_binding.theirs?.state).toBe('FAIL')
+    expect(byKey.producer_signature.theirs?.state).toBe('FAIL')
+  })
+
+  it('every non-recomputable property stays NOT_CHECKED even once theirs is found (R4: found never leaks onto untouched properties)', () => {
+    const rows = buildChecksRows(paneCRow(), NOT_RECOMPUTED, FOUND_MATCH)
+    for (const r of rows) {
+      if (['content_binding', 'producer_signature', 'capture_coverage', 'identity_authority'].includes(r.key)) continue
+      expect(r.theirs?.state).toBe('NOT_CHECKED')
+      expect(r.theirs?.recomputed).toBe(false)
+    }
+  })
+
+  // (negative, R4 other half) not_fetched/fetching/not_found/error must
+  // never be rendered as though a real recompute ran -- recomputed stays
+  // false and state stays NOT_CHECKED for every one of them.
+  it.each([
+    ['not_fetched', NOT_FETCHED],
+    ['fetching', FETCHING],
+    ['not_found', NOT_FOUND],
+    ['error', ERRORED]
+  ])('a %s peer-fetch status never renders as recomputed', (_label, state) => {
+    const rows = buildChecksRows(paneCRow(), NOT_RECOMPUTED, state)
+    const byKey = Object.fromEntries(rows.map((r) => [r.key, r]))
+    expect(byKey.content_binding.theirs?.state).toBe('NOT_CHECKED')
+    expect(byKey.content_binding.theirs?.recomputed).toBe(false)
+  })
+
+  it('surfaces the real not_found/error reasons in the detail text, not a generic placeholder', () => {
+    const notFoundRows = buildChecksRows(paneCRow(), NOT_RECOMPUTED, NOT_FOUND)
+    expect(notFoundRows.find((r) => r.key === 'content_binding')?.theirs?.detail).toMatch(/no such capsule/)
+
+    const erroredRows = buildChecksRows(paneCRow(), NOT_RECOMPUTED, ERRORED)
+    expect(erroredRows.find((r) => r.key === 'content_binding')?.theirs?.detail).toMatch(/peer unroutable/)
+  })
+
+  // Vocabulary check (QUEUE_PROTOCOL §8: state the check ran and the
+  // verdict, not the grepped terms): confirmed the recomputed-theirs wording
+  // above never uses second-party-judgment language -- clean.
+  it('never renders theirs as a second-party judgment ("verified by"/"confirmed by"/"countersigned")', () => {
+    const rows = buildChecksRows(paneCRow(), NOT_RECOMPUTED, FOUND_MATCH)
+    for (const r of rows) {
+      if (r.theirs?.detail) {
+        expect(r.theirs.detail.toLowerCase()).not.toMatch(/verified by|confirmed by|countersign/)
+      }
+    }
+  })
+})
+
+describe('theirsFetchable / peerFetchJoinKey', () => {
+  it('is the SAME function re-exported, not a second copy of the join-key rule', () => {
+    expect(theirsFetchable).toBe(peerFetchJoinKey)
+  })
+
+  it('a row with theirs.state NOT_CHECKED and a real capsule_id+peer_id is fetchable', () => {
+    const row = paneCRow({ theirs: { state: 'NOT_CHECKED', capsule_id: 'peer-cap-1', peer_id: 'peer-node-3' } })
+    expect(theirsFetchable(row)).toEqual({ capsuleId: 'peer-cap-1', peerId: 'peer-node-3' })
+  })
+
+  // (negative, R4 other half) NOT_CHECKED with a hole in the join key, or
+  // any other state, must never report fetchable -- there is nowhere to
+  // fetch FROM.
+  it.each([
+    ['absent state', { state: 'absent', capsule_id: null }],
+    ['NOT_CHECKED with no capsule_id', { state: 'NOT_CHECKED', capsule_id: null, peer_id: 'peer-node-3' }],
+    ['NOT_CHECKED with no peer_id', { state: 'NOT_CHECKED', capsule_id: 'peer-cap-1', peer_id: null }],
+    // a non-NOT_CHECKED state carrying a real join key anyway must still
+    // never report fetchable -- `theirs_cell` (capsule_panes_native.rs)
+    // only ever emits a join key alongside literal NOT_CHECKED, so any
+    // other state means something upstream is inconsistent, not fetchable.
+    [
+      'a real join key under an unexpected state',
+      { state: 'present', capsule_id: 'peer-cap-1', peer_id: 'peer-node-3' }
+    ]
+  ])('%s is never reported fetchable', (_label, theirs) => {
+    const row = paneCRow({ theirs })
+    expect(theirsFetchable(row)).toBeNull()
+  })
+})
+
 describe('buildIdentityRow', () => {
   it('yours reflects the actual recompute result, never a hardcoded match', () => {
     const mismatch: RecomputedIdentity = { idMatch: false, signatureOk: null }
@@ -345,9 +460,32 @@ describe('buildIdentityRow', () => {
     expect(identityRow.theirs).toBeNull()
   })
 
-  it('theirs never claims "recomputed" -- it was never recomputed', () => {
+  it('theirs never claims "recomputed" when no peer recompute was supplied -- it was never recomputed', () => {
     const identityRow = buildIdentityRow(paneCRow(), RECOMPUTED_MATCH)
     expect(identityRow.theirs?.note).not.toMatch(/recomputed here, matches/)
+  })
+
+  it('theirs renders the REAL recomputed match once a peer fetch actually found and verified', () => {
+    const found: PeerRecomputeState = { status: 'found', idMatch: true, signatureOk: true, fetch: () => {} }
+    const identityRow = buildIdentityRow(paneCRow(), NOT_RECOMPUTED, found)
+    expect(identityRow.theirs?.note).toBe('✓ recomputed here, matches')
+  })
+
+  it('theirs renders a real MISMATCH, never silently upgraded to a match', () => {
+    const found: PeerRecomputeState = { status: 'found', idMatch: false, signatureOk: false, fetch: () => {} }
+    const identityRow = buildIdentityRow(paneCRow(), NOT_RECOMPUTED, found)
+    expect(identityRow.theirs?.note).toBe('✕ recomputed here, MISMATCH')
+  })
+
+  // (negative, R4 other half) a fetch that found nothing or errored must
+  // never render the "matches" note -- honesty about failure, not a
+  // silently-dropped-back-to-unrecomputed placeholder that could be
+  // confused with success.
+  it('a not_found peer fetch never renders as a match', () => {
+    const notFound: PeerRecomputeState = { status: 'not_found', idMatch: null, signatureOk: null, fetch: () => {} }
+    const identityRow = buildIdentityRow(paneCRow(), NOT_RECOMPUTED, notFound)
+    expect(identityRow.theirs?.note).not.toMatch(/matches/)
+    expect(identityRow.theirs?.note).toBe('peer had no such capsule')
   })
 })
 

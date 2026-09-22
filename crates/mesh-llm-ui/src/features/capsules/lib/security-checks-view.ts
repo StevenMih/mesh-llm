@@ -16,7 +16,8 @@
 // COMMITS TO" comparison already lives by).
 import type { CapsuleRecord } from '@/features/capsules/api/types'
 import type { PaneCRow } from '@/features/capsules/api/sidecarTypes'
-import type { RecomputedIdentity } from '@/features/capsules/lib/recompute-identity'
+import type { PeerRecomputeState, RecomputedIdentity } from '@/features/capsules/lib/recompute-identity'
+import { peerFetchJoinKey } from '@/features/capsules/lib/recompute-identity'
 import { NINE_PROPERTY_LABELS, PROPERTY_GROUP, RECOMPUTED_PROPERTIES } from '@/features/capsules/lib/nine-properties'
 import { labelForState } from '@/features/capsules/lib/assurance-tone'
 import { deriveRightCellState } from '@/features/capsules/lib/exchange-row-state'
@@ -29,6 +30,21 @@ function theirsHeld(row: PaneCRow): boolean {
   return row.theirs.state !== 'absent'
 }
 
+/** True only when `theirsRecompute` carries a REAL, arrived result for
+ *  content_binding/producer_signature -- never merely because a fetch is
+ *  in flight or queued (the same "recomputed means it actually ran"
+ *  discipline `buildChecksRows` already applies to `mine`, see
+ *  `actuallyRecomputed` below). */
+function theirsActuallyRecomputed(theirsRecompute: PeerRecomputeState | undefined): boolean {
+  return theirsRecompute?.status === 'found'
+}
+
+/** `[mesh-e9e10-pieces-3-4]` piece 4 -- a row is fetchable the moment
+ *  `usePeerLedgerRecompute`'s own join-key rule says so (re-exported here so
+ *  the component layer has one place to ask "should I show the fetch
+ *  action", never a second copy of the join-key rule). */
+export const theirsFetchable = peerFetchJoinKey
+
 // ---------------------------------------------------------------------------
 // IDENTITY
 // ---------------------------------------------------------------------------
@@ -36,7 +52,25 @@ function theirsHeld(row: PaneCRow): boolean {
 export type IdentityCell = { value: string; note: string }
 export type IdentityRow = { label: string; yours: IdentityCell; theirs: IdentityCell | null }
 
-export function buildIdentityRow(row: PaneCRow, identity: RecomputedIdentity): IdentityRow {
+/** Witness-level wording only -- "recomputed here", never "verified by" /
+ *  "confirmed by" / "countersigned" (this repo's own boundary rule: a
+ *  browser recompute is never rendered as a second-party judgment). */
+function theirsIdentityNote(theirsRecompute: PeerRecomputeState | undefined): string {
+  if (theirsActuallyRecomputed(theirsRecompute)) {
+    if (theirsRecompute?.idMatch === true) return '✓ recomputed here, matches'
+    if (theirsRecompute?.idMatch === false) return '✕ recomputed here, MISMATCH'
+  }
+  if (theirsRecompute?.status === 'fetching') return 'fetching…'
+  if (theirsRecompute?.status === 'not_found') return 'peer had no such capsule'
+  if (theirsRecompute?.status === 'error') return `fetch failed: ${theirsRecompute.errorMessage ?? 'unknown error'}`
+  return 'as given, not recomputed'
+}
+
+export function buildIdentityRow(
+  row: PaneCRow,
+  identity: RecomputedIdentity,
+  theirsRecompute?: PeerRecomputeState
+): IdentityRow {
   const yoursNote =
     identity.idMatch === true
       ? '✓ recomputed here, matches'
@@ -46,7 +80,7 @@ export function buildIdentityRow(row: PaneCRow, identity: RecomputedIdentity): I
   return {
     label: 'capsule id',
     yours: { value: row.mine.capsule_id ?? '—', note: yoursNote },
-    theirs: theirsHeld(row) ? { value: row.theirs.capsule_id ?? '—', note: 'as given, not recomputed' } : null
+    theirs: theirsHeld(row) ? { value: row.theirs.capsule_id ?? '—', note: theirsIdentityNote(theirsRecompute) } : null
   }
 }
 
@@ -221,8 +255,15 @@ function yoursDetailFor(key: string, state: string, text: string | undefined, ac
   return 'from the record'
 }
 
-function theirsDetailFor(key: string): string {
-  return RECOMPUTED_PROPERTIES.has(key) ? 'their bytes not held' : 'their log, no proof given'
+function theirsDetailFor(key: string, theirsRecompute: PeerRecomputeState | undefined): string {
+  if (RECOMPUTED_PROPERTIES.has(key)) {
+    if (theirsActuallyRecomputed(theirsRecompute)) return 'recomputed here'
+    if (theirsRecompute?.status === 'fetching') return 'fetching…'
+    if (theirsRecompute?.status === 'not_found') return 'peer had no such capsule'
+    if (theirsRecompute?.status === 'error') return `fetch failed: ${theirsRecompute.errorMessage ?? 'unknown error'}`
+    return 'their bytes not held'
+  }
+  return 'their log, no proof given'
 }
 
 function absentDefaultFor(key: string): string {
@@ -275,7 +316,11 @@ function buildIdentityAuthorityFacts(row: PaneCRow): IdentityAuthorityFact[] {
   ]
 }
 
-export function buildChecksRows(row: PaneCRow, identity: RecomputedIdentity): ChecksRow[] {
+export function buildChecksRows(
+  row: PaneCRow,
+  identity: RecomputedIdentity,
+  theirsRecompute?: PeerRecomputeState
+): ChecksRow[] {
   const held = theirsHeld(row)
   const checkpointSignatureState = row.properties?.checkpoint_signature?.state ?? 'NOT_PRESENT'
 
@@ -326,14 +371,27 @@ export function buildChecksRows(row: PaneCRow, identity: RecomputedIdentity): Ch
       recomputed: actuallyRecomputed
     }
 
-    const theirs: ChecksSideCell | null = held
-      ? {
+    let theirs: ChecksSideCell | null = null
+    if (held) {
+      if (recomputable && theirsActuallyRecomputed(theirsRecompute)) {
+        const theirsRecomputedState = boolToWireState(
+          key === 'content_binding' ? (theirsRecompute?.idMatch ?? null) : (theirsRecompute?.signatureOk ?? null)
+        )
+        theirs = {
+          state: theirsRecomputedState,
+          label: labelForState(theirsRecomputedState),
+          detail: theirsDetailFor(key, theirsRecompute),
+          recomputed: true
+        }
+      } else {
+        theirs = {
           state: 'NOT_CHECKED',
           label: labelForState('NOT_CHECKED'),
-          detail: theirsDetailFor(key),
+          detail: theirsDetailFor(key, theirsRecompute),
           recomputed: false
         }
-      : null
+      }
+    }
 
     return { key, label, group, yours, theirs }
   })
