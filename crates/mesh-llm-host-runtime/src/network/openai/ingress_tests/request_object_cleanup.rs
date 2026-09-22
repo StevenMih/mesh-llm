@@ -110,6 +110,7 @@ async fn rejected_request_releases_objects(model: &str, media: bool) {
                     affinity: &affinity,
                     plugin_manager: Some(&manager),
                     exchange_channel: None,
+                    twin_exchange_channel: None,
                 },
             },
             None,

@@ -1247,6 +1247,10 @@ fn spawn_ambient_twin_dispatch(args: AmbientTwinDispatchArgs) {
         twin_targets
             .targets
             .insert(model_name.clone(), vec![twin_target]);
+        // Same unverified peer-capsule-id sink the primary dispatch uses --
+        // see its doc comment above. The twin is a distinct exchange with its
+        // own terminal envelope, so it gets its own sink.
+        let peer_capsule_id_sink = proxy::PeerCapsuleIdSink::new();
         let outcome = proxy::route_model_request(
             node,
             ClientStream::null(),
@@ -1258,6 +1262,7 @@ fn spawn_ambient_twin_dispatch(args: AmbientTwinDispatchArgs) {
                 affinity: &affinity,
                 route_observer: OpenAiRouteObserver::default(),
                 served_by_header: None,
+                peer_capsule_id: Some(&peer_capsule_id_sink),
             },
         )
         .await;
@@ -1270,6 +1275,7 @@ fn spawn_ambient_twin_dispatch(args: AmbientTwinDispatchArgs) {
                     plugin_route_status(&outcome),
                     forwarded_nonce,
                     nonce_source,
+                    peer_capsule_id_sink.take(),
                 )
                 .with_twin_bracket_id(bracket_id),
             )

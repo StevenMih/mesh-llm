@@ -1872,11 +1872,21 @@ mod tests {
     #[test]
     fn twin_bracket_id_round_trips_on_both_dispatch_paths() {
         let primary = OpenAiExchangeEnvelope::terminal_remote_mesh(
-            "exch-a", "m", Some(200), None, None, None,
+            "exch-a",
+            "m",
+            Some(200),
+            None,
+            None,
+            None,
         )
         .with_twin_bracket_id("twin-abc".to_string());
         let twin = OpenAiExchangeEnvelope::terminal_remote_mesh(
-            "exch-b", "m", Some(200), None, None, None,
+            "exch-b",
+            "m",
+            Some(200),
+            None,
+            None,
+            None,
         )
         .with_twin_bracket_id("twin-abc".to_string());
         assert_eq!(primary.twin_bracket_id, twin.twin_bracket_id);
