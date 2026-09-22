@@ -9,6 +9,7 @@ import { cn } from '@/lib/cn'
 import type { CapsuleRecord } from '@/features/capsules/api/types'
 import type { ExchangeLedgerRow } from '@/features/capsules/lib/exchange-ledger'
 import type { RecomputedIdentity } from '@/features/capsules/lib/recompute-identity'
+import { usePeerLedgerRecompute } from '@/features/capsules/lib/recompute-identity'
 import { toneForState } from '@/features/capsules/lib/assurance-tone'
 import { WHAT_ACTUALLY_HAPPENED_GROUP, WHAT_NODE_SAID_GROUP } from '@/features/capsules/lib/nine-properties'
 import {
@@ -16,6 +17,7 @@ import {
   buildCommitsToRows,
   buildHeaderRows,
   buildIdentityRow,
+  theirsFetchable,
   type ChecksSideCell
 } from '@/features/capsules/lib/security-checks-view'
 import { ChipExplanationPopover } from '@/features/capsules/components/ChipExplanationPopover'
@@ -86,11 +88,13 @@ export type SecurityChecksViewProps = {
 
 export function SecurityChecksView({ row, identity, localRecord }: SecurityChecksViewProps) {
   const [rawMode, setRawMode] = useState(false)
+  const theirsRecompute = usePeerLedgerRecompute(row.raw)
+  const canFetchTheirs = theirsFetchable(row.raw) !== null
 
-  const identityRow = buildIdentityRow(row.raw, identity)
+  const identityRow = buildIdentityRow(row.raw, identity, theirsRecompute)
   const headerRows = buildHeaderRows(row.raw, localRecord)
   const commitsToRows = buildCommitsToRows(row.raw, localRecord)
-  const checksRows = buildChecksRows(row.raw, identity)
+  const checksRows = buildChecksRows(row.raw, identity, theirsRecompute)
   const captureCoverageRow = checksRows.find((r) => r.key === 'capture_coverage')
   const nodeSaidRows = checksRows.filter((r) => r.key !== 'capture_coverage' && r.group === WHAT_NODE_SAID_GROUP)
   const actuallyHappenedRows = checksRows.filter((r) => r.group === WHAT_ACTUALLY_HAPPENED_GROUP)
@@ -175,6 +179,24 @@ export function SecurityChecksView({ row, identity, localRecord }: SecurityCheck
                 </p>
               }
             />
+            {/* `[mesh-e9e10-pieces-3-4]` piece 4: a real peer-asserted join
+               key exists but this browser has not fetched it yet -- an
+               explicit action, never an automatic background fetch (a mesh
+               call is not a free local read). Witness-level recompute only:
+               the button never claims a verdict, just that this browser will
+               go look. */}
+            {canFetchTheirs && theirsRecompute.status !== 'fetching' ? (
+              <Button
+                className="ui-control h-6 w-fit gap-1 px-2 text-[length:var(--density-type-caption)]"
+                data-peer-fetch-action="mesh_ledger_fetch"
+                onClick={() => theirsRecompute.fetch()}
+                size="sm"
+                type="button"
+                variant="outline"
+              >
+                fetch peer capsule &amp; recompute here
+              </Button>
+            ) : null}
           </div>
 
           <div className="flex flex-col gap-1.5">
