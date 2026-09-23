@@ -1572,9 +1572,15 @@ impl StageOpenAiBackend {
         // the request before `dispatch` moves it -- the marker path reads it
         // (nonce sourcing) even when the pre-dispatch `dispatched_request`
         // clone was skipped.
+        // Gate the marker snapshot on the policy actually observing the
+        // dispatched request -- mirror the `effective`/`observes_dispatched_request`
+        // handling above rather than cloning the full request on EVERY served
+        // completion. A policy that does not observe gets the default and the
+        // marker path sources its nonce without a needless clone.
         let marker_request = self
             .hook_policy
             .as_ref()
+            .filter(|policy| policy.observes_dispatched_request())
             .map(|_| request.clone())
             .unwrap_or_default();
         let mut result = dispatch(request).await;
