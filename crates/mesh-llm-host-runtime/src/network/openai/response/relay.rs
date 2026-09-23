@@ -417,6 +417,7 @@ mod tests {
                     content_type: Some("application/json".to_owned()),
                     client_nonce: None,
                     nonce_origin: None,
+                    capsule_id: None,
                 },
                 ResponseRetryPolicy::next_target_available(false),
                 None,
@@ -455,6 +456,7 @@ mod tests {
             chunked: false,
             client_nonce: None,
             nonce_origin: None,
+            capsule_id: None,
         };
         let probe_for = |header: &str| ResponseProbe {
             buffered: header.as_bytes().to_vec(),
@@ -476,6 +478,7 @@ mod tests {
             chunked: parsed.chunked,
             client_nonce: None,
             nonce_origin: None,
+            capsule_id: None,
         };
         let task = tokio::spawn(async move {
             let (client, _) = listener.accept().await.unwrap();
@@ -753,6 +756,7 @@ mod tests {
                     content_type: Some("application/json; charset=utf-8".to_owned()),
                     client_nonce: None,
                     nonce_origin: None,
+                    capsule_id: None,
                 },
                 ResponseRetryPolicy::next_target_available(false),
                 None,

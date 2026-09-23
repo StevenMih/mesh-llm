@@ -29,12 +29,48 @@ impl MeshAutoHookPolicy {
         })
     }
 
+    /// A policy that mints ONLY the response-leg `X-Capsule-Id` marker, with no
+    /// mesh node behind it. The `serve` / `--local-model-only` topology
+    /// (`runtime/local_model_only.rs`) has no `mesh::Node` and no virtual-hook
+    /// mesh to dispatch to, but it still SERVES exchanges that a routing peer
+    /// correlates against, so it must emit the marker header. The pre-dispatch
+    /// virtual hooks are internally gated on `chat_mesh_hooks_enabled` and
+    /// would no-op here regardless; the no-op executor makes that structural.
+    pub(crate) fn marker_only() -> Arc<Self> {
+        Arc::new(Self {
+            executor: Arc::new(NoopVirtualHookExecutor),
+            debug: HookDebugConfig::default(),
+        })
+    }
+
     #[cfg(test)]
     fn new_with_executor(
         executor: Arc<dyn VirtualHookExecutor>,
         debug: HookDebugConfig,
     ) -> Arc<Self> {
         Arc::new(Self { executor, debug })
+    }
+}
+
+/// A virtual-hook executor that returns no intervention for every trigger --
+/// backs [`MeshAutoHookPolicy::marker_only`], where there is no mesh node to
+/// dispatch a virtual hook to. Never reached in practice (the pre-dispatch
+/// hooks bail on `!chat_mesh_hooks_enabled` before calling the executor), but
+/// implemented honestly rather than panicking.
+struct NoopVirtualHookExecutor;
+
+#[async_trait]
+impl VirtualHookExecutor for NoopVirtualHookExecutor {
+    async fn handle_image(&self, _: &str, _: &str, _: &str, _: &str) -> Value {
+        Value::Null
+    }
+
+    async fn handle_uncertain(&self, _: &str, _: &[Value], _: f64, _: f64) -> Value {
+        Value::Null
+    }
+
+    async fn handle_drift(&self, _: &str, _: &[Value], _: i64) -> Value {
+        Value::Null
     }
 }
 
