@@ -7,6 +7,12 @@
 // sortable (R-B: no sort/no default order/no ranking by outcome) -- headers
 // are plain text, not `DataTableColumnHeader`, so there is no sort control
 // to wire up in the first place.
+//
+// [a18-evidence-peers-dedup-network] Accountability-only: the online/
+// offline status filter is retired along with the row's own online badge,
+// latency, and Route-to-chat button -- that's Network's job now. The Alarm
+// filter stays (a sealed contradiction/failed-verification IS an
+// accountability fact).
 import { useMemo, useState } from 'react'
 import { Columns3, RotateCcw, Search as SearchIcon } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -22,37 +28,36 @@ import { FilterPopover, type FilterValueOption } from '@/components/ui/FilterPop
 import { Input } from '@/components/ui/input'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import type { CapsuleRecord } from '@/features/capsules/api/types'
-import { PeerTableRow, type PeerTableBlockKey } from '@/features/capsules/components/PeerTableRow'
+import { PeerTableRow } from '@/features/capsules/components/PeerTableRow'
 import type { PeerExchangeSource } from '@/features/capsules/lib/peer-exchange-timeline'
 import { peerEvidenceBundle, peerRowsToCsv } from '@/features/capsules/lib/peer-export'
 import type { PeerMeshStatusIndex } from '@/features/capsules/lib/peer-mesh-status'
 import { saveTextFile } from '@/features/capsules/lib/exchange-export'
 import type { PaneBRow } from '@/features/capsules/api/sidecarTypes'
-import type { PeerTableRowView } from '@/features/capsules/lib/peer-row-view'
+import {
+  ALL_PEER_TABLE_COLUMNS,
+  type PeerTableColumnKey,
+  type PeerTableRowView
+} from '@/features/capsules/lib/peer-row-view'
 import type { Peer } from '@/features/app-tabs/types'
 
-const COLUMN_LABELS: Record<PeerTableBlockKey, string> = {
-  A: 'What they say',
-  B: 'What you have',
-  C: 'What anyone can check'
+const COLUMN_LABELS: Record<PeerTableColumnKey, string> = {
+  exchanges: 'Exchanges',
+  confirmed: 'Confirmed by other side',
+  match: 'Match',
+  adjudication: 'Adjudication',
+  witness: 'Witness',
+  period: 'Period'
 }
-const ALL_COLUMNS: PeerTableBlockKey[] = ['A', 'B', 'C']
+const ALL_COLUMNS: PeerTableColumnKey[] = [...ALL_PEER_TABLE_COLUMNS]
 
-type StatusFilterValue = 'online' | 'offline' | 'unknown'
 type AlarmFilterValue = 'has_alarm' | 'clean'
-type PeerFilterKey = 'status' | 'alarm'
+type PeerFilterKey = 'alarm'
 
-const ALL_STATUS_VALUES: StatusFilterValue[] = ['online', 'offline', 'unknown']
 const ALL_ALARM_VALUES: AlarmFilterValue[] = ['has_alarm', 'clean']
 
 function filterOptionLabel(value: string): string {
   switch (value) {
-    case 'online':
-      return 'Online'
-    case 'offline':
-      return 'Offline'
-    case 'unknown':
-      return 'Status unknown'
     case 'has_alarm':
       return 'Has alarm'
     case 'clean':
@@ -68,7 +73,7 @@ function alarmValue(view: PeerTableRowView): AlarmFilterValue {
 
 function matchesSearch(view: PeerTableRowView, query: string): boolean {
   if (!query) return true
-  return `${view.displayId} ${view.blockA ?? ''}`.toLowerCase().includes(query)
+  return view.displayId.toLowerCase().includes(query)
 }
 
 function GroupHeaderRow({ label, count, columnCount }: { label: string; count: number; columnCount: number }) {
@@ -101,54 +106,44 @@ export function LedgerPeersTable({
   recordsById
 }: LedgerPeersTableProps) {
   const [search, setSearch] = useState('')
-  const [statusFilter, setStatusFilter] = useState<Set<string>>(new Set(ALL_STATUS_VALUES))
   const [alarmFilter, setAlarmFilter] = useState<Set<string>>(new Set(ALL_ALARM_VALUES))
-  const [visibleColumns, setVisibleColumns] = useState<Set<PeerTableBlockKey>>(new Set(ALL_COLUMNS))
+  const [visibleColumns, setVisibleColumns] = useState<Set<PeerTableColumnKey>>(new Set(ALL_COLUMNS))
 
   const trimmedSearch = search.trim().toLowerCase()
   const allRows = useMemo(() => [...dealtWith, ...advertisedUnused], [dealtWith, advertisedUnused])
 
   function passesFilters(view: PeerTableRowView): boolean {
-    return statusFilter.has(view.statusValue) && alarmFilter.has(alarmValue(view)) && matchesSearch(view, trimmedSearch)
+    return alarmFilter.has(alarmValue(view)) && matchesSearch(view, trimmedSearch)
   }
 
   const visibleDealtWith = useMemo(
     () => dealtWith.filter(passesFilters),
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- `passesFilters` closes over the same three state values already listed
-    [dealtWith, statusFilter, alarmFilter, trimmedSearch]
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `passesFilters` closes over the same two state values already listed
+    [dealtWith, alarmFilter, trimmedSearch]
   )
   const visibleAdvertised = useMemo(
     () => advertisedUnused.filter(passesFilters),
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- `passesFilters` closes over the same three state values already listed
-    [advertisedUnused, statusFilter, alarmFilter, trimmedSearch]
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `passesFilters` closes over the same two state values already listed
+    [advertisedUnused, alarmFilter, trimmedSearch]
   )
   const visibleRows = useMemo(() => [...visibleDealtWith, ...visibleAdvertised], [visibleDealtWith, visibleAdvertised])
 
-  const statusOptions: FilterValueOption[] = ALL_STATUS_VALUES.map((value) => ({
-    value,
-    count: allRows.filter((r) => r.statusValue === value).length
-  }))
   const alarmOptions: FilterValueOption[] = ALL_ALARM_VALUES.map((value) => ({
     value,
     count: allRows.filter((r) => alarmValue(r) === value).length
   }))
-  const activeFilterGroups =
-    (statusFilter.size < ALL_STATUS_VALUES.length ? 1 : 0) + (alarmFilter.size < ALL_ALARM_VALUES.length ? 1 : 0)
+  const activeFilterGroups = alarmFilter.size < ALL_ALARM_VALUES.length ? 1 : 0
 
-  const columnCount = 2 + visibleColumns.size
+  const columnCount = 1 + visibleColumns.size
 
   function resetView() {
     setSearch('')
-    setStatusFilter(new Set(ALL_STATUS_VALUES))
     setAlarmFilter(new Set(ALL_ALARM_VALUES))
     setVisibleColumns(new Set(ALL_COLUMNS))
   }
 
   const viewIsDefault =
-    search === '' &&
-    statusFilter.size === ALL_STATUS_VALUES.length &&
-    alarmFilter.size === ALL_ALARM_VALUES.length &&
-    visibleColumns.size === ALL_COLUMNS.length
+    search === '' && alarmFilter.size === ALL_ALARM_VALUES.length && visibleColumns.size === ALL_COLUMNS.length
 
   return (
     <div className="flex flex-col gap-2">
@@ -167,43 +162,30 @@ export function LedgerPeersTable({
               aria-label="Search peers"
               className="ui-control h-8 w-52 rounded-[var(--radius)] border-border-soft pl-8 text-[length:var(--density-type-caption)]"
               onChange={(event) => setSearch(event.target.value)}
-              placeholder="Peer ID or announced model…"
+              placeholder="Peer ID…"
               value={search}
             />
           </div>
           <FilterPopover<PeerFilterKey>
             activeFilterGroups={activeFilterGroups}
-            categories={[
-              { key: 'status', label: 'Status' },
-              { key: 'alarm', label: 'Alarm' }
-            ]}
+            categories={[{ key: 'alarm', label: 'Alarm' }]}
             contentLabel="Peer filters"
             formatOptionLabel={filterOptionLabel}
             id="ledger-peers-filters"
             itemLabel="peers"
-            onClear={() => {
-              setStatusFilter(new Set(ALL_STATUS_VALUES))
-              setAlarmFilter(new Set(ALL_ALARM_VALUES))
-            }}
-            onSelectAll={(key) => {
-              if (key === 'status') setStatusFilter(new Set(ALL_STATUS_VALUES))
-              else setAlarmFilter(new Set(ALL_ALARM_VALUES))
-            }}
-            onSelectNone={(key) => {
-              if (key === 'status') setStatusFilter(new Set())
-              else setAlarmFilter(new Set())
-            }}
-            onValueChange={(key, value, checked) => {
-              const setFilter = key === 'status' ? setStatusFilter : setAlarmFilter
-              setFilter((prev) => {
+            onClear={() => setAlarmFilter(new Set(ALL_ALARM_VALUES))}
+            onSelectAll={() => setAlarmFilter(new Set(ALL_ALARM_VALUES))}
+            onSelectNone={() => setAlarmFilter(new Set())}
+            onValueChange={(_key, value, checked) => {
+              setAlarmFilter((prev) => {
                 const next = new Set(prev)
                 if (checked) next.add(value)
                 else next.delete(value)
                 return next
               })
             }}
-            optionsByCategory={{ status: statusOptions, alarm: alarmOptions }}
-            selectedValuesByCategory={{ status: statusFilter, alarm: alarmFilter }}
+            optionsByCategory={{ alarm: alarmOptions }}
+            selectedValuesByCategory={{ alarm: alarmFilter }}
             title="Peer filters"
             totalCount={allRows.length}
             triggerLabel="Filter peers"
@@ -282,17 +264,14 @@ export function LedgerPeersTable({
       <Table aria-label="Peers">
         <TableHeader className="bg-panel-strong">
           <TableRow className="border-border-soft hover:bg-panel-strong">
-            <TableHead className="type-label h-9 px-3 text-fg-faint">Peer</TableHead>
-            {visibleColumns.has('A') ? (
-              <TableHead className="type-label h-9 px-3 text-fg-faint">{COLUMN_LABELS.A}</TableHead>
-            ) : null}
-            {visibleColumns.has('B') ? (
-              <TableHead className="type-label h-9 px-3 text-fg-faint">{COLUMN_LABELS.B}</TableHead>
-            ) : null}
-            {visibleColumns.has('C') ? (
-              <TableHead className="type-label h-9 px-3 text-fg-faint">{COLUMN_LABELS.C}</TableHead>
-            ) : null}
-            <TableHead className="type-label h-9 px-3 text-fg-faint">Route</TableHead>
+            <TableHead className="type-label h-9 px-3 text-fg-faint">Peer / identity</TableHead>
+            {ALL_COLUMNS.map((column) =>
+              visibleColumns.has(column) ? (
+                <TableHead className="type-label h-9 px-3 text-fg-faint" key={column}>
+                  {COLUMN_LABELS[column]}
+                </TableHead>
+              ) : null
+            )}
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -311,7 +290,7 @@ export function LedgerPeersTable({
                 meshStatus={meshStatus.statusFor(view.displayId)}
                 recordsById={recordsById}
                 view={view}
-                visibleBlocks={visibleColumns}
+                visibleColumns={visibleColumns}
               />
             ))
           )}
@@ -334,7 +313,7 @@ export function LedgerPeersTable({
                 key={view.key}
                 meshStatus={meshStatus.statusFor(view.displayId)}
                 view={view}
-                visibleBlocks={visibleColumns}
+                visibleColumns={visibleColumns}
               />
             ))
           )}

@@ -3,7 +3,6 @@
 // invariants (denominators always present, NOT_CHECKED never summarized as
 // corroborated, with-you and their-chain never summed) are unit-testable
 // without mounting a component.
-import { LatencySource } from '@/lib/api/types'
 import type { PaneBRow } from '@/features/capsules/api/sidecarTypes'
 import type { PeerMeshStatus } from '@/features/capsules/lib/peer-mesh-status'
 
@@ -36,9 +35,10 @@ export function unattributedExchangesLine(count: number): string {
   return `${count} ${subject} no counterparty recorded yet. They appear under Exchanges.`
 }
 
-/** Shared by the table row (`PeerTableRow`) and the modal's Overview tab
- *  (`PeerInspector`) so the two never drift into different wording for the
- *  same mesh-status facts. */
+/** Used by the modal's Overview tab (`PeerInspector`) for the self-reported
+ *  model/quant/context line -- the summary table no longer renders this
+ *  (accountability, not operational-announcement, per [a18-evidence-peers-
+ *  dedup-network]), but the deep-dive inspector still does. */
 export function meshMetaLine(meshStatus: PeerMeshStatus | null): string | null {
   if (!meshStatus) return null
   const parts = [
@@ -51,6 +51,7 @@ export function meshMetaLine(meshStatus: PeerMeshStatus | null): string | null {
 
 // ---------------------------------------------------------------------------
 // With-you (verifiable, front) -- never summed with their-chain facts.
+// Still used by the modal's Overview tab (`PeerInspector`).
 // ---------------------------------------------------------------------------
 
 export type WithYouCounts = { requested: number; served: number; confirmed: number }
@@ -120,6 +121,18 @@ export function adjudicationSummaryText(summary: AdjudicationSummary): string {
   return `${summary.checked} of ${summary.denominator} adjudicated · ${parts.join(' · ')}`
 }
 
+/** Compact form of `adjudicationSummaryText` for the Peers table's
+ *  narrower ADJUDICATION column -- same honesty invariant (never
+ *  "corroborated"-sounding when `notChecked`), just terser wording. */
+export function adjudicationCompactText(summary: AdjudicationSummary): string {
+  if (summary.notChecked) return 'none sealed'
+  const parts: string[] = []
+  if (summary.corroborated) parts.push(`${summary.corroborated} corroborated`)
+  if (summary.contradicted) parts.push(`${summary.contradicted} contradicted`)
+  if (summary.inconclusive) parts.push(`${summary.inconclusive} inconclusive`)
+  return `${summary.checked} of ${summary.denominator} · ${parts.join(' · ')}`
+}
+
 // ---------------------------------------------------------------------------
 // Their chain (secondary) -- you verified it's unbroken/unforked, never its
 // contents. Never summed with with-you facts.
@@ -162,6 +175,64 @@ export function theirChainSummary(row: PaneBRow): ChainSummary {
     state: STATE_NOT_CHECKED,
     ownChainForReferenceOnly: Boolean(cell?.mine_for_reference)
   }
+}
+
+// ---------------------------------------------------------------------------
+// Confirmed by other side -- the on-demand peer-fetch mechanism
+// (mesh-e9e10-pieces-3-4), distinct from `matchTally` below (which is this
+// node's own two-sided-capture reconciliation, a different, already-local
+// signal). `theirChainSummary` is a PEER-LEVEL fact (their whole chain
+// verified/failed/refused/not-checked) -- no sidecar emits a per-exchange
+// peer-fetch tally, so a `verified` state counts as every exchange
+// confirmed (never invented partial credit), and every other state counts
+// as zero with an honest note naming why.
+// ---------------------------------------------------------------------------
+
+export type ConfirmedByOtherSide = { confirmed: number; total: number; note: string | null }
+
+export function confirmedByOtherSide(row: PaneBRow): ConfirmedByOtherSide {
+  const total = row.exchange_count ?? 0
+  const chain = theirChainSummary(row)
+  if (chain.state === STATE_VERIFIED) {
+    return { confirmed: total, total, note: null }
+  }
+  if (chain.state === STATE_FAILED) {
+    return { confirmed: 0, total, note: 'peer-fetch failed' }
+  }
+  if (chain.state === STATE_REFUSED) {
+    return { confirmed: 0, total, note: 'peer refused' }
+  }
+  return { confirmed: 0, total, note: 'peer-fetch pending' }
+}
+
+export function confirmedByOtherSideText(summary: ConfirmedByOtherSide): string {
+  const base = `${summary.confirmed} / ${summary.total}`
+  return summary.note ? `${base} (${summary.note})` : base
+}
+
+// ---------------------------------------------------------------------------
+// Match -- local two-sided-capture reconciliation (`pair_cell`) plus any
+// contradiction a sealed adjudication later found. `clean`/`mismatch`
+// always both render (even at zero); `contradicted` only appears when
+// nonzero -- a peer with no contradiction has never had one, not "0 of
+// them", the same zero-is-a-fact-not-silence discipline as
+// `adjudicationSummaryText`.
+// ---------------------------------------------------------------------------
+
+export type MatchTally = { clean: number; mismatch: number; contradicted: number }
+
+export function matchTally(row: PaneBRow): MatchTally {
+  return {
+    clean: row.pair?.verified ?? 0,
+    mismatch: row.pair?.failed ?? 0,
+    contradicted: row.verdicts?.tally?.contradicted ?? 0
+  }
+}
+
+export function matchTallyText(tally: MatchTally): string {
+  const parts = [`${tally.clean} clean`, `${tally.mismatch} mismatch`]
+  if (tally.contradicted) parts.push(`${tally.contradicted} contradicted`)
+  return parts.join(' · ')
 }
 
 // ---------------------------------------------------------------------------
@@ -208,122 +279,75 @@ export function sortPeerRows<T>(rows: readonly T[], keyOf: (row: T) => readonly 
   })
 }
 
-// ---------------------------------------------------------------------------
-// [ledger-T7-peers-table] Block A/B/C view-model (chooser-v2 §3). Rendered
-// by the table row, never blended into one paragraph -- see
-// `LedgerPeersTable.tsx`.
-// ---------------------------------------------------------------------------
-
-/** `rung_cell.rung`'s raw ladder values are internal identifiers -- humanize
- *  for display, and NEVER render the literal word "rung" (ledger grep
- *  gate). */
-function humanizeToken(token: string): string {
-  return token.replace(/_/g, ' ')
-}
-
-export function admissionStateLabel(row: PaneBRow): string | null {
-  const value = row.rung?.rung
-  return typeof value === 'string' && value.length > 0 ? humanizeToken(value) : null
-}
-
-/** Block A's one line: model/quant/context (`meshMetaLine`) plus the
- *  admission state, both self-reported. The "self-reported" note itself
- *  (`SELF_REPORTED_NOTE`) is rendered once by the caller, never repeated
- *  per field -- chooser-v2 §3: "self-reported" stated once. */
-export function blockAAnnouncementLine(
-  meshStatus: PeerMeshStatus | null,
-  admissionState: string | null
-): string | null {
-  const parts = [meshMetaLine(meshStatus), admissionState].filter((part): part is string => Boolean(part))
-  return parts.length > 0 ? parts.join(' · ') : null
-}
-
 export const SELF_REPORTED_NOTE = 'self-reported — not independently attested'
 
 // ---------------------------------------------------------------------------
-// Block B — what you have: latency with provenance, answered-when-asked as
-// a presence fact (never a rate).
+// Witness -- no pane exposes a peer-scoped witness registration count today
+// (`history.mine_for_reference.witnessed` is THIS node's OWN chain, carried
+// for reference only, never the peer's -- see `PaneBHistoryCell`), so this
+// states the absence honestly instead of borrowing that field.
 // ---------------------------------------------------------------------------
 
-export function latencyWithProvenanceText(meshStatus: PeerMeshStatus | null): string {
-  if (meshStatus?.latencyMs == null) return 'latency unknown'
-  const base = `${meshStatus.latencyMs} ms`
-  switch (meshStatus.latencySource) {
-    case LatencySource.DIRECT:
-      return `${base} (you measured)`
-    case LatencySource.ESTIMATED:
-      return `${base} (reported by another node)`
-    default:
-      return base
+export const WITNESS_COVERAGE_COMPACT_TEXT = 'not available'
+
+// ---------------------------------------------------------------------------
+// Period -- the first/last exchange dates this row spans. `—` when there is
+// no exchange history to bound (the "advertised but unused" group).
+// ---------------------------------------------------------------------------
+
+function periodDateParts(iso: string): { day: number; month: string; year: number } {
+  const parsed = new Date(iso)
+  return {
+    day: parsed.getUTCDate(),
+    month: parsed.toLocaleString('en-US', { month: 'short', timeZone: 'UTC' }),
+    year: parsed.getUTCFullYear()
   }
 }
 
-/** `asked_cell.text` is already an honest presence/absence fact about
- *  evidence requests THIS node sent this peer (e.g. "this node doesn't
- *  persist a send log yet") -- surface it verbatim under the
- *  "answered when asked" heading rather than deriving a rate from it. */
-export function answeredWhenAskedText(row: PaneBRow): string {
-  return row.asked?.text ?? 'Answered when asked: not available yet.'
+export function periodRangeText(firstSeen: string | null, lastSeen: string | null): string {
+  if (!firstSeen || !lastSeen) return '—'
+  const first = periodDateParts(firstSeen)
+  const last = periodDateParts(lastSeen)
+  if (first.year === last.year && first.month === last.month) {
+    return first.day === last.day ? `${first.day} ${first.month}` : `${first.day}–${last.day} ${first.month}`
+  }
+  if (first.year === last.year) {
+    return `${first.day} ${first.month} – ${last.day} ${last.month}`
+  }
+  return `${first.day} ${first.month} ${first.year} – ${last.day} ${last.month} ${last.year}`
 }
 
 // ---------------------------------------------------------------------------
-// Block C — what anyone can check: adjudication outcomes (denominator-
-// honest, `adjudicationSummaryText` above) plus witness coverage. No pane
-// exposes a peer-scoped witness registration count today --
-// `history.mine_for_reference.witnessed` is documented as THIS node's OWN
-// chain, carried for reference only, never the peer's (see
-// `PaneBHistoryCell`) -- so this states the absence honestly instead of
-// borrowing that field.
-// ---------------------------------------------------------------------------
-
-export const WITNESS_COVERAGE_UNAVAILABLE_TEXT = 'Witness coverage: not available for this peer yet.'
-
-// ---------------------------------------------------------------------------
 // Unified row view -- one shape for both row groups ("dealt with" rows
-// carry the full Pane B row; "advertised but unused" rows have no
-// exchange history at all, so blocks B/C degrade to their honest empty
-// state rather than a fabricated zero).
+// carry the full Pane B row; "advertised but unused" rows have no exchange
+// history at all, so every accountability column degrades to the honest
+// "—" placeholder rather than a fabricated zero-of-zero).
+//
+// [a18-evidence-peers-dedup-network] Accountability-only: no online status,
+// latency, or route-to-chat field here (Network's job) -- see
+// `PeerTableRow.tsx`.
 // ---------------------------------------------------------------------------
-
-export type PeerStatusValue = 'online' | 'offline' | 'unknown'
 
 export type PeerTableRowView = {
   key: string
   displayId: string
-  online: boolean
-  statusValue: PeerStatusValue
-  blockA: string | null
-  blockBCounts: string
-  blockBLatency: string
-  blockBAnswered: string | null
-  blockCAdjudication: string
-  blockCWitness: string
-  alarm: AlarmSignal
-  canRouteToChat: boolean
-  routeDisabledReason: string | null
   hasDealings: boolean
+  /** One honesty caveat under the identity, stated once (chooser-v2 §3
+   *  discipline carried over): `SELF_REPORTED_NOTE` for a dealt-with peer,
+   *  "no exchanges yet" for one only advertised. */
+  identityNote: string
+  exchangeCount: number
+  confirmedByOtherSide: string
+  match: string
+  adjudicationCompact: string
+  witnessCompact: string
+  period: string
+  alarm: AlarmSignal
   row: PaneBRow | null
-}
-
-export const ROUTE_DISABLED_REASON = 'No mesh status available for this peer yet.'
-
-function statusValueFor(meshStatus: PeerMeshStatus | null): PeerStatusValue {
-  if (!meshStatus) return 'unknown'
-  return meshStatus.online ? 'online' : 'offline'
-}
-
-const ZERO_ADJUDICATION: AdjudicationSummary = {
-  checked: 0,
-  denominator: 0,
-  corroborated: 0,
-  contradicted: 0,
-  inconclusive: 0,
-  notChecked: true
 }
 
 export function dealtWithRowView(
   row: PaneBRow,
-  meshStatus: PeerMeshStatus | null,
   resolveTimestamp?: (capsuleId: string) => string | null
 ): PeerTableRowView {
   // `peerDisplayId` returns `null` for a row with no counterparty identity
@@ -334,43 +358,54 @@ export function dealtWithRowView(
   return {
     key: row.peer_id ?? displayId,
     displayId,
-    online: meshStatus?.online ?? false,
-    statusValue: statusValueFor(meshStatus),
-    blockA: blockAAnnouncementLine(meshStatus, admissionStateLabel(row)),
-    blockBCounts: withYouCountsText(withYouCounts(row)),
-    blockBLatency: latencyWithProvenanceText(meshStatus),
-    blockBAnswered: answeredWhenAskedText(row),
-    blockCAdjudication: adjudicationSummaryText(adjudicationSummary(row)),
-    blockCWitness: WITNESS_COVERAGE_UNAVAILABLE_TEXT,
-    alarm: alarmSignal(row, resolveTimestamp),
-    canRouteToChat: Boolean(meshStatus?.modelName),
-    routeDisabledReason: meshStatus?.modelName ? null : ROUTE_DISABLED_REASON,
     hasDealings: true,
+    identityNote: SELF_REPORTED_NOTE,
+    exchangeCount: row.exchange_count ?? 0,
+    confirmedByOtherSide: confirmedByOtherSideText(confirmedByOtherSide(row)),
+    match: matchTallyText(matchTally(row)),
+    adjudicationCompact: adjudicationCompactText(adjudicationSummary(row)),
+    witnessCompact: WITNESS_COVERAGE_COMPACT_TEXT,
+    period: periodRangeText(row.first_seen, row.last_seen),
+    alarm: alarmSignal(row, resolveTimestamp),
     row
   }
 }
 
 /** "Nodes advertised but unused" -- a peer the mesh knows about but this
- *  node has never exchanged with. Block B/C render their honest zero
- *  state (never fabricated) -- `withYouCountsText`/`adjudicationSummaryText`
- *  are not reused here on purpose: there is no `PaneBRow` to derive them
- *  from, and "No exchanges yet" is the accurate statement, not "0 of 0". */
-export function advertisedOnlyRowView(displayId: string, meshStatus: PeerMeshStatus | null): PeerTableRowView {
+ *  node has never exchanged with. Every accountability column renders `—`
+ *  (nothing to report, not "0 of 0") -- there is no `PaneBRow` to derive
+ *  one from. */
+// ---------------------------------------------------------------------------
+// Column keys -- shared between `PeerTableRow` and `LedgerPeersTable`'s
+// Columns toggle. Lives here (a non-component module) rather than in either
+// component file so exporting it never trips the fast-refresh
+// only-export-components lint rule.
+// ---------------------------------------------------------------------------
+
+export type PeerTableColumnKey = 'exchanges' | 'confirmed' | 'match' | 'adjudication' | 'witness' | 'period'
+
+export const ALL_PEER_TABLE_COLUMNS: ReadonlySet<PeerTableColumnKey> = new Set<PeerTableColumnKey>([
+  'exchanges',
+  'confirmed',
+  'match',
+  'adjudication',
+  'witness',
+  'period'
+])
+
+export function advertisedOnlyRowView(displayId: string): PeerTableRowView {
   return {
     key: displayId,
     displayId,
-    online: meshStatus?.online ?? false,
-    statusValue: statusValueFor(meshStatus),
-    blockA: blockAAnnouncementLine(meshStatus, null),
-    blockBCounts: 'No exchanges yet',
-    blockBLatency: latencyWithProvenanceText(meshStatus),
-    blockBAnswered: null,
-    blockCAdjudication: adjudicationSummaryText(ZERO_ADJUDICATION),
-    blockCWitness: WITNESS_COVERAGE_UNAVAILABLE_TEXT,
-    alarm: { present: false, text: '', tone: 'warn' },
-    canRouteToChat: Boolean(meshStatus?.modelName),
-    routeDisabledReason: meshStatus?.modelName ? null : ROUTE_DISABLED_REASON,
     hasDealings: false,
+    identityNote: 'no exchanges yet',
+    exchangeCount: 0,
+    confirmedByOtherSide: '—',
+    match: '—',
+    adjudicationCompact: '—',
+    witnessCompact: '—',
+    period: '—',
+    alarm: { present: false, text: '', tone: 'warn' },
     row: null
   }
 }
