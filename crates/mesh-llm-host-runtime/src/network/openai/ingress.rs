@@ -898,7 +898,7 @@ fn warn_pipeline_fallback(strong_name: &str) {
 #[allow(clippy::too_many_arguments)]
 async fn route_missing_local_model(
     tcp_stream: ClientStream,
-    request: &proxy::BufferedHttpRequest,
+    request: &mut proxy::BufferedHttpRequest,
     ctx: &IngressRouteContext<'_>,
     model_name: &str,
     target: Option<iroh::EndpointId>,
@@ -1063,6 +1063,40 @@ async fn route_missing_local_model(
                 ) {
                     terminal = terminal.with_serving_provenance(provenance);
                 }
+                // The canonical digest of the REAL request body this node is
+                // forwarding to the peer -- `terminal_remote_mesh` used to
+                // hard-code this absent with the reasoning "a routing node
+                // forwarding to a peer never resolves them for itself," which
+                // is true of the PEER's serving provenance (unknowable here)
+                // but not of the request body: this node parsed and is
+                // relaying that exact body, so it can digest it the same way
+                // the host-served branch above does
+                // ([mesh-console-evidence-tab-honesty-defects] finding 4 --
+                // without this, every routed exchange sealed
+                // `unknown-request:<model>`, a non-digest sentinel, instead of
+                // the real JCS digest). `ensure_body_json` is idempotent and
+                // only paid here, inside the `channel.is_some()` branch.
+                // The canonical digest of the REAL request body this node is
+                // forwarding to the peer -- `terminal_remote_mesh` used to
+                // hard-code this absent with the reasoning "a routing node
+                // forwarding to a peer never resolves them for itself," which
+                // is true of the PEER's serving provenance (unknowable here)
+                // but not of the request body: this node parsed and is
+                // relaying that exact body, so it can digest it the same way
+                // the host-served branch above does
+                // ([mesh-console-evidence-tab-honesty-defects] finding 4 --
+                // without this, every routed exchange sealed
+                // `unknown-request:<model>`, a non-digest sentinel, instead of
+                // the real JCS digest). `ensure_body_json` is idempotent and
+                // only paid here, inside the `channel.is_some()` branch.
+                request.ensure_body_json();
+                if let Some(digest) = request
+                    .body_json
+                    .as_ref()
+                    .and_then(|body| request_body_digest(body, request.body_bytes.as_deref()))
+                {
+                    terminal = terminal.with_request_digest(digest);
+                }
                 ch.publish(&terminal).await;
             }
             return outcome;
@@ -1225,7 +1259,7 @@ fn spawn_ambient_twin_dispatch(args: AmbientTwinDispatchArgs) {
         channel,
         model_name,
         twin_target,
-        request,
+        mut request,
         required_tokens,
         bracket_id,
     } = args;
@@ -1275,18 +1309,27 @@ fn spawn_ambient_twin_dispatch(args: AmbientTwinDispatchArgs) {
         .await;
 
         if let Some(ch) = channel.as_ref() {
-            ch.publish(
-                &OpenAiExchangeEnvelope::terminal_remote_mesh(
-                    exchange_id,
-                    model_name,
-                    plugin_route_status(&outcome),
-                    forwarded_nonce,
-                    nonce_source,
-                    peer_capsule_id_sink.take(),
-                )
-                .with_twin_bracket_id(bracket_id),
+            let mut terminal = OpenAiExchangeEnvelope::terminal_remote_mesh(
+                exchange_id,
+                model_name,
+                plugin_route_status(&outcome),
+                forwarded_nonce,
+                nonce_source,
+                peer_capsule_id_sink.take(),
             )
-            .await;
+            .with_twin_bracket_id(bracket_id);
+            // Same real digest of the forwarded request body as the primary
+            // dispatch's terminal event -- see the comment on that call site
+            // ([mesh-console-evidence-tab-honesty-defects] finding 4).
+            request.ensure_body_json();
+            if let Some(digest) = request
+                .body_json
+                .as_ref()
+                .and_then(|body| request_body_digest(body, request.body_bytes.as_deref()))
+            {
+                terminal = terminal.with_request_digest(digest);
+            }
+            ch.publish(&terminal).await;
         }
     });
 }
