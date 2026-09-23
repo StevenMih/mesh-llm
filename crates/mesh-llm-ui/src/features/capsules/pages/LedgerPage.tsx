@@ -196,12 +196,8 @@ function PeersSection({ recordsById }: { recordsById: Map<string, CapsuleRecord>
     )
   }
 
-  const dealtWithViews = sortedDealtWithRawRows.map((row) =>
-    dealtWithRowView(row, meshStatus.statusFor(peerDisplayId(row) ?? ''), resolveTimestamp)
-  )
-  const advertisedViews = advertisedPeers.map((peer) =>
-    advertisedOnlyRowView(peer.shortId ?? peer.id, meshStatus.statusFor(peer.id))
-  )
+  const dealtWithViews = sortedDealtWithRawRows.map((row) => dealtWithRowView(row, resolveTimestamp))
+  const advertisedViews = advertisedPeers.map((peer) => advertisedOnlyRowView(peer.shortId ?? peer.id))
 
   if (dealtWithViews.length === 0 && advertisedViews.length === 0) {
     return <p className="text-sm text-muted-foreground">No peer exchanges recorded yet.</p>
@@ -209,10 +205,8 @@ function PeersSection({ recordsById }: { recordsById: Map<string, CapsuleRecord>
 
   return (
     <div className="flex flex-col gap-2">
-      {/* L3.1 — Peers section headline */}
-      <p className="text-sm text-fg-dim">
-        Nodes this node has exchanged with. What you sent, what they sent back, and whether it matched.
-      </p>
+      {/* L3.1 — Peers section headline lives at the call site (the Peers tab
+         panel in `LedgerPageContent`'s render, below) so it isn't duplicated. */}
       {unattributedExchangeCount > 0 ? (
         <p className="text-sm text-foreground">{unattributedExchangesLine(unattributedExchangeCount)}</p>
       ) : null}
@@ -1113,7 +1107,15 @@ export function LedgerPageContent({ focusExchangeKey }: { focusExchangeKey?: str
                 label: 'Peers',
                 content: (
                   <div>
-                    <p className="mb-3 text-sm text-fg-dim">What have the nodes you have dealt with shown you?</p>
+                    {/* [a18-evidence-peers-dedup-network] the second line is
+                       the axis test itself: true only right now → Network;
+                       true because sealed → Evidence. */}
+                    <p className="text-sm text-fg-dim">
+                      What have the nodes you've dealt with shown you — and does it hold up?
+                    </p>
+                    <p className="mb-3 text-sm text-emerald-500">
+                      Accountability only. Liveness, latency &amp; routing live in the Network tab.
+                    </p>
                     <PeersSection recordsById={recordsById} />
                   </div>
                 )

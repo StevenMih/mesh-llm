@@ -7,7 +7,16 @@ import type { Peer } from '@/features/app-tabs/types'
 import type { PaneBRow } from '@/features/capsules/api/sidecarTypes'
 import type { PeerTableRowView } from '@/features/capsules/lib/peer-row-view'
 
-const CSV_COLUMNS = ['Peer', 'Group', 'What they say', 'What you have', 'Latency', 'What anyone can check'] as const
+const CSV_COLUMNS = [
+  'Peer',
+  'Group',
+  'Exchanges',
+  'Confirmed by other side',
+  'Match',
+  'Adjudication',
+  'Witness',
+  'Period'
+] as const
 
 function csvCell(value: string): string {
   if (!/[",\n]/.test(value)) return value
@@ -21,10 +30,12 @@ export function peerRowsToCsv(rows: readonly PeerTableRowView[]): string {
       [
         row.displayId,
         row.hasDealings ? 'dealt with' : 'advertised but unused',
-        row.blockA ?? '',
-        row.blockBCounts,
-        row.blockBLatency,
-        row.blockCAdjudication
+        String(row.exchangeCount),
+        row.confirmedByOtherSide,
+        row.match,
+        row.adjudicationCompact,
+        row.witnessCompact,
+        row.period
       ]
         .map(csvCell)
         .join(',')
