@@ -2,8 +2,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use openai_frontend::{
-    ChatCompletionRequest, ChatHookOutcome, ChatMediaKind, GenerationHookSignals, OpenAiHookPolicy,
-    OpenAiResult, PrefillHookSignals, chat_mesh_hooks_enabled, first_chat_media,
+    CapsuleMarker, ChatCompletionRequest, ChatCompletionResponse, ChatHookOutcome, ChatMediaKind,
+    GenerationHookSignals, OpenAiHookPolicy, OpenAiResult, PrefillHookSignals, capsule_id_is_valid,
+    chat_mesh_hooks_enabled, first_chat_media,
 };
 use serde_json::Value;
 
@@ -122,12 +123,62 @@ impl OpenAiHookPolicy for MeshAutoHookPolicy {
         Ok(virtual_hook_response_to_outcome(&response))
     }
 
-    // Only the pre-dispatch hooks above are implemented — the post-dispatch
-    // request snapshot (`on_chat_completion_terminal`,
-    // `capsule_marker_for_response`) is never read here, so skip the clone
-    // `HookedOpenAiBackend` would otherwise take on every completion.
+    /// Mint the served-leg response marker so the frontend writes an
+    /// `X-Capsule-Id` header on every host-served completion.
+    ///
+    /// **Why this exists (the "counterparty not recorded" fix).** A requester
+    /// node routing an exchange to this peer over `RemoteMesh` reads this
+    /// peer's `X-Capsule-Id` response header back off the raw proxy
+    /// (`network/openai/response/routing.rs::record_peer_capsule_id`) and seals
+    /// it as `peer_capsule_id` (provenance `peer_asserted`) on its own half of
+    /// the exchange — the join key its two-sided "THEIR RECORD" view needs.
+    /// Without a marker here the header is never emitted, so the requester
+    /// seals `peer_capsule_id: null` and can never name (or later fetch) the
+    /// serving peer. `MeshAutoHookPolicy` is the ONLY hook policy wired into a
+    /// production node (`runtime/local.rs`), so before this the header never
+    /// appeared on a real host-served response at all — only the never-wired
+    /// `OpenAiExchangeHookBridge` (tests only) minted one.
+    ///
+    /// **Honest labeling.** The marker id is `capsule-<response.id>`, a
+    /// self-minted per-response correlation id — NOT this node's sealed
+    /// content-hash capsule id (that is computed asynchronously by the
+    /// capsule-emit plugin off the terminal event, after this response has
+    /// already been sent, so it is not knowable here). The requester records
+    /// it strictly as `peer_asserted` / unverified, never elevated to attested
+    /// — matching `OpenAiExchangeHookBridge::capsule_marker_for_response`'s
+    /// reference minting exactly so both paths agree.
+    async fn capsule_marker_for_response(
+        &self,
+        request: &ChatCompletionRequest,
+        response: &ChatCompletionResponse,
+    ) -> Option<CapsuleMarker> {
+        // Client-contributed nonce wins (landing in `request.extra` via the
+        // `#[serde(flatten)]` bag `mesh_hooks` already uses); absent that, a
+        // `fallback-` nonce is minted rather than silently mislabeling it as
+        // client-supplied. Same rule as the reference bridge.
+        let nonce = request
+            .extra
+            .get("client_nonce")
+            .and_then(|value| value.as_str())
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("fallback-{}", response.id));
+        let marker = CapsuleMarker {
+            capsule_id: format!("capsule-{}", response.id),
+            nonce,
+        };
+        // A marker whose id can't become a valid header must not be attached —
+        // the frontend/`HookedOpenAiBackend` guard drops it, but returning None
+        // here keeps the "no header" and "no observed marker" facts consistent.
+        capsule_id_is_valid(&marker.capsule_id).then_some(marker)
+    }
+
+    // The pre-dispatch hooks above take `&mut request` directly, but
+    // `capsule_marker_for_response` reads the post-dispatch request snapshot
+    // (`HookedOpenAiBackend` moves the effective request into the backend by
+    // value), so the clone must be taken — flipped from `false` when the
+    // marker was wired in.
     fn observes_dispatched_request(&self) -> bool {
-        false
+        true
     }
 }
 
