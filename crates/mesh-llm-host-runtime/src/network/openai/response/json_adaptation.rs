@@ -4,7 +4,7 @@ use super::common::{
     retryable_quality_result,
 };
 use super::probe::{
-    ResponseBodyReadLimits, ResponseProbe, append_capsule_nonce_headers,
+    ResponseBodyReadLimits, ResponseProbe, append_capsule_id_header, append_capsule_nonce_headers,
     append_mesh_served_by_header, read_transformed_response_body, try_parse_response_headers,
 };
 use super::relay::relay_error_response;
@@ -76,6 +76,10 @@ pub(in crate::network::openai::response) async fn relay_translated_responses_jso
         parsed.client_nonce.as_deref(),
         parsed.nonce_origin.as_deref(),
     );
+    // Preserve the inner frontend's served-leg `X-Capsule-Id` marker across
+    // this rebuild -- without it a routing peer reads no capsule id back off
+    // this node's public response and seals `peer_capsule_id: null`.
+    append_capsule_id_header(&mut header, parsed.capsule_id.as_deref());
     append_mesh_served_by_header(&mut header, served_by);
     header.push_str("Connection: close\r\n\r\n");
     tcp_stream.write_all(header.as_bytes()).await?;
@@ -144,6 +148,10 @@ pub(in crate::network::openai::response) async fn relay_normalized_chat_completi
         parsed.client_nonce.as_deref(),
         parsed.nonce_origin.as_deref(),
     );
+    // Preserve the inner frontend's served-leg `X-Capsule-Id` marker across
+    // this rebuild -- without it a routing peer reads no capsule id back off
+    // this node's public response and seals `peer_capsule_id: null`.
+    append_capsule_id_header(&mut header, parsed.capsule_id.as_deref());
     append_mesh_served_by_header(&mut header, served_by);
     header.push_str("Connection: close\r\n\r\n");
     tcp_stream.write_all(header.as_bytes()).await?;
@@ -301,7 +309,7 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let header = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nx-capsule-client-nonce: nonce-under-test\r\nx-capsule-nonce-origin: frontend\r\n\r\n",
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nx-capsule-client-nonce: nonce-under-test\r\nx-capsule-nonce-origin: frontend\r\nx-capsule-id: capsule-chatcmpl-a\r\n\r\n",
             body.len()
         );
         let header_end = header.len();
@@ -344,6 +352,13 @@ mod tests {
         assert!(
             output_text.contains("x-capsule-nonce-origin: frontend\r\n"),
             "public-proxy JSON response must echo the nonce origin marker: {output_text}"
+        );
+        // The regression this file's fix closes: the served-leg X-Capsule-Id
+        // marker must survive the JSON rebuild, or a routing peer reads no
+        // capsule id back and seals peer_capsule_id: null.
+        assert!(
+            output_text.contains("x-capsule-id: capsule-chatcmpl-a\r\n"),
+            "public-proxy JSON response must preserve the upstream X-Capsule-Id: {output_text}"
         );
     }
 
