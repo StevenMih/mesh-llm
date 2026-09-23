@@ -275,7 +275,15 @@ async fn run_local_model_only_inner(
         ),
         skippy_telemetry: skippy_telemetry_options(&options),
         survey_telemetry,
-        hook_policy: None,
+        // Even a standalone `serve` box (no mesh node) must emit the
+        // response-leg `X-Capsule-Id` marker: a routing peer reads it back to
+        // seal `peer_capsule_id` for its half of the exchange. The marker-only
+        // policy mints exactly that and nothing else (no virtual mesh hooks --
+        // there is no node here). See `MeshAutoHookPolicy::marker_only`.
+        hook_policy: Some(
+            crate::inference::skippy::MeshAutoHookPolicy::marker_only()
+                as Arc<dyn openai_frontend::OpenAiHookPolicy>,
+        ),
         serving_hooks_factory,
         http_bind_addr: bind_addr,
     };
