@@ -154,14 +154,22 @@ fn outcome_was_served(outcome: &proxy::RouteDispatchOutcome) -> bool {
 /// quant/architecture/gpu for hardware this node never touched.
 fn serving_provenance_for_remote_mesh(
     target: Option<iroh::EndpointId>,
+    observed_served_by_hex: Option<String>,
     outcome: &proxy::RouteDispatchOutcome,
 ) -> Option<ServingProvenance> {
-    let target_id = target?;
     if !outcome_was_served(outcome) {
         return None;
     }
+    // Prefer the routing-observed served peer (set by `ServedByNodeIdSink` for
+    // the attempt that actually delivered, so an untargeted multi-candidate
+    // request still names the real server); fall back to an explicit
+    // `x-mesh-target`, which narrows routing to exactly that one peer. Both are
+    // the real serving node -- never this routing node, never a guess: `None`
+    // when neither is known.
+    let served_by_node_id =
+        observed_served_by_hex.or_else(|| target.map(|id| hex::encode(id.as_bytes())))?;
     Some(ServingProvenance {
-        served_by_node_id: hex::encode(target_id.as_bytes()),
+        served_by_node_id,
         hostname: None,
         quantization: None,
         architecture: None,
@@ -1009,6 +1017,12 @@ async fn route_missing_local_model(
             // (that happens in whatever later pulls the capsule via a later
             // out-of-band fetch and checks its digest).
             let peer_capsule_id_sink = proxy::PeerCapsuleIdSink::new();
+            // Where `route_model_request` records which peer actually served a
+            // delivered attempt, so `served_by_node_id` is knowable even on a
+            // plain multi-candidate request that named no `x-mesh-target` (the
+            // only case `served_by_hex`/`target` covers). See
+            // `serving_provenance_for_remote_mesh`.
+            let served_by_node_id_sink = proxy::ServedByNodeIdSink::new();
             let outcome = proxy::route_model_request(
                 ctx.node.clone(),
                 tcp_stream,
@@ -1021,6 +1035,7 @@ async fn route_missing_local_model(
                     route_observer,
                     served_by_header: served_by_hex.as_deref(),
                     peer_capsule_id: Some(&peer_capsule_id_sink),
+                    served_by_node_id: Some(&served_by_node_id_sink),
                 },
             )
             .await;
@@ -1038,8 +1053,14 @@ async fn route_missing_local_model(
                 }
                 // D1: name the real serving peer, never this node -- see
                 // `serving_provenance_for_remote_mesh`'s doc for exactly when
-                // this is (and is not) knowable.
-                if let Some(provenance) = serving_provenance_for_remote_mesh(target, &outcome) {
+                // this is (and is not) knowable. Prefer the routing-observed
+                // served peer (the sink, set for the actually-served attempt on
+                // an untargeted request); fall back to the explicit `target`.
+                if let Some(provenance) = serving_provenance_for_remote_mesh(
+                    target,
+                    served_by_node_id_sink.take(),
+                    &outcome,
+                ) {
                     terminal = terminal.with_serving_provenance(provenance);
                 }
                 ch.publish(&terminal).await;
@@ -1233,6 +1254,9 @@ fn spawn_ambient_twin_dispatch(args: AmbientTwinDispatchArgs) {
         // see its doc comment above. The twin is a distinct exchange with its
         // own terminal envelope, so it gets its own sink.
         let peer_capsule_id_sink = proxy::PeerCapsuleIdSink::new();
+        // The twin is a single explicit `twin_target`, so its serving peer is
+        // already known without the routing-observed sink; no served-by capture
+        // needed on this observe-only path.
         let outcome = proxy::route_model_request(
             node,
             ClientStream::null(),
@@ -1245,6 +1269,7 @@ fn spawn_ambient_twin_dispatch(args: AmbientTwinDispatchArgs) {
                 route_observer: OpenAiRouteObserver::default(),
                 served_by_header: None,
                 peer_capsule_id: Some(&peer_capsule_id_sink),
+                served_by_node_id: None,
             },
         )
         .await;
@@ -1751,6 +1776,7 @@ async fn route_request(
                 // (or election-selecting among candidates that may include
                 // itself) the exchange, not merely routing to a peer.
                 peer_capsule_id: None,
+                served_by_node_id: None,
             },
         )
         .await;

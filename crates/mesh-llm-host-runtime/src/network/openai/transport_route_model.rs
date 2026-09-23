@@ -17,6 +17,30 @@ pub(crate) struct RouteModelRequestContext<'a> {
     /// which reads it back out after this call to attach it to its own
     /// terminal plugin event; `None` for every other caller.
     pub(crate) peer_capsule_id: Option<&'a PeerCapsuleIdSink>,
+    /// Where to record which peer actually served a delivered attempt. Set only
+    /// by the `RemoteMesh` dispatch path, read back after this call to name the
+    /// serving node on the routing node's terminal event even when the client
+    /// never sent an `x-mesh-target`; `None` for every other caller.
+    pub(crate) served_by_node_id: Option<&'a ServedByNodeIdSink>,
+}
+
+/// A delivered 2xx outcome — the routing-side test for "this attempt was
+/// actually served", used to gate the `ServedByNodeIdSink` set. Mirrors
+/// `ingress::outcome_was_served`; kept local so the served-by capture stays in
+/// the one module where the per-attempt `target` is in scope.
+fn route_outcome_was_served(outcome: &RouteDispatchOutcome) -> bool {
+    matches!(
+        outcome,
+        RouteDispatchOutcome::Responded(200..=299)
+            | RouteDispatchOutcome::RespondedWithDigests {
+                status_code: 200..=299,
+                ..
+            }
+            | RouteDispatchOutcome::RespondedWithUsage {
+                status_code: 200..=299,
+                ..
+            }
+    )
 }
 
 pub async fn route_model_request(
@@ -38,6 +62,7 @@ pub async fn route_model_request(
         route_observer: context.route_observer,
         served_by_header: context.served_by_header,
         peer_capsule_id: context.peer_capsule_id,
+        served_by_node_id: context.served_by_node_id,
     };
     route_model_request_inner(args).await
 }
@@ -53,6 +78,7 @@ struct RouteModelRequestArgs<'a> {
     route_observer: OpenAiRouteObserver<'a>,
     served_by_header: Option<&'a str>,
     peer_capsule_id: Option<&'a PeerCapsuleIdSink>,
+    served_by_node_id: Option<&'a ServedByNodeIdSink>,
 }
 
 struct RouteModelState {
@@ -109,6 +135,7 @@ async fn route_model_request_inner(args: RouteModelRequestArgs<'_>) -> RouteDisp
         route_observer,
         served_by_header,
         peer_capsule_id,
+        served_by_node_id,
     } = args;
     let route_started = Instant::now();
     let mut tcp_stream = tcp_stream;
@@ -227,6 +254,17 @@ async fn route_model_request_inner(args: RouteModelRequestArgs<'_>) -> RouteDisp
         ) {
             RouteModelDisposition::Continue => continue,
             RouteModelDisposition::Return(result) => {
+                // Name the peer that actually served this delivered attempt, so
+                // the routing node's terminal event carries `served_by_node_id`
+                // even when the client never sent an `x-mesh-target` (the only
+                // case `served_by_header` covers). Only on a served outcome and
+                // a `Remote` target — never invent a value for a local serve or
+                // a failure. See `ServedByNodeIdSink`.
+                if let (Some(sink), true) = (served_by_node_id, route_outcome_was_served(&result))
+                    && let election::InferenceTarget::Remote(endpoint_id) = &target
+                {
+                    sink.set(hex::encode(endpoint_id.as_bytes()));
+                }
                 return finalize_route_model_result(
                     &node,
                     model,
@@ -1095,6 +1133,7 @@ mod tests {
                 route_observer: OpenAiRouteObserver::default(),
                 served_by_header: None,
                 peer_capsule_id: Some(&sink),
+                served_by_node_id: None,
             },
         )
         .await;
