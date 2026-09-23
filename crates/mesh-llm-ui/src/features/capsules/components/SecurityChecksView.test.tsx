@@ -203,16 +203,45 @@ describe('SecurityChecksView — rendered property set', () => {
   })
 })
 
-describe('[ledger-T4-inline-inspector] SecurityChecksView — WHAT IT COMMITS TO block: ✓ same on CLOSED, absent on OPEN', () => {
-  it('a CLOSED row (the default fixture: theirs present, outcome_corroboration PASS) renders "✓ same" beside every commits-to row -- scoped to this block, since HEADER also legitimately renders its own "✓ same"', () => {
+describe('[ledger-T4-inline-inspector] SecurityChecksView — WHAT IT COMMITS TO block: ✓ same only after a REAL fetch, never mirrored (finding 2, 2026-09-23 assessment)', () => {
+  it('MUTANT-GUARD: a row whose right-cell reads CLOSED but carries no theirsRecompute never renders a mirrored "✓ same" -- the old bug mirrored `yours` the instant the row read CLOSED', () => {
     const { container } = render(
       <SecurityChecksView identity={RECOMPUTED_MATCH} localRecord={null} row={ledgerRow(paneCRow())} />
     )
     const commitsBlock = Array.from(container.querySelectorAll('[data-block-heading]')).find(
       (el) => el.getAttribute('data-block-heading') === 'what it commits to'
     )?.parentElement as HTMLElement
-    // request digest, response digest, task binding, model identity, served by
-    expect(within(commitsBlock).getAllByText('✓ same')).toHaveLength(5)
+    expect(within(commitsBlock).queryByText('✓ same')).not.toBeInTheDocument()
+  })
+
+  it('once a real fetch holds the peer\'s own matching record, "✓ same" renders for the fields with a genuine peer-record equivalent (request digest, response digest, model identity) -- never for task binding/served by, which have none', () => {
+    const localRecord = {
+      effect: { request_digest: 'a'.repeat(64), response_digest: 'b'.repeat(64) },
+      model_attestation: { model_id: 'model-x' }
+    } as never
+    const theirsRecompute = {
+      status: 'found' as const,
+      idMatch: true,
+      signatureOk: true,
+      peerRecord: {
+        effect: { request_digest: 'a'.repeat(64), response_digest: 'b'.repeat(64) },
+        model_attestation: { model_id: 'model-x' }
+      },
+      fetch: () => {}
+    }
+    const { container } = render(
+      <SecurityChecksView
+        identity={RECOMPUTED_MATCH}
+        localRecord={localRecord}
+        row={ledgerRow(paneCRow({ theirs: { state: 'NOT_CHECKED', capsule_id: 'a'.repeat(64), peer_id: 'peer-1' } }))}
+        theirsRecompute={theirsRecompute}
+      />
+    )
+    const commitsBlock = Array.from(container.querySelectorAll('[data-block-heading]')).find(
+      (el) => el.getAttribute('data-block-heading') === 'what it commits to'
+    )?.parentElement as HTMLElement
+    // request digest, response digest, model identity -- NOT task binding, NOT served by.
+    expect(within(commitsBlock).getAllByText('✓ same')).toHaveLength(3)
   })
 
   it('an OPEN row (theirs absent) never renders a theirs value for "what it commits to" -- MUTANT: no ✓/✕ marker with nothing to compare', () => {

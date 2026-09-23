@@ -10,8 +10,88 @@ import type { ExchangeLedgerRow } from '@/features/capsules/lib/exchange-ledger'
 import type { RightCellStateKind } from '@/features/capsules/lib/exchange-row-state'
 import type { RailSegment } from '@/features/capsules/lib/exchange-stream'
 import type { PaneCRow } from '@/features/capsules/api/sidecarTypes'
+import { usePeerLedgerRecompute, type PeerRecomputeState } from '@/features/capsules/lib/recompute-identity'
+
+// [mesh-console-evidence-tab-honesty-defects] finding 1: `ExchangeStreamRow`
+// now derives its own right-cell state from `row.raw` + a live
+// `usePeerLedgerRecompute` fetch, ignoring any `rightCellState` a caller
+// stuffs into the row prop directly (that field is only ever the ledger's
+// at-rest default, never something a component trusts for CLOSED/
+// CONTRADICTED). Mocked here so component tests can still drive every
+// state, including the two ('closed'/'contradicted') that structurally
+// require a resolved fetch this render-only harness never performs for
+// real.
+vi.mock('@/features/capsules/lib/recompute-identity', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/features/capsules/lib/recompute-identity')>()
+  return { ...actual, usePeerLedgerRecompute: vi.fn() }
+})
+
+const NOT_FETCHED: PeerRecomputeState = {
+  status: 'not_fetched',
+  idMatch: null,
+  signatureOk: null,
+  peerRecord: null,
+  fetch: vi.fn()
+}
+
+/** The `raw.theirs` shape and mocked fetch outcome that together make
+ *  `deriveRightCellState` land on exactly `kind`, mirroring the real
+ *  producer/fetch combinations `exchange-row-state.test.ts` exercises at
+ *  the pure-function level. */
+function fixturesFor(kind: RightCellStateKind): { theirs: PaneCRow['theirs']; recompute: PeerRecomputeState } {
+  switch (kind) {
+    case 'closed':
+      return {
+        theirs: { state: 'NOT_CHECKED', capsule_id: 't'.repeat(64), peer_id: 'peer-1' },
+        recompute: { ...NOT_FETCHED, status: 'found', idMatch: true, signatureOk: true, peerRecord: {} }
+      }
+    case 'contradicted':
+      return {
+        theirs: { state: 'NOT_CHECKED', capsule_id: 't'.repeat(64), peer_id: 'peer-1' },
+        recompute: { ...NOT_FETCHED, status: 'found', idMatch: false, signatureOk: false, peerRecord: {} }
+      }
+    case 'open_refused':
+      return {
+        theirs: {
+          state: 'absent',
+          capsule_id: null,
+          evidence_outcome: 'signed_refusal',
+          evidence_outcome_date: '4 Sep'
+        },
+        recompute: NOT_FETCHED
+      }
+    case 'open_absent':
+      return {
+        theirs: {
+          state: 'absent',
+          capsule_id: null,
+          evidence_outcome: 'recorded_absence',
+          evidence_outcome_date: '4 Sep'
+        },
+        recompute: NOT_FETCHED
+      }
+    case 'open_asked':
+      return {
+        theirs: { state: 'absent', capsule_id: null, evidence_outcome: 'unanswered', evidence_outcome_date: '4 Sep' },
+        recompute: NOT_FETCHED
+      }
+    case 'open_pending_fetch':
+      return {
+        theirs: { state: 'NOT_CHECKED', capsule_id: 't'.repeat(64), peer_id: 'peer-1' },
+        recompute: NOT_FETCHED
+      }
+    case 'open_not_asked':
+      return { theirs: { state: 'absent', capsule_id: null }, recompute: NOT_FETCHED }
+    default: {
+      const exhaustiveCheck: never = kind
+      return exhaustiveCheck
+    }
+  }
+}
 
 function makeRow(kind: RightCellStateKind, overrides: Partial<ExchangeLedgerRow> = {}): ExchangeLedgerRow {
+  const { theirs, recompute } = fixturesFor(kind)
+  vi.mocked(usePeerLedgerRecompute).mockReturnValue(recompute)
   return {
     exchangeKey: `exch-${kind}`,
     timestamp: '2026-09-08T16:58:05Z',
@@ -29,7 +109,7 @@ function makeRow(kind: RightCellStateKind, overrides: Partial<ExchangeLedgerRow>
     contentToggleState: { your: { kind: 'populated', date: null }, their: { kind: 'not_asked', date: null } },
     raw: {
       mine: { state: 'present', capsule_id: 'mine-1' },
-      theirs: { state: 'present', capsule_id: 'theirs-1' }
+      theirs
     } as PaneCRow,
     ...overrides
   }

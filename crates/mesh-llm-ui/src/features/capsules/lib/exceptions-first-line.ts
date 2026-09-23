@@ -21,6 +21,11 @@ export type ExceptionsFirstTally = {
   /** Asked for their half; no reply yet (`rightCellState.kind ===
    *  'open_asked'`) -- distinct from never having asked at all. */
   askedUnanswered: number
+  /** A real fetched-and-verified artifact from the other side
+   *  (`rightCellState.kind === 'closed'`) -- the one count this headline
+   *  used to imply ("all recomputed clean") without ever actually stating,
+   *  finding 7 of the 2026-09-23 assessment. */
+  confirmedByAnyoneElse: number
 }
 
 export function exceptionsFirstTally(rows: readonly ExchangeLedgerRow[]): ExceptionsFirstTally {
@@ -28,6 +33,7 @@ export function exceptionsFirstTally(rows: readonly ExchangeLedgerRow[]): Except
   let mismatched = 0
   let askedUnanswered = 0
   let needingAttention = 0
+  let confirmedByAnyoneElse = 0
 
   for (const row of rows) {
     const isFailed = row.hasIssue
@@ -36,26 +42,43 @@ export function exceptionsFirstTally(rows: readonly ExchangeLedgerRow[]): Except
     if (isFailed) failed += 1
     if (isMismatched) mismatched += 1
     if (isAskedUnanswered) askedUnanswered += 1
+    if (row.rightCellState.kind === 'closed') confirmedByAnyoneElse += 1
     if (isFailed || isMismatched || isAskedUnanswered) needingAttention += 1
   }
 
-  return { total: rows.length, needingAttention, failed, mismatched, askedUnanswered }
+  return { total: rows.length, needingAttention, failed, mismatched, askedUnanswered, confirmedByAnyoneElse }
 }
 
 /** NORMATIVE — same range discipline as `windowBannerHeadline`/
  *  `fullRangeLabel` (exchange-pages.ts, L-K): every count above the table
  *  states the range it covers, appended only when a row actually carries a
- *  timestamp, never fabricated. */
-export function exceptionsFirstLine(tally: ExceptionsFirstTally, rangeLabel: string | null): string {
-  const { total, needingAttention, failed, mismatched, askedUnanswered } = tally
+ *  timestamp, never fabricated.
+ *
+ * **Finding 7 (2026-09-23 assessment) -- corrected.** The zero-exceptions
+ * branch used to read "Nothing needs your attention... all sealed, all
+ * recomputed clean" over 135 rows with zero counterparties confirmed and
+ * zero checkpoints registered -- true only of THIS node's own self-checks,
+ * placed where it reads as a verdict on the whole exchange. The 10-second
+ * rule (`ledger-ux-from-the-user`) wants the role-aware truth stated
+ * up front instead: what this node sealed, what anyone else actually
+ * confirmed, and whether any of it is registered -- in both branches, not
+ * just the calm one, so a reader scanning past an exception list still
+ * gets the same two honest facts. */
+export function exceptionsFirstLine(
+  tally: ExceptionsFirstTally,
+  rangeLabel: string | null,
+  registered: boolean
+): string {
+  const { total, needingAttention, failed, mismatched, askedUnanswered, confirmedByAnyoneElse } = tally
   const noun = total === 1 ? 'exchange' : 'exchanges'
   const rangeSuffix = rangeLabel ? `, ${rangeLabel}` : ''
   const breakdown = `${failed} failed · ${mismatched} mismatched · ${askedUnanswered} asked-and-unanswered`
+  const registrationWord = registered ? 'registered' : 'not registered'
 
   if (needingAttention === 0) {
-    return `Nothing needs your attention. ${total} ${noun}${rangeSuffix}, all sealed, all recomputed clean. ${breakdown}.`
+    return `${total} sealed by you${rangeSuffix} · ${confirmedByAnyoneElse} confirmed by anyone else · ${registrationWord}.`
   }
 
   const needNoun = needingAttention === 1 ? 'exchange needs' : 'exchanges need'
-  return `${needingAttention} ${needNoun} your attention — ${total} ${noun}${rangeSuffix}. ${breakdown}.`
+  return `${needingAttention} ${needNoun} your attention — ${total} ${noun}${rangeSuffix}. ${breakdown}. ${confirmedByAnyoneElse} confirmed by anyone else · ${registrationWord}.`
 }

@@ -20,12 +20,18 @@ import type { PeerRecomputeState, RecomputedIdentity } from '@/features/capsules
 import { peerFetchJoinKey } from '@/features/capsules/lib/recompute-identity'
 import { NINE_PROPERTY_LABELS, PROPERTY_GROUP, RECOMPUTED_PROPERTIES } from '@/features/capsules/lib/nine-properties'
 import { labelForState } from '@/features/capsules/lib/assurance-tone'
-import { deriveRightCellState } from '@/features/capsules/lib/exchange-row-state'
+import { isDigestShaped } from '@/features/capsules/lib/canonical'
 
 function boolToWireState(value: boolean | null): string {
   return value === null ? 'NOT_CHECKED' : value ? 'PASS' : 'FAIL'
 }
 
+/** A peer-asserted id is on the record and known -- NOT that any bytes are
+ *  held. Governs only whether this row's IDENTITY/CHECKS columns show an
+ *  honestly-labelled `NOT_CHECKED`/"as given, not recomputed" cell at all;
+ *  it must never gate a `✓ same` claim (that requires `peerRecordFor`
+ *  below to return non-null) -- conflating the two was finding 2 of the
+ *  2026-09-23 assessment. */
 function theirsHeld(row: PaneCRow): boolean {
   return row.theirs.state !== 'absent'
 }
@@ -37,6 +43,17 @@ function theirsHeld(row: PaneCRow): boolean {
  *  `actuallyRecomputed` below). */
 function theirsActuallyRecomputed(theirsRecompute: PeerRecomputeState | undefined): boolean {
   return theirsRecompute?.status === 'found'
+}
+
+/** The peer's actual capsule record, present only once a `mesh_ledger_fetch`
+ *  this browser ran has actually arrived (`recompute-identity.ts`'s
+ *  `peerRecord`) -- `null` at every other status, including a successful
+ *  fetch whose `capsule_id` recompute didn't run. Header/commits-to rows
+ *  use this, never `theirsHeld`, to decide whether a `theirs` cell can show
+ *  a real value at all (finding 2: no field is `✓ same` until this is
+ *  non-null AND the fetched field's own value actually equals ours). */
+function peerRecordFor(theirsRecompute: PeerRecomputeState | undefined): Record<string, unknown> | null {
+  return theirsRecompute?.status === 'found' ? theirsRecompute.peerRecord : null
 }
 
 /** `[mesh-e9e10-pieces-3-4]` piece 4 -- a row is fetchable the moment
@@ -54,7 +71,11 @@ export type IdentityRow = { label: string; yours: IdentityCell; theirs: Identity
 
 /** Witness-level wording only -- "recomputed here", never "verified by" /
  *  "confirmed by" / "countersigned" (this repo's own boundary rule: a
- *  browser recompute is never rendered as a second-party judgment). */
+ *  browser recompute is never rendered as a second-party judgment).
+ *  RENDERING NOTE (design §7, 2026-09-23): a peer-asserted capsule id with
+ *  no held bytes carries the outline glyph `◔` -- id known, bytes not held
+ *  -- never the filled `●`/CLOSED reading finding 1 found the tab
+ *  defaulting to. */
 function theirsIdentityNote(theirsRecompute: PeerRecomputeState | undefined): string {
   if (theirsActuallyRecomputed(theirsRecompute)) {
     if (theirsRecompute?.idMatch === true) return '✓ recomputed here, matches'
@@ -63,7 +84,7 @@ function theirsIdentityNote(theirsRecompute: PeerRecomputeState | undefined): st
   if (theirsRecompute?.status === 'fetching') return 'fetching…'
   if (theirsRecompute?.status === 'not_found') return 'peer had no such capsule'
   if (theirsRecompute?.status === 'error') return `fetch failed: ${theirsRecompute.errorMessage ?? 'unknown error'}`
-  return 'as given, not recomputed'
+  return '◔ as given, not recomputed'
 }
 
 export function buildIdentityRow(
@@ -77,10 +98,18 @@ export function buildIdentityRow(
       : identity.idMatch === false
         ? '✕ recomputed here, MISMATCH'
         : 'not yet recomputed'
+  // Finding 5: a peer-asserted id that isn't digest-shaped (a chat-
+  // completion id forwarded as-is, `capsule-chatcmpl-…`) is not a capsule
+  // id -- never rendered as their identity, and never fetchable
+  // (`peerFetchJoinKey` already refuses it, so `theirsFetchable` disables
+  // the fetch action for exactly this row).
+  const theirsCapsuleId = row.theirs.capsule_id && isDigestShaped(row.theirs.capsule_id) ? row.theirs.capsule_id : null
   return {
     label: 'capsule id',
     yours: { value: row.mine.capsule_id ?? '—', note: yoursNote },
-    theirs: theirsHeld(row) ? { value: row.theirs.capsule_id ?? '—', note: theirsIdentityNote(theirsRecompute) } : null
+    theirs: theirsHeld(row)
+      ? { value: theirsCapsuleId ?? 'not given', note: theirsIdentityNote(theirsRecompute) }
+      : null
   }
 }
 
@@ -101,29 +130,47 @@ export function buildIdentityRow(
 export type HeaderCell = { value: string; note?: string }
 export type HeaderRow = { label: string; yours: HeaderCell; theirs: HeaderCell | null }
 
-export function buildHeaderRows(row: PaneCRow, localRecord: CapsuleRecord | null): HeaderRow[] {
-  const held = theirsHeld(row)
+export function buildHeaderRows(
+  row: PaneCRow,
+  localRecord: CapsuleRecord | null,
+  theirsRecompute?: PeerRecomputeState
+): HeaderRow[] {
   const keyId = localRecord && typeof localRecord.key_id === 'string' ? (localRecord.key_id as string) : null
+  // Finding 2: the theirs column is `null` (absent, not "not available"
+  // mirrored under a held flag) until real peer bytes are actually held --
+  // a peer-asserted id alone used to be enough to fabricate every one of
+  // these cells, including a literal copy of our own `exchange_key` stamped
+  // `✓ same`.
+  const peerRecord = peerRecordFor(theirsRecompute)
+  const peerTimestamp = peerRecord && typeof peerRecord.timestamp === 'string' ? peerRecord.timestamp : null
+  const peerKeyId = peerRecord && typeof peerRecord.key_id === 'string' ? peerRecord.key_id : null
   return [
     {
       label: 'sealed at',
       yours: { value: row.timestamp ?? 'timestamp unavailable' },
-      theirs: held ? { value: 'not available' } : null
+      theirs: peerTimestamp ? { value: peerTimestamp } : null
     },
     {
       label: 'algorithm',
       yours: { value: 'EdDSA / Ed25519' },
-      theirs: held ? { value: 'EdDSA / Ed25519' } : null
+      // A true system-wide constant, not a per-record claim -- safe to
+      // state once real peer bytes are held, without needing to re-read it
+      // off the fetched record.
+      theirs: peerRecord ? { value: 'EdDSA / Ed25519' } : null
     },
     {
       label: 'key id',
       yours: { value: keyId ?? 'unavailable' },
-      theirs: held ? { value: 'unavailable' } : null
+      theirs: peerKeyId ? { value: peerKeyId } : null
     },
     {
+      // No peer-record field is this node's own `exchange_key` (a per-node
+      // grouping derivation, `exchange_key_for` -- `capsule_panes_native.
+      // rs`) -- there is nothing to compare even once bytes are held, so
+      // `theirs` never renders here, not even a mirrored `✓ same`.
       label: 'exchange id',
       yours: { value: row.exchange_key },
-      theirs: held ? { value: row.exchange_key, note: '✓ same' } : null
+      theirs: null
     }
   ]
 }
@@ -133,44 +180,98 @@ export function buildHeaderRows(row: PaneCRow, localRecord: CapsuleRecord | null
 //
 // [ledger-T4-inline-inspector] v3 §4: "every ✓ same is a corroboration you
 // can see... on an open row, the right column of this block is simply
-// absent." This page still holds no independent copy of their bytes (L-G) --
-// but a CLOSED row's own right-cell state already means "their record cites
-// your half by digest, and it matches," so mirroring the value with `✓ same`
-// restates a fact this page already knows, never a new one. A CONTRADICTED
-// row is known to disagree (`outcome_corroboration` FAIL) but this page has
-// no independent value to show, so it names the disagreement without
-// inventing one. An OPEN row (`theirs.state === 'absent'`) has no citation to
-// compare against at all -- the column is absent, same rule `theirsHeld`
-// applies everywhere else in this file.
+// absent."
+//
+// **Finding 2 (2026-09-23 assessment) -- corrected.** This block used to
+// treat the row's right-cell state as license to mirror every `yours` value
+// into `theirs` labelled `✓ same` the moment the row read CLOSED -- restating
+// a fact this page never actually knew (a CLOSED badge, `exchange-row-
+// state.ts`'s own fix, now itself requires a fetched-and-verified peer
+// artifact, but "the fetched capsule's own id matches what they claimed for
+// it" is not the same fact as "this field's value equals mine"). Every
+// `theirs` cell below is now `null` (absent) until `theirsRecompute` carries
+// the PEER'S OWN fetched record (`peerRecordFor`), and even then it compares
+// that record's actual field to ours -- `✓ same` only when they truly match,
+// `✕ differs` when they don't, `not held` when the peer's own record simply
+// doesn't carry the field. `task binding` and `served by` have no reliable
+// peer-record equivalent to compare against (task binding is a locally-
+// computed property; "who served" is this row's own role fact, not
+// something the peer's record restates the same way) -- their `theirs`
+// column stays absent regardless of fetch state, never a fabricated match.
 // ---------------------------------------------------------------------------
 
 export type CommitsToCell = { value: string; note: string }
 export type CommitsToRow = { label: string; yours: string; theirs: CommitsToCell | null }
 
-export function buildCommitsToRows(row: PaneCRow, localRecord: CapsuleRecord | null): CommitsToRow[] {
+function recordString(record: Record<string, unknown> | null, path: readonly string[]): string | null {
+  let cursor: unknown = record
+  for (const key of path) {
+    if (typeof cursor !== 'object' || cursor === null) return null
+    cursor = (cursor as Record<string, unknown>)[key]
+  }
+  return typeof cursor === 'string' && cursor.length > 0 ? cursor : null
+}
+
+export function buildCommitsToRows(
+  row: PaneCRow,
+  localRecord: CapsuleRecord | null,
+  theirsRecompute?: PeerRecomputeState
+): CommitsToRow[] {
   const effect = (localRecord?.effect ?? null) as { request_digest?: string; response_digest?: string } | null
   const taskBindingCell = row.properties?.task_binding ?? null
   const modelId = localRecord?.model_attestation?.model_id ?? null
-  const rightCell = deriveRightCellState(row)
+  const peerRecord = peerRecordFor(theirsRecompute)
 
-  function theirsFor(yoursValue: string): CommitsToCell | null {
-    if (rightCell.kind === 'closed') return { value: yoursValue, note: '✓ same' }
-    if (rightCell.kind === 'contradicted') return { value: '—', note: '✕ differs' }
-    return null
+  /** `theirs` is absent until the peer's real record is held, and then
+   *  compares THAT record's own value at `path` to `yoursValue` -- never a
+   *  mirror of `yoursValue` itself. */
+  function theirsFor(yoursValue: string, path: readonly string[]): CommitsToCell | null {
+    if (!peerRecord) return null
+    const peerValue = recordString(peerRecord, path)
+    if (peerValue === null) return { value: '—', note: 'not held' }
+    return peerValue === yoursValue ? { value: peerValue, note: '✓ same' } : { value: peerValue, note: '✕ differs' }
   }
 
-  const requestDigest = effect?.request_digest ?? 'unavailable'
-  const responseDigest = effect?.response_digest ?? 'unavailable'
+  const requestDigestRaw = effect?.request_digest ?? null
+  const requestDigest =
+    requestDigestRaw === null ? 'unavailable' : isDigestShaped(requestDigestRaw) ? requestDigestRaw : 'not a digest'
+  const responseDigestRaw = effect?.response_digest ?? null
+  const responseDigest =
+    responseDigestRaw === null ? 'unavailable' : isDigestShaped(responseDigestRaw) ? responseDigestRaw : 'not a digest'
   const taskBinding = taskBindingCell?.text ?? 'from the record'
   const modelIdentity = modelId ?? 'unavailable'
-  const servedBy = row.role_tag === 'SERVED' ? 'this node' : 'counterparty'
+  // Finding 3: `served by: counterparty` was a placeholder word, not a
+  // fact, rendered as though it were one and then compared. `theirs.
+  // peer_id` (`theirs_cell`'s `served_by_node_id` forward,
+  // `capsule_panes_native.rs`) is the real node id when this row's peer
+  // join key is known; absent (never the bare word "counterparty") when
+  // it isn't.
+  const servedBy = row.role_tag === 'SERVED' ? 'this node' : (row.theirs.peer_id ?? 'not recorded')
 
   return [
-    { label: 'request digest', yours: requestDigest, theirs: theirsFor(requestDigest) },
-    { label: 'response digest', yours: responseDigest, theirs: theirsFor(responseDigest) },
-    { label: 'task binding', yours: taskBinding, theirs: theirsFor(taskBinding) },
-    { label: 'model identity', yours: modelIdentity, theirs: theirsFor(modelIdentity) },
-    { label: 'served by', yours: servedBy, theirs: theirsFor(servedBy) }
+    {
+      label: 'request digest',
+      yours: requestDigest,
+      theirs:
+        requestDigestRaw !== null && isDigestShaped(requestDigestRaw)
+          ? theirsFor(requestDigestRaw, ['effect', 'request_digest'])
+          : null
+    },
+    {
+      label: 'response digest',
+      yours: responseDigest,
+      theirs:
+        responseDigestRaw !== null && isDigestShaped(responseDigestRaw)
+          ? theirsFor(responseDigestRaw, ['effect', 'response_digest'])
+          : null
+    },
+    { label: 'task binding', yours: taskBinding, theirs: null },
+    {
+      label: 'model identity',
+      yours: modelIdentity,
+      theirs: theirsFor(modelIdentity, ['model_attestation', 'model_id'])
+    },
+    { label: 'served by', yours: servedBy, theirs: null }
   ]
 }
 

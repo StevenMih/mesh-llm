@@ -164,7 +164,12 @@ describe('LedgerPageContent', () => {
         {
           peer_id: 'peer-1',
           node: { state: 'present', text: 'peer-1', peer_id: 'peer-1', member_kind: 'member', exchange_count: 1 },
-          rung: { state: 'present', text: 'full_bilateral', rung: 'full_bilateral', distinct_rungs: ['full_bilateral'] },
+          rung: {
+            state: 'present',
+            text: 'full_bilateral',
+            rung: 'full_bilateral',
+            distinct_rungs: ['full_bilateral']
+          },
           role: {
             state: 'present',
             text: 'you_to_them · 1',
@@ -215,7 +220,9 @@ describe('LedgerPageContent', () => {
     await user.click(screen.getByRole('tab', { name: /peers/i }))
 
     expect(await screen.findByText('peer-1')).toBeInTheDocument()
-    expect(screen.getByText('3 exchanges have no counterparty recorded yet. They appear under Exchanges.')).toBeInTheDocument()
+    expect(
+      screen.getByText('3 exchanges have no counterparty recorded yet. They appear under Exchanges.')
+    ).toBeInTheDocument()
     expect(screen.queryByText(/unknown peer/i)).not.toBeInTheDocument()
     expect(screen.queryByText(/peer identity not resolved yet/i)).not.toBeInTheDocument()
   })
@@ -284,9 +291,15 @@ describe('LedgerPageContent', () => {
     // this line) rather than "3 exchange" -- the exceptions-first line
     // below it also states the same total, so a bare "3 exchange" query is
     // ambiguous between the two.
+    //
+    // [mesh-console-evidence-tab-honesty-defects] finding 1: `theirs.state
+    // !== 'absent'` is a peer-asserted id, not a held/confirmed artifact --
+    // none of these three rows carry a real fetch, so `confirmed` is
+    // honestly 0, not 1 (the old count treated exc-1's bare `theirs.state:
+    // 'present'` as a confirmation).
     const headerEl = await screen.findByText(/confirmed by the other side/i)
     expect(headerEl.textContent).toMatch(/3 exchange/)
-    expect(headerEl.textContent).toMatch(/1 confirmed by the other side/)
+    expect(headerEl.textContent).toMatch(/0 confirmed by the other side/)
 
     // Ratios and percentages must NOT appear
     const bodyText = document.body.textContent ?? ''
@@ -307,7 +320,7 @@ describe('LedgerPageContent', () => {
     // in balance-view.test.ts — fetchPaneA is shared by three query sites
     // on this page, so asserting a specific override's exact caller here
     // would be an order-dependent test, not a real wiring check.
-    await screen.findByText(/exchanges need your attention|Nothing needs your attention/)
+    await screen.findByText(/exchanges need your attention|sealed by you/)
     expect(screen.queryByText('No served-summary data available yet.')).not.toBeInTheDocument()
   })
 
@@ -318,11 +331,17 @@ describe('LedgerPageContent', () => {
   })
 
   it('shows the exceptions-first line above the Exchanges table', async () => {
+    // [mesh-console-evidence-tab-honesty-defects] finding 7: the calm-state
+    // line no longer claims "Nothing needs your attention... all recomputed
+    // clean" -- it states the role-aware truth (sealed / confirmed by
+    // anyone else / registered), true of the default empty-pane-c mock (0
+    // rows, 0 confirmed, no witnesses).
     const user = userEvent.setup()
     render(<LedgerPageContent />, { wrapper: makeWrapper() })
     await user.click(screen.getByRole('tab', { name: /exchanges/i }))
 
-    expect(await screen.findByText(/^Nothing needs your attention\./)).toBeInTheDocument()
+    expect(await screen.findByText(/^\d+ sealed by you/)).toBeInTheDocument()
+    expect(screen.queryByText(/Nothing needs your attention/)).not.toBeInTheDocument()
   })
 
   it('Ledger badge reads "This node\'s copy" with the two-sided-provenance subtext, never the retired "Local only"', () => {
@@ -339,7 +358,12 @@ describe('LedgerPageContent — Part 3: Exchanges two-sided stream + row inspect
     vi.clearAllMocks()
   })
 
-  it('[ledger-T4-inline-inspector] renders a two-sided row per exchange (CLOSED for an agreeing artifact, OPEN for a unilateral one), the `▸ checks` toggle expands full detail inline', async () => {
+  it('[ledger-T4-inline-inspector] renders a two-sided row per exchange (OPEN · pending fetch for a peer-asserted id with no bytes held, OPEN for a unilateral one), the `▸ checks` toggle expands full detail inline', async () => {
+    // [mesh-console-evidence-tab-honesty-defects] finding 1: a peer-
+    // asserted id with no held bytes is OPEN · pending fetch, never CLOSED
+    // -- this fixture used to read `theirs: { state: 'present', ... }` and
+    // assert CLOSED off nothing but that presence, exactly the bug the
+    // 2026-09-23 assessment found live on 110 of 135 rows.
     const { fetchPaneCList } = await import('@/features/capsules/api/sidecarClient')
     vi.mocked(fetchPaneCList).mockResolvedValue({
       rows: [
@@ -354,7 +378,7 @@ describe('LedgerPageContent — Part 3: Exchanges two-sided stream + row inspect
           },
           has_issue: false,
           mine: { state: 'present', capsule_id: 'mine-clean' },
-          theirs: { state: 'present', capsule_id: 'theirs-clean' },
+          theirs: { state: 'NOT_CHECKED', capsule_id: 't'.repeat(64), peer_id: 'peer-1' },
           unilateral: false,
           timestamp: '2026-09-08T16:58:05Z'
         },
@@ -381,14 +405,15 @@ describe('LedgerPageContent — Part 3: Exchanges two-sided stream + row inspect
     render(<LedgerPageContent />, { wrapper: makeWrapper() })
     await user.click(screen.getByRole('tab', { name: /exchanges/i }))
 
-    // Both rows load — one CLOSED (agreeing artifact), one OPEN (never
-    // asked, per L-C -- an absent theirs record with no evidence_outcome
-    // carried can only honestly resolve to "not asked").
+    // Both rows load — one OPEN · pending fetch (a peer-asserted id, no
+    // bytes held or fetched), one OPEN (never asked, per L-C -- an absent
+    // theirs record with no evidence_outcome carried can only honestly
+    // resolve to "not asked").
     expect(await screen.findByText('mine-clean')).toBeInTheDocument()
     expect(screen.getByText('mine-alarm')).toBeInTheDocument()
-    expect(screen.getByText('CLOSED')).toBeInTheDocument()
-    expect(screen.getByText('OPEN')).toBeInTheDocument()
-    expect(screen.getByText('✓ cites your half by digest')).toBeInTheDocument()
+    expect(screen.getByText('OPEN · pending fetch')).toBeInTheDocument()
+    expect(screen.queryByText('CLOSED')).not.toBeInTheDocument()
+    expect(screen.getAllByText('OPEN').length).toBeGreaterThan(0)
     // [ledger-T1-ask-half-action]: neither row carries a counterparty (the
     // default fetchPaneB mock returns no rows), so the OPEN row's ask
     // action is gated -- a fact, never a fabricated "not yet asked" ask
@@ -893,7 +918,18 @@ describe('LedgerPageContent — Part B3: windowed paging + sticky header', () =>
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   })
 
-  it('Next contradiction ▸ reaches an off-page contradiction regardless of the current page', async () => {
+  // [mesh-console-evidence-tab-honesty-defects] finding 1 side effect: a
+  // CONTRADICTED right-cell now requires a genuine `theirsRecompute` fetch
+  // this browser ran (`exchange-row-state.ts`), which lives in per-row
+  // component state, never in the page-level `allRows` list `jumpToNext
+  // Contradiction` scans. `makeManyPaneCRows`'s old `contradictedIndexes`
+  // knob drove `outcome_corroboration: FAIL`, a signal the fix correctly
+  // stopped trusting -- so it can no longer produce a page-level
+  // "contradicted" row at all. Documented here rather than deleted: "Next
+  // contradiction" is honestly unreachable until live per-row fetch results
+  // are lifted to shared page state (a real follow-on, not silently
+  // dropped).
+  it('Next contradiction ▸ stays disabled even over data that used to (dishonestly) trigger it', async () => {
     const { fetchPaneCList } = await import('@/features/capsules/api/sidecarClient')
     vi.mocked(fetchPaneCList).mockResolvedValue(b3PaneCPayload(makeManyPaneCRows(120, new Set([90]))))
 
@@ -902,12 +938,7 @@ describe('LedgerPageContent — Part B3: windowed paging + sticky header', () =>
     await user.click(screen.getByRole('tab', { name: /exchanges/i }))
     await screen.findByText('mine-0')
 
-    const nextContradiction = screen.getByRole('button', { name: 'Next contradiction ▸' })
-    expect(nextContradiction).toBeEnabled()
-
-    await user.click(nextContradiction)
-    expect(await screen.findByText('mine-90')).toBeInTheDocument()
-    expect(screen.queryByText('mine-0')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Next contradiction ▸' })).toBeDisabled()
   })
 
   it('Next contradiction ▸ is disabled when nothing is contradicted', async () => {
@@ -1082,7 +1113,9 @@ describe('LedgerPageContent — [ledger-T11-twins-visible]: real twin bracket + 
 
   it('a lone row carrying a bracket id whose twin is absent from the payload renders as an ordinary row, never a half-bracket', async () => {
     const { fetchPaneCList } = await import('@/features/capsules/api/sidecarClient')
-    vi.mocked(fetchPaneCList).mockResolvedValue(b3PaneCPayload([twinPaneCRow(0)] as ReturnType<typeof makeManyPaneCRows>))
+    vi.mocked(fetchPaneCList).mockResolvedValue(
+      b3PaneCPayload([twinPaneCRow(0)] as ReturnType<typeof makeManyPaneCRows>)
+    )
 
     const user = userEvent.setup()
     render(<LedgerPageContent />, { wrapper: makeWrapper() })
