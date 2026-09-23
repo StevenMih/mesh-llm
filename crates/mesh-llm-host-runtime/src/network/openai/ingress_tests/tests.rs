@@ -2328,6 +2328,7 @@ fn serving_provenance_for_remote_mesh_names_the_pinned_peer_on_a_served_outcome(
 
     let provenance = serving_provenance_for_remote_mesh(
         Some(peer),
+        None,
         &proxy::RouteDispatchOutcome::Responded(200),
     )
     .expect("a pinned target on a served outcome must yield provenance");
@@ -2350,16 +2351,48 @@ fn serving_provenance_for_remote_mesh_names_the_pinned_peer_on_a_served_outcome(
     assert!(provenance.is_soc.is_none());
 }
 
-/// Open multi-candidate routing (`target: None`, the common case: no
-/// explicit `x-mesh-target` header) has no reliable way to know which of
-/// several peers actually served the request -- must stay `None` rather
-/// than guessing or naming this node.
+/// Open multi-candidate routing (`target: None`, no explicit `x-mesh-target`)
+/// with NO routing-observed served peer either -- neither source knows who
+/// served, so it must stay `None` rather than guessing or naming this node.
 #[test]
 fn serving_provenance_for_remote_mesh_is_absent_without_a_pinned_target() {
     assert!(
-        serving_provenance_for_remote_mesh(None, &proxy::RouteDispatchOutcome::Responded(200))
+        serving_provenance_for_remote_mesh(None, None, &proxy::RouteDispatchOutcome::Responded(200))
             .is_none()
     );
+}
+
+/// Open multi-candidate routing (`target: None`) now names the real serving
+/// peer when the routing layer OBSERVED which candidate delivered (the
+/// `ServedByNodeIdSink`) -- the fix that fills `served_by_node_id` on a plain
+/// request that named no `x-mesh-target`, so a requester learns which peer to
+/// correlate/fetch against.
+#[test]
+fn serving_provenance_for_remote_mesh_names_the_routing_observed_peer() {
+    let observed = hex::encode(test_endpoint_id(9).as_bytes());
+    let provenance = serving_provenance_for_remote_mesh(
+        None,
+        Some(observed.clone()),
+        &proxy::RouteDispatchOutcome::Responded(200),
+    )
+    .expect("a routing-observed served peer on a served outcome must yield provenance");
+    assert_eq!(provenance.served_by_node_id, observed);
+}
+
+/// The routing-observed served peer takes precedence over a pinned target
+/// (both are the real server on a single-candidate route; the observed value
+/// is the one actually delivered, so it can never be wrong here).
+#[test]
+fn serving_provenance_for_remote_mesh_prefers_the_observed_peer() {
+    let pinned = test_endpoint_id(10);
+    let observed = hex::encode(test_endpoint_id(11).as_bytes());
+    let provenance = serving_provenance_for_remote_mesh(
+        Some(pinned),
+        Some(observed.clone()),
+        &proxy::RouteDispatchOutcome::Responded(200),
+    )
+    .expect("served outcome must yield provenance");
+    assert_eq!(provenance.served_by_node_id, observed);
 }
 
 /// A pinned target on a NON-served outcome (nothing was actually returned to
@@ -2370,6 +2403,7 @@ fn serving_provenance_for_remote_mesh_is_absent_on_an_unserved_outcome() {
     assert!(
         serving_provenance_for_remote_mesh(
             Some(peer),
+            None,
             &proxy::RouteDispatchOutcome::FailedWithStatus {
                 status_code: 503,
                 reason: "no_target",
@@ -2378,8 +2412,12 @@ fn serving_provenance_for_remote_mesh_is_absent_on_an_unserved_outcome() {
         .is_none()
     );
     assert!(
-        serving_provenance_for_remote_mesh(Some(peer), &proxy::RouteDispatchOutcome::Dropped("x"))
-            .is_none()
+        serving_provenance_for_remote_mesh(
+            Some(peer),
+            None,
+            &proxy::RouteDispatchOutcome::Dropped("x")
+        )
+        .is_none()
     );
 }
 
