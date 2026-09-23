@@ -1529,7 +1529,6 @@ impl StageOpenAiBackend {
         let mut guard = hooks
             .as_ref()
             .map(|hooks| TerminalGuard::new(hooks.clone(), request.clone(), exchange_id.clone()));
-        let mut dispatched_request = None;
 
         if let Some(hooks) = hooks.clone() {
             match hooks.before_chat_completion(&mut request).await {
@@ -1559,17 +1558,30 @@ impl StageOpenAiBackend {
                 ChatCompletionRequest::default()
             };
             if let Some(guard) = guard.as_mut() {
-                guard.set_request(effective.clone());
+                guard.set_request(effective);
             }
-            dispatched_request = Some(effective);
         }
 
+        // The response-leg marker (-> `X-Capsule-Id` header) must ride EVERY
+        // served completion, not only mesh-hook-enabled ones: it is the join
+        // key a routing peer reads back to seal `peer_capsule_id` for its half
+        // of the exchange, and a plain request (no `mesh_hooks` flag) is the
+        // common case. So it is minted from the UNFILTERED `self.hook_policy`,
+        // independent of the `chat_mesh_hooks_enabled` gate that (correctly)
+        // still fences off the heavy pre-dispatch virtual hooks above. Snapshot
+        // the request before `dispatch` moves it -- the marker path reads it
+        // (nonce sourcing) even when the pre-dispatch `dispatched_request`
+        // clone was skipped.
+        let marker_request = self
+            .hook_policy
+            .as_ref()
+            .map(|_| request.clone())
+            .unwrap_or_default();
         let mut result = dispatch(request).await;
 
-        if let (Some(hooks), Some(dispatched_request), Ok(response)) =
-            (&hooks, &dispatched_request, &mut result)
-            && let Some(marker) = hooks
-                .capsule_marker_for_response(dispatched_request, &*response)
+        if let (Some(policy), Ok(response)) = (self.hook_policy.as_ref(), &mut result)
+            && let Some(marker) = policy
+                .capsule_marker_for_response(&marker_request, &*response)
                 .await
         {
             if capsule_id_is_valid(&marker.capsule_id) {
