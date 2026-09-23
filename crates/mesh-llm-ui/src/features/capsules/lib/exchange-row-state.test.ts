@@ -11,6 +11,7 @@ import {
   type RightCellStateKind
 } from '@/features/capsules/lib/exchange-row-state'
 import type { PaneCRow } from '@/features/capsules/api/sidecarTypes'
+import type { PeerRecomputeState } from '@/features/capsules/lib/recompute-identity'
 
 function paneCRow(overrides: Partial<PaneCRow> = {}): PaneCRow {
   return {
@@ -20,9 +21,20 @@ function paneCRow(overrides: Partial<PaneCRow> = {}): PaneCRow {
     properties: null,
     has_issue: false,
     mine: { state: 'present', capsule_id: 'mine-1' },
-    theirs: { state: 'present', capsule_id: 'theirs-1' },
+    theirs: { state: 'NOT_CHECKED', capsule_id: 't'.repeat(64), peer_id: 'peer-1' },
     unilateral: false,
     timestamp: '2026-09-08T00:00:00Z',
+    ...overrides
+  }
+}
+
+function fetched(overrides: Partial<PeerRecomputeState> = {}): PeerRecomputeState {
+  return {
+    status: 'found',
+    idMatch: true,
+    signatureOk: true,
+    peerRecord: { capsule_id: 't'.repeat(64) },
+    fetch: () => {},
     ...overrides
   }
 }
@@ -33,31 +45,52 @@ const ALL_KINDS: RightCellStateKind[] = [
   'open_refused',
   'open_absent',
   'open_asked',
+  'open_pending_fetch',
   'open_not_asked'
 ]
 
-describe('deriveRightCellState — all six states reachable', () => {
-  it('artifact, agrees -> closed', () => {
-    const row = paneCRow({
-      theirs: { state: 'present', capsule_id: 't1' },
-      properties: { outcome_corroboration: { state: 'PASS' } }
-    })
-    expect(deriveRightCellState(row).kind).toBe('closed')
+describe('deriveRightCellState — finding 1 (2026-09-23 assessment): CLOSED requires a held artifact', () => {
+  it('MUTANT: a peer-asserted id alone (theirs.state !== absent, no fetch) is never CLOSED', () => {
+    const row = paneCRow({ theirs: { state: 'NOT_CHECKED', capsule_id: 't'.repeat(64), peer_id: 'peer-1' } })
+    expect(deriveRightCellState(row).kind).not.toBe('closed')
+    expect(deriveRightCellState(row).kind).toBe('open_pending_fetch')
   })
 
-  it('artifact, disagrees -> contradicted', () => {
-    const row = paneCRow({
-      theirs: { state: 'present', capsule_id: 't1' },
-      properties: { outcome_corroboration: { state: 'FAIL' } }
-    })
-    expect(deriveRightCellState(row).kind).toBe('contradicted')
+  it('a real fetch that matches -> CLOSED', () => {
+    const row = paneCRow()
+    expect(deriveRightCellState(row, fetched({ idMatch: true })).kind).toBe('closed')
   })
 
-  it('a present theirs record with no outcome_corroboration property at all defaults to closed, never an invented contradiction', () => {
-    const row = paneCRow({ theirs: { state: 'present', capsule_id: 't1' }, properties: null })
-    expect(deriveRightCellState(row).kind).toBe('closed')
+  it('a real fetch that does NOT match -> CONTRADICTED, never CLOSED', () => {
+    const row = paneCRow()
+    expect(deriveRightCellState(row, fetched({ idMatch: false })).kind).toBe('contradicted')
   })
 
+  it('a fetch still in flight is not evidence of anything -> stays open_pending_fetch', () => {
+    const row = paneCRow()
+    const state = deriveRightCellState(row, fetched({ status: 'fetching', idMatch: null, peerRecord: null }))
+    expect(state.kind).toBe('open_pending_fetch')
+  })
+
+  it('a fetch that came back not_found is not evidence of a match -> stays open_pending_fetch, never CLOSED', () => {
+    const row = paneCRow()
+    const state = deriveRightCellState(row, fetched({ status: 'not_found', idMatch: null, peerRecord: null }))
+    expect(state.kind).toBe('open_pending_fetch')
+  })
+
+  it('a fetch whose id-recompute could not run (idMatch null) is inconclusive, never CLOSED', () => {
+    const row = paneCRow()
+    const state = deriveRightCellState(row, fetched({ status: 'found', idMatch: null, peerRecord: { x: 1 } }))
+    expect(state.kind).toBe('open_pending_fetch')
+  })
+
+  it('theirs.state === absent is open_not_asked regardless of any fetch state (no join key exists to fetch from)', () => {
+    const row = paneCRow({ theirs: { state: 'absent', capsule_id: null } })
+    expect(deriveRightCellState(row, fetched()).kind).toBe('open_not_asked')
+  })
+})
+
+describe('deriveRightCellState — all seven states reachable', () => {
   it('signed_refusal evidence_outcome -> open_refused, carrying its date', () => {
     const row = paneCRow({
       theirs: { state: 'absent', capsule_id: null, evidence_outcome: 'signed_refusal', evidence_outcome_date: '4 Sep' }
@@ -100,24 +133,10 @@ describe('deriveRightCellState — all six states reachable', () => {
     expect(state.kind).not.toBe('open_asked')
   })
 
-  it('every one of the six kinds is reachable', () => {
+  it('every one of the seven kinds is reachable', () => {
     const reached = new Set<RightCellStateKind>()
-    reached.add(
-      deriveRightCellState(
-        paneCRow({
-          theirs: { state: 'present', capsule_id: 't' },
-          properties: { outcome_corroboration: { state: 'PASS' } }
-        })
-      ).kind
-    )
-    reached.add(
-      deriveRightCellState(
-        paneCRow({
-          theirs: { state: 'present', capsule_id: 't' },
-          properties: { outcome_corroboration: { state: 'FAIL' } }
-        })
-      ).kind
-    )
+    reached.add(deriveRightCellState(paneCRow(), fetched({ idMatch: true })).kind)
+    reached.add(deriveRightCellState(paneCRow(), fetched({ idMatch: false })).kind)
     reached.add(
       deriveRightCellState(
         paneCRow({ theirs: { state: 'absent', capsule_id: null, evidence_outcome: 'signed_refusal' } })
@@ -132,9 +151,13 @@ describe('deriveRightCellState — all six states reachable', () => {
       deriveRightCellState(paneCRow({ theirs: { state: 'absent', capsule_id: null, evidence_outcome: 'unanswered' } }))
         .kind
     )
+    reached.add(
+      deriveRightCellState(paneCRow({ theirs: { state: 'NOT_CHECKED', capsule_id: 't'.repeat(64), peer_id: 'p' } }))
+        .kind
+    )
     reached.add(deriveRightCellState(paneCRow({ theirs: { state: 'absent', capsule_id: null } })).kind)
     for (const kind of ALL_KINDS) expect(reached.has(kind)).toBe(true)
-    expect(reached.size).toBe(6)
+    expect(reached.size).toBe(7)
   })
 })
 
@@ -147,6 +170,12 @@ describe('rightCellText — the load-bearing distinction', () => {
     const notAsked = rightCellText(stateOf('open_not_asked'))
     const unanswered = rightCellText(stateOf('open_asked', '3 Sep'))
     expect(notAsked).not.toBe(unanswered)
+  })
+
+  it('LOAD-BEARING: pending-fetch never renders the same string as not-asked or CLOSED', () => {
+    const pendingFetch = rightCellText(stateOf('open_pending_fetch'))
+    expect(pendingFetch).not.toBe(rightCellText(stateOf('open_not_asked')))
+    expect(pendingFetch).not.toBe(rightCellText(stateOf('closed')))
   })
 
   it('renders the exact copy from v3 §2 for each state', () => {
@@ -164,17 +193,26 @@ describe('rightCellText — the load-bearing distinction', () => {
 })
 
 describe('rightCellStatusLabel', () => {
-  it('names all six statuses distinctly', () => {
+  it('names all seven statuses distinctly', () => {
     const labels = ALL_KINDS.map((kind) => rightCellStatusLabel(stateOf(kind)))
-    expect(new Set(labels).size).toBe(6)
-    expect(labels).toEqual(['CLOSED', 'CONTRADICTED', 'OPEN · refused', 'OPEN · absent', 'OPEN · asked', 'OPEN'])
+    expect(new Set(labels).size).toBe(7)
+    expect(labels).toEqual([
+      'CLOSED',
+      'CONTRADICTED',
+      'OPEN · refused',
+      'OPEN · absent',
+      'OPEN · asked',
+      'OPEN · pending fetch',
+      'OPEN'
+    ])
   })
 })
 
 describe('rightCellAction', () => {
-  it('closed has no action; every other state has one', () => {
+  it('closed and open_pending_fetch have no row-level action; every other state has one', () => {
     expect(rightCellAction(stateOf('closed'))).toBeNull()
-    for (const kind of ALL_KINDS.filter((k) => k !== 'closed')) {
+    expect(rightCellAction(stateOf('open_pending_fetch'))).toBeNull()
+    for (const kind of ALL_KINDS.filter((k) => k !== 'closed' && k !== 'open_pending_fetch')) {
       expect(rightCellAction(stateOf(kind))).not.toBeNull()
     }
   })
@@ -201,9 +239,10 @@ describe('isAlarmState — L-A/L-B enforcement', () => {
 })
 
 describe('isAskAction — [ledger-T1-ask-half-action] counterparty-gating predicate', () => {
-  it('only open_not_asked and open_asked are ask actions', () => {
+  it('only open_not_asked and open_asked are ask actions -- open_pending_fetch is a FETCH action, not an ask', () => {
     expect(isAskAction('open_not_asked')).toBe(true)
     expect(isAskAction('open_asked')).toBe(true)
+    expect(isAskAction('open_pending_fetch')).toBe(false)
     for (const kind of ALL_KINDS.filter((k) => k !== 'open_not_asked' && k !== 'open_asked')) {
       expect(isAskAction(kind)).toBe(false)
     }
@@ -220,9 +259,10 @@ describe('ledgerStateFilterValue — v3 §2a toolbar buckets', () => {
     expect(ledgerStateFilterValue(stateOf('open_asked', '3 Sep'))).toBe('asked_no_reply')
   })
 
-  it('the three no-reply-at-all states collapse into the broader open bucket', () => {
+  it('the four no-reply/no-fetch states collapse into the broader open bucket', () => {
     expect(ledgerStateFilterValue(stateOf('open_refused'))).toBe('open')
     expect(ledgerStateFilterValue(stateOf('open_absent'))).toBe('open')
+    expect(ledgerStateFilterValue(stateOf('open_pending_fetch'))).toBe('open')
     expect(ledgerStateFilterValue(stateOf('open_not_asked'))).toBe('open')
   })
 })

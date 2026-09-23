@@ -12,7 +12,7 @@ import { fetchSignedStatement } from '@/features/capsules/api/client'
 import type { PaneCRow } from '@/features/capsules/api/sidecarTypes'
 import type { CapsuleRecord } from '@/features/capsules/api/types'
 import { decodeSignedStatementB64, fetchPeerLedgerCapsule } from '@/features/capsules/api/peerLedgerFetchClient'
-import { recomputeCapsuleId } from '@/features/capsules/lib/canonical'
+import { isDigestShaped, recomputeCapsuleId } from '@/features/capsules/lib/canonical'
 import { ed25519PublicKeyFromSpkiPem, verifyCoseSign1 } from '@/features/capsules/lib/cose'
 
 export type RecomputedIdentity = {
@@ -120,12 +120,18 @@ export function useRecomputedIdentity(record: CapsuleRecord | null, nodePubKeyPe
  *  (`capsule_id`+`peer_id`) is the only fetchable shape `theirs_cell`
  *  (`capsule_panes_native.rs`) ever emits -- see that function's own doc
  *  comment. Anything else (absent, or NOT_CHECKED with a hole in the join
- *  key) has nowhere to fetch FROM. */
+ *  key) has nowhere to fetch FROM. Finding 5 (2026-09-23 assessment): a
+ *  peer-asserted `capsule_id` that isn't digest-shaped (a chat-completion
+ *  id like `capsule-chatcmpl-1790147257740`, forwarded as-is by an upstream
+ *  peer) is not a fetchable capsule id either -- `mesh_ledger_fetch` would
+ *  only ever answer `not_found` for it, so the fetch action is disabled
+ *  rather than offered and failing. */
 export function peerFetchJoinKey(row: PaneCRow): { capsuleId: string; peerId: string } | null {
   if (row.theirs.state !== 'NOT_CHECKED') return null
   const capsuleId = row.theirs.capsule_id
   const peerId = row.theirs.peer_id
   if (!capsuleId || !peerId) return null
+  if (!isDigestShaped(capsuleId)) return null
   return { capsuleId, peerId }
 }
 
@@ -136,6 +142,14 @@ export type PeerRecomputeState = {
   idMatch: boolean | null
   signatureOk: boolean | null
   errorMessage?: string
+  /** The peer's actual capsule record, present only once `status ===
+   *  'found'` -- carried through (never re-derived) so a caller can compare
+   *  a REAL field of theirs (`effect.request_digest`, `model_attestation.
+   *  model_id`, ...) against ours, instead of mirroring our own value and
+   *  labelling it `theirs` (`security-checks-view.ts`'s honesty rule:
+   *  `✓ same` only after a real comparison). `null` at every other status --
+   *  never a stand-in for bytes this browser hasn't actually received. */
+  peerRecord: Record<string, unknown> | null
   /** Never true merely because a fetch is in flight or queued -- only once
    *  a peer's bytes actually arrived and were recomputed against, matching
    *  this file's own `actuallyRecomputed` discipline used elsewhere
@@ -143,7 +157,12 @@ export type PeerRecomputeState = {
   fetch: () => void
 }
 
-const PEER_NOT_FETCHED: Omit<PeerRecomputeState, 'fetch'> = { status: 'not_fetched', idMatch: null, signatureOk: null }
+const PEER_NOT_FETCHED: Omit<PeerRecomputeState, 'fetch'> = {
+  status: 'not_fetched',
+  idMatch: null,
+  signatureOk: null,
+  peerRecord: null
+}
 
 /**
  * Fetches and recomputes a Pane-C row's `theirs` half on demand -- never
@@ -169,17 +188,17 @@ export function usePeerLedgerRecompute(row: PaneCRow): PeerRecomputeState {
   function triggerFetch() {
     if (!joinKey) return
     const key = rowKey
-    setResolved({ key, result: { status: 'fetching', idMatch: null, signatureOk: null } })
+    setResolved({ key, result: { status: 'fetching', idMatch: null, signatureOk: null, peerRecord: null } })
     void fetchPeerLedgerCapsule(joinKey.peerId, joinKey.capsuleId).then(async (outcome) => {
       if (key !== rowKey) return
       if (outcome.kind === 'not_found') {
-        setResolved({ key, result: { status: 'not_found', idMatch: null, signatureOk: null } })
+        setResolved({ key, result: { status: 'not_found', idMatch: null, signatureOk: null, peerRecord: null } })
         return
       }
       if (outcome.kind === 'error' || outcome.kind === 'transport_error') {
         setResolved({
           key,
-          result: { status: 'error', idMatch: null, signatureOk: null, errorMessage: outcome.message }
+          result: { status: 'error', idMatch: null, signatureOk: null, peerRecord: null, errorMessage: outcome.message }
         })
         return
       }
@@ -190,7 +209,15 @@ export function usePeerLedgerRecompute(row: PaneCRow): PeerRecomputeState {
         outcome.nodePubKeyPem,
         statementBytes
       )
-      setResolved({ key, result: { status: 'found', idMatch: identity.idMatch, signatureOk: identity.signatureOk } })
+      setResolved({
+        key,
+        result: {
+          status: 'found',
+          idMatch: identity.idMatch,
+          signatureOk: identity.signatureOk,
+          peerRecord: outcome.capsule
+        }
+      })
     })
   }
 

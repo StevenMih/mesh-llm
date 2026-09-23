@@ -46,7 +46,11 @@ import {
   paginateGroups,
   windowBannerHeadline
 } from '@/features/capsules/lib/exchange-pages'
-import { LEDGER_STATE_FILTER_VALUES, ledgerStateFilterValue } from '@/features/capsules/lib/exchange-row-state'
+import {
+  deriveRightCellState,
+  LEDGER_STATE_FILTER_VALUES,
+  ledgerStateFilterValue
+} from '@/features/capsules/lib/exchange-row-state'
 import {
   exchangeEvidenceBundle,
   exchangeRowsToCsv,
@@ -567,9 +571,17 @@ function ExchangesSection({
     )
   }
 
-  // L3.8 — Two counts — never a ratio
+  // L3.8 — Two counts — never a ratio. Same predicate as the Integrity
+  // section's own CLOSED-BY-OTHER-SIDE count (`deriveRightCellState(row).
+  // kind === 'closed'`), not the old `theirs.state !== 'absent' &&
+  // !r.unilateral` (`unilateral` is always `true` off this native route
+  // today, so that read was always 0 by coincidence, not by evidence).
   const total = query.data.row_count
-  const confirmed = query.data.rows.filter((r) => r.theirs.state !== 'absent' && !r.unilateral).length
+  const confirmed = query.data.rows.filter((r) => deriveRightCellState(r).kind === 'closed').length
+  const witnessCount = Array.isArray(balanceQuery.data?.card?.witnesses)
+    ? (balanceQuery.data.card.witnesses as unknown[]).length
+    : 0
+  const registered = witnessCount > 0
 
   const roleOptions: FilterValueOption[] = ALL_ROLE_VALUES.map((value) => ({
     value,
@@ -603,7 +615,9 @@ function ExchangesSection({
       </p>
       {/* Exceptions-first line — leads with what needs attention, range
          stated, never a flat count that buries a failure below it. */}
-      <p className="text-sm text-fg-dim">{exceptionsFirstLine(exceptionsFirstTally(allRows), allRowsRangeText)}</p>
+      <p className="text-sm text-fg-dim">
+        {exceptionsFirstLine(exceptionsFirstTally(allRows), allRowsRangeText, registered)}
+      </p>
 
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border-soft pb-2">
         <p className="type-caption font-mono text-fg-dim">
@@ -801,7 +815,12 @@ function ExchangesSection({
                   // these rows together in the first place.
                   const bracketId = group.rows[0].twinBracketId as string
                   return (
-                    <TwinBracket bracketId={bracketId} key={group.groupKey} rows={group.rows} twinSampleRateDenominator={twinSampleRateDenominator}>
+                    <TwinBracket
+                      bracketId={bracketId}
+                      key={group.groupKey}
+                      rows={group.rows}
+                      twinSampleRateDenominator={twinSampleRateDenominator}
+                    >
                       {rowElements}
                     </TwinBracket>
                   )
@@ -951,8 +970,16 @@ function IntegritySection() {
   const ownerCardIndex = typeof card?.owner_card_index === 'number' ? card.owner_card_index : null
 
   const sealedCount = rows.length
-  const closedByOtherSideCount = paneCRows.filter((row) => row.theirs.state !== 'absent' && !row.unilateral).length
-  const contradictedCount = paneCRows.filter((row) => row.properties?.outcome_corroboration?.state === 'FAIL').length
+  // Same predicate the Exchanges stream badge uses (`deriveRightCellState`,
+  // called with no live fetch state here -- Integrity has no per-row peer
+  // fetch to draw on) so the two sections can never again show
+  // contradictory counts ([mesh-console-evidence-tab-honesty-defects]
+  // finding 1/8: the old `theirs.state !== 'absent' && !row.unilateral`
+  // read every row's `unilateral` flag, which `capsule_panes_native.rs`
+  // currently always sets `true` -- coincidentally always 0 here while
+  // Exchanges asserted CLOSED on the same rows from an unrelated bug).
+  const closedByOtherSideCount = paneCRows.filter((row) => deriveRightCellState(row).kind === 'closed').length
+  const contradictedCount = paneCRows.filter((row) => deriveRightCellState(row).kind === 'contradicted').length
 
   const setupSteps = buildSetupSteps(card ?? null, owner)
   const registrationCopy = buildRegistrationCopy(card ?? null)

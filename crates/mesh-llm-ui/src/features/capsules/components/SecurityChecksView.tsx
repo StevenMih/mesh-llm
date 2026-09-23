@@ -8,8 +8,7 @@ import { StatusBadge, type StatusBadgeTone } from '@/components/ui/StatusBadge'
 import { cn } from '@/lib/cn'
 import type { CapsuleRecord } from '@/features/capsules/api/types'
 import type { ExchangeLedgerRow } from '@/features/capsules/lib/exchange-ledger'
-import type { RecomputedIdentity } from '@/features/capsules/lib/recompute-identity'
-import { usePeerLedgerRecompute } from '@/features/capsules/lib/recompute-identity'
+import type { PeerRecomputeState, RecomputedIdentity } from '@/features/capsules/lib/recompute-identity'
 import { toneForState } from '@/features/capsules/lib/assurance-tone'
 import { WHAT_ACTUALLY_HAPPENED_GROUP, WHAT_NODE_SAID_GROUP } from '@/features/capsules/lib/nine-properties'
 import {
@@ -84,16 +83,35 @@ export type SecurityChecksViewProps = {
   row: ExchangeLedgerRow
   identity: RecomputedIdentity
   localRecord: CapsuleRecord | null
+  /** Lifted to `ExchangeStreamRow` (mounted for every visible row, not just
+   *  an expanded one) so a fetch this panel triggers can also flip that
+   *  row's always-visible status badge once it resolves -- see
+   *  `exchange-row-state.ts`'s `deriveRightCellState`. Optional only so a
+   *  caller that hasn't wired a live fetch degrades to "not fetched" (never
+   *  a fabricated match) -- `ExchangeStreamRow` always supplies a real one. */
+  theirsRecompute?: PeerRecomputeState
 }
 
-export function SecurityChecksView({ row, identity, localRecord }: SecurityChecksViewProps) {
+const NOT_FETCHED_DEFAULT: PeerRecomputeState = {
+  status: 'not_fetched',
+  idMatch: null,
+  signatureOk: null,
+  peerRecord: null,
+  fetch: () => {}
+}
+
+export function SecurityChecksView({
+  row,
+  identity,
+  localRecord,
+  theirsRecompute = NOT_FETCHED_DEFAULT
+}: SecurityChecksViewProps) {
   const [rawMode, setRawMode] = useState(false)
-  const theirsRecompute = usePeerLedgerRecompute(row.raw)
   const canFetchTheirs = theirsFetchable(row.raw) !== null
 
   const identityRow = buildIdentityRow(row.raw, identity, theirsRecompute)
-  const headerRows = buildHeaderRows(row.raw, localRecord)
-  const commitsToRows = buildCommitsToRows(row.raw, localRecord)
+  const headerRows = buildHeaderRows(row.raw, localRecord, theirsRecompute)
+  const commitsToRows = buildCommitsToRows(row.raw, localRecord, theirsRecompute)
   const checksRows = buildChecksRows(row.raw, identity, theirsRecompute)
   const captureCoverageRow = checksRows.find((r) => r.key === 'capture_coverage')
   const nodeSaidRows = checksRows.filter((r) => r.key !== 'capture_coverage' && r.group === WHAT_NODE_SAID_GROUP)

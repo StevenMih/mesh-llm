@@ -21,6 +21,7 @@ import {
 import type { ExchangeLedgerRow } from '@/features/capsules/lib/exchange-ledger'
 import { exchangeRowDomId } from '@/features/capsules/lib/exchange-pages'
 import {
+  deriveRightCellState,
   isAlarmState,
   isAskAction,
   rightCellAction,
@@ -28,7 +29,7 @@ import {
   rightCellText
 } from '@/features/capsules/lib/exchange-row-state'
 import type { RailSegment } from '@/features/capsules/lib/exchange-stream'
-import { useRecomputedIdentity } from '@/features/capsules/lib/recompute-identity'
+import { useRecomputedIdentity, usePeerLedgerRecompute } from '@/features/capsules/lib/recompute-identity'
 
 /** The gated cell text ([ledger-T1-ask-half-action] Do (2)) when an ask
  *  action's row carries no recorded counterparty -- today: all of them, a
@@ -93,7 +94,16 @@ export function ExchangeStreamRow({
   onToggleChecks,
   onAction
 }: ExchangeStreamRowProps) {
-  const state = row.rightCellState
+  // Lifted here (not `SecurityChecksView`, which only mounts once `▸
+  // checks` is expanded) so a fetch this hook's `.fetch()` triggers can
+  // also flip this row's ALWAYS-VISIBLE status badge the moment it
+  // resolves, not just the expanded panel's own cells
+  // ([mesh-console-evidence-tab-honesty-defects] finding 1). The hook
+  // itself is cheap and a no-op until `.fetch()` is called (rules of
+  // hooks require it run unconditionally, same as `useRecomputedIdentity`
+  // below).
+  const theirsRecompute = usePeerLedgerRecompute(row.raw)
+  const state = deriveRightCellState(row.raw, theirsRecompute)
   const alarm = isAlarmState(state)
   // [ledger-T1-ask-half-action] Do (2): an ask action with no recorded
   // counterparty renders no button at all -- there is nothing to ask yet.
@@ -231,7 +241,14 @@ export function ExchangeStreamRow({
             </div>
           </div>
         ) : null}
-        {checksExpanded ? <SecurityChecksView identity={identity} localRecord={localRecord} row={row} /> : null}
+        {checksExpanded ? (
+          <SecurityChecksView
+            identity={identity}
+            localRecord={localRecord}
+            row={row}
+            theirsRecompute={theirsRecompute}
+          />
+        ) : null}
       </div>
     </div>
   )

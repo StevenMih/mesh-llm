@@ -341,15 +341,46 @@ describe('buildChecksRows — THEIRS column (v1 §P5 / recompute-identity.ts: no
 // fetch (R4 other half: a found fetch must not upgrade properties it never
 // touched).
 describe('buildChecksRows — THEIRS column reflects a real peer recompute once one has run', () => {
-  const FOUND_MATCH: PeerRecomputeState = { status: 'found', idMatch: true, signatureOk: true, fetch: () => {} }
-  const FOUND_MISMATCH: PeerRecomputeState = { status: 'found', idMatch: false, signatureOk: false, fetch: () => {} }
-  const NOT_FETCHED: PeerRecomputeState = { status: 'not_fetched', idMatch: null, signatureOk: null, fetch: () => {} }
-  const FETCHING: PeerRecomputeState = { status: 'fetching', idMatch: null, signatureOk: null, fetch: () => {} }
-  const NOT_FOUND: PeerRecomputeState = { status: 'not_found', idMatch: null, signatureOk: null, fetch: () => {} }
+  const FOUND_MATCH: PeerRecomputeState = {
+    status: 'found',
+    idMatch: true,
+    signatureOk: true,
+    peerRecord: null,
+    fetch: () => {}
+  }
+  const FOUND_MISMATCH: PeerRecomputeState = {
+    status: 'found',
+    idMatch: false,
+    signatureOk: false,
+    peerRecord: null,
+    fetch: () => {}
+  }
+  const NOT_FETCHED: PeerRecomputeState = {
+    status: 'not_fetched',
+    idMatch: null,
+    signatureOk: null,
+    peerRecord: null,
+    fetch: () => {}
+  }
+  const FETCHING: PeerRecomputeState = {
+    status: 'fetching',
+    idMatch: null,
+    signatureOk: null,
+    peerRecord: null,
+    fetch: () => {}
+  }
+  const NOT_FOUND: PeerRecomputeState = {
+    status: 'not_found',
+    idMatch: null,
+    signatureOk: null,
+    peerRecord: null,
+    fetch: () => {}
+  }
   const ERRORED: PeerRecomputeState = {
     status: 'error',
     idMatch: null,
     signatureOk: null,
+    peerRecord: null,
     errorMessage: 'peer unroutable',
     fetch: () => {}
   }
@@ -421,9 +452,9 @@ describe('theirsFetchable / peerFetchJoinKey', () => {
     expect(theirsFetchable).toBe(peerFetchJoinKey)
   })
 
-  it('a row with theirs.state NOT_CHECKED and a real capsule_id+peer_id is fetchable', () => {
-    const row = paneCRow({ theirs: { state: 'NOT_CHECKED', capsule_id: 'peer-cap-1', peer_id: 'peer-node-3' } })
-    expect(theirsFetchable(row)).toEqual({ capsuleId: 'peer-cap-1', peerId: 'peer-node-3' })
+  it('a row with theirs.state NOT_CHECKED and a real digest-shaped capsule_id+peer_id is fetchable', () => {
+    const row = paneCRow({ theirs: { state: 'NOT_CHECKED', capsule_id: 'a'.repeat(64), peer_id: 'peer-node-3' } })
+    expect(theirsFetchable(row)).toEqual({ capsuleId: 'a'.repeat(64), peerId: 'peer-node-3' })
   })
 
   // (negative, R4 other half) NOT_CHECKED with a hole in the join key, or
@@ -432,17 +463,27 @@ describe('theirsFetchable / peerFetchJoinKey', () => {
   it.each([
     ['absent state', { state: 'absent', capsule_id: null }],
     ['NOT_CHECKED with no capsule_id', { state: 'NOT_CHECKED', capsule_id: null, peer_id: 'peer-node-3' }],
-    ['NOT_CHECKED with no peer_id', { state: 'NOT_CHECKED', capsule_id: 'peer-cap-1', peer_id: null }],
+    ['NOT_CHECKED with no peer_id', { state: 'NOT_CHECKED', capsule_id: 'a'.repeat(64), peer_id: null }],
     // a non-NOT_CHECKED state carrying a real join key anyway must still
     // never report fetchable -- `theirs_cell` (capsule_panes_native.rs)
     // only ever emits a join key alongside literal NOT_CHECKED, so any
     // other state means something upstream is inconsistent, not fetchable.
     [
       'a real join key under an unexpected state',
-      { state: 'present', capsule_id: 'peer-cap-1', peer_id: 'peer-node-3' }
+      { state: 'present', capsule_id: 'a'.repeat(64), peer_id: 'peer-node-3' }
     ]
   ])('%s is never reported fetchable', (_label, theirs) => {
     const row = paneCRow({ theirs })
+    expect(theirsFetchable(row)).toBeNull()
+  })
+
+  // Finding 5 (2026-09-23 assessment): a peer-forwarded chat-completion id
+  // is not a capsule id -- MUTANT: drop the digest-shape check and this
+  // goes green when it must stay red.
+  it('MUTANT-GUARD: a peer-asserted id that is not digest-shaped (a chat-completion id) is never reported fetchable', () => {
+    const row = paneCRow({
+      theirs: { state: 'NOT_CHECKED', capsule_id: 'capsule-chatcmpl-1790147257740', peer_id: 'peer-node-3' }
+    })
     expect(theirsFetchable(row)).toBeNull()
   })
 })
@@ -466,13 +507,25 @@ describe('buildIdentityRow', () => {
   })
 
   it('theirs renders the REAL recomputed match once a peer fetch actually found and verified', () => {
-    const found: PeerRecomputeState = { status: 'found', idMatch: true, signatureOk: true, fetch: () => {} }
+    const found: PeerRecomputeState = {
+      status: 'found',
+      idMatch: true,
+      signatureOk: true,
+      peerRecord: null,
+      fetch: () => {}
+    }
     const identityRow = buildIdentityRow(paneCRow(), NOT_RECOMPUTED, found)
     expect(identityRow.theirs?.note).toBe('✓ recomputed here, matches')
   })
 
   it('theirs renders a real MISMATCH, never silently upgraded to a match', () => {
-    const found: PeerRecomputeState = { status: 'found', idMatch: false, signatureOk: false, fetch: () => {} }
+    const found: PeerRecomputeState = {
+      status: 'found',
+      idMatch: false,
+      signatureOk: false,
+      peerRecord: null,
+      fetch: () => {}
+    }
     const identityRow = buildIdentityRow(paneCRow(), NOT_RECOMPUTED, found)
     expect(identityRow.theirs?.note).toBe('✕ recomputed here, MISMATCH')
   })
@@ -482,10 +535,34 @@ describe('buildIdentityRow', () => {
   // silently-dropped-back-to-unrecomputed placeholder that could be
   // confused with success.
   it('a not_found peer fetch never renders as a match', () => {
-    const notFound: PeerRecomputeState = { status: 'not_found', idMatch: null, signatureOk: null, fetch: () => {} }
+    const notFound: PeerRecomputeState = {
+      status: 'not_found',
+      idMatch: null,
+      signatureOk: null,
+      peerRecord: null,
+      fetch: () => {}
+    }
     const identityRow = buildIdentityRow(paneCRow(), NOT_RECOMPUTED, notFound)
     expect(identityRow.theirs?.note).not.toMatch(/matches/)
     expect(identityRow.theirs?.note).toBe('peer had no such capsule')
+  })
+
+  // RENDERING NOTE (design §7, 2026-09-23): id known, bytes not held -- the
+  // outline glyph, never the filled CLOSED reading.
+  it('a peer-asserted, unfetched id carries the ◔ outline glyph, not a bare "as given" claim', () => {
+    const row = paneCRow({ theirs: { state: 'NOT_CHECKED', capsule_id: 'a'.repeat(64), peer_id: 'peer-1' } })
+    const identityRow = buildIdentityRow(row, NOT_RECOMPUTED)
+    expect(identityRow.theirs?.note).toBe('◔ as given, not recomputed')
+  })
+
+  // Finding 5: a peer-forwarded chat-completion id is not a capsule id.
+  it('MUTANT-GUARD: a non-digest-shaped peer-asserted id renders "not given", never the raw non-id value', () => {
+    const row = paneCRow({
+      theirs: { state: 'NOT_CHECKED', capsule_id: 'capsule-chatcmpl-1790147257740', peer_id: 'peer-1' }
+    })
+    const identityRow = buildIdentityRow(row, NOT_RECOMPUTED)
+    expect(identityRow.theirs?.value).toBe('not given')
+    expect(identityRow.theirs?.value).not.toBe('capsule-chatcmpl-1790147257740')
   })
 })
 
@@ -498,20 +575,66 @@ describe('buildHeaderRows / buildCommitsToRows — no fabricated fields', () => 
 
   it('commits-to reads real digests off the local record when present', () => {
     const rows = buildCommitsToRows(paneCRow(), {
-      effect: { request_digest: 'digest-a', response_digest: 'digest-b' }
+      effect: { request_digest: 'a'.repeat(64), response_digest: 'b'.repeat(64) }
     } as never)
     const requestDigest = rows.find((r) => r.label === 'request digest')
-    expect(requestDigest?.yours).toBe('digest-a')
+    expect(requestDigest?.yours).toBe('a'.repeat(64))
+  })
+
+  // Finding 4 (2026-09-23 assessment): the producer's own honest-absence
+  // sentinel (`unknown-request:<model>`, `capsule_emit.rs`) is not a
+  // digest -- the viewer must flag it, never tick it.
+  it('MUTANT-GUARD: a non-digest-shaped request_digest (the producer sentinel) renders "not a digest", never ticked as real', () => {
+    const rows = buildCommitsToRows(paneCRow(), {
+      effect: { request_digest: 'unknown-request:local-gguf/sha256-7089c7' }
+    } as never)
+    const requestDigest = rows.find((r) => r.label === 'request digest')
+    expect(requestDigest?.yours).toBe('not a digest')
   })
 })
 
-describe('[ledger-T4-inline-inspector] buildCommitsToRows — theirs column follows L-G', () => {
-  it('a CLOSED row (default paneCRow: theirs present, no FAIL) mirrors yours with a ✓ same marker', () => {
-    const rows = buildCommitsToRows(paneCRow(), {
-      effect: { request_digest: 'digest-a', response_digest: 'digest-b' }
-    } as never)
+describe('[ledger-T4-inline-inspector] buildCommitsToRows — theirs column, finding 2 corrected', () => {
+  const LOCAL_RECORD = { effect: { request_digest: 'a'.repeat(64), response_digest: 'b'.repeat(64) } } as never
+
+  // MUTANT (finding 2): the old behaviour mirrored `yours` into `theirs`
+  // labelled `✓ same` the instant the row read CLOSED -- restating our own
+  // value as though it were an independent fact. `theirs` must stay
+  // absent until this browser actually holds the peer's OWN record.
+  it('MUTANT-GUARD: no theirsRecompute supplied -- every theirs cell is absent, never a mirrored ✓ same', () => {
+    const rows = buildCommitsToRows(paneCRow(), LOCAL_RECORD)
+    for (const row of rows) {
+      expect(row.theirs).toBeNull()
+    }
+  })
+
+  it('a found fetch whose peer record genuinely matches renders check same off the peers own field, not a mirror', () => {
+    const theirsRecompute: PeerRecomputeState = {
+      status: 'found',
+      idMatch: true,
+      signatureOk: true,
+      peerRecord: { effect: { request_digest: 'a'.repeat(64), response_digest: 'c'.repeat(64) } },
+      fetch: () => {}
+    }
+    const rows = buildCommitsToRows(paneCRow(), LOCAL_RECORD, theirsRecompute)
     const requestDigest = rows.find((r) => r.label === 'request digest')
-    expect(requestDigest?.theirs).toEqual({ value: 'digest-a', note: '✓ same' })
+    const responseDigest = rows.find((r) => r.label === 'response digest')
+    expect(requestDigest?.theirs).toEqual({ value: 'a'.repeat(64), note: '✓ same' })
+    // Different peer value -- MUST read differs, never silently pass.
+    expect(responseDigest?.theirs).toEqual({ value: 'c'.repeat(64), note: '✕ differs' })
+  })
+
+  it('a found fetch whose peer record omits the field renders "not held", never a value we never received', () => {
+    const theirsRecompute: PeerRecomputeState = {
+      status: 'found',
+      idMatch: true,
+      signatureOk: true,
+      peerRecord: { effect: {} },
+      fetch: () => {}
+    }
+    const rows = buildCommitsToRows(paneCRow(), LOCAL_RECORD, theirsRecompute)
+    const requestDigest = rows.find((r) => r.label === 'request digest')
+    expect(requestDigest?.theirs?.note).toBe('not held')
+    expect(requestDigest?.theirs?.value).not.toBe('a'.repeat(64))
   })
 
   it('an OPEN row (theirs absent) has no theirs column at all -- MUTANT: never render a ✓/✕ marker with nothing to compare', () => {
@@ -521,14 +644,42 @@ describe('[ledger-T4-inline-inspector] buildCommitsToRows — theirs column foll
     }
   })
 
-  it('a CONTRADICTED row names the disagreement without fabricating a value this page never held', () => {
-    const rows = buildCommitsToRows(
-      paneCRow({ properties: { outcome_corroboration: { state: 'FAIL', text: null } } }),
-      { effect: { request_digest: 'digest-a' } } as never
+  // Finding 3: `served by: counterparty` was a placeholder rendered as a
+  // fact, and compared. It reads the real forwarded peer id, or an honest
+  // absence -- and is never claimed as compared either way.
+  it('finding 3: served by reads the real forwarded peer id on an ASKED row, "not recorded" when absent, and is never compared', () => {
+    const withPeerId = buildCommitsToRows(
+      paneCRow({
+        role_tag: 'ASKED',
+        theirs: { state: 'NOT_CHECKED', capsule_id: 'a'.repeat(64), peer_id: 'peer-node-3' }
+      }),
+      LOCAL_RECORD
     )
-    const requestDigest = rows.find((r) => r.label === 'request digest')
-    expect(requestDigest?.theirs?.note).toBe('✕ differs')
-    // Never the fabricated claim that we hold their (disagreeing) digest.
-    expect(requestDigest?.theirs?.value).not.toBe('digest-a')
+    expect(withPeerId.find((r) => r.label === 'served by')?.yours).toBe('peer-node-3')
+    expect(withPeerId.find((r) => r.label === 'served by')?.theirs).toBeNull()
+
+    const withoutPeerId = buildCommitsToRows(
+      paneCRow({ role_tag: 'ASKED', theirs: { state: 'absent', capsule_id: null } }),
+      LOCAL_RECORD
+    )
+    expect(withoutPeerId.find((r) => r.label === 'served by')?.yours).toBe('not recorded')
+    expect(withoutPeerId.find((r) => r.label === 'served by')?.yours).not.toBe('counterparty')
+  })
+
+  it('a SERVED row honestly names this node -- a real fact, not a placeholder', () => {
+    const rows = buildCommitsToRows(paneCRow({ role_tag: 'SERVED' }), LOCAL_RECORD)
+    expect(rows.find((r) => r.label === 'served by')?.yours).toBe('this node')
+  })
+
+  it('task binding never claims a theirs comparison -- no peer-record equivalent exists', () => {
+    const theirsRecompute: PeerRecomputeState = {
+      status: 'found',
+      idMatch: true,
+      signatureOk: true,
+      peerRecord: { effect: { request_digest: 'a'.repeat(64) } },
+      fetch: () => {}
+    }
+    const rows = buildCommitsToRows(paneCRow(), LOCAL_RECORD, theirsRecompute)
+    expect(rows.find((r) => r.label === 'task binding')?.theirs).toBeNull()
   })
 })

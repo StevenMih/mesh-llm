@@ -77,6 +77,19 @@ export async function sha256Hex(bytes: Uint8Array): Promise<string> {
   return hex
 }
 
+/** Every `capsule_id`/digest this codebase mints is `sha256Hex`'s own
+ *  output shape: 64 lowercase hex characters, nothing else (see `mesh-
+ *  console-evidence-tab-honesty-defects` finding 5 -- a chat-completion id
+ *  like `capsule-chatcmpl-1790147257740` is not a capsule id, and a
+ *  fallback sentinel like `unknown-request:<model>` is not a digest, no
+ *  matter how it's labelled on the wire). Callers use this to refuse to
+ *  treat either as the real thing. */
+const DIGEST_SHAPE = /^[0-9a-f]{64}$/
+
+export function isDigestShaped(value: string | null | undefined): boolean {
+  return typeof value === 'string' && DIGEST_SHAPE.test(value)
+}
+
 /** Recompute a mesh capsule's `capsule_id` in-browser (the vintage format-2 construction). */
 export async function recomputeCapsuleId(record: Record<string, unknown>): Promise<string> {
   if (Object.prototype.hasOwnProperty.call(record, 'canonicalization_id')) {
