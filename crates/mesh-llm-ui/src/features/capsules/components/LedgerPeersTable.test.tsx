@@ -1,6 +1,9 @@
 // [ledger-T7-peers-table] The Peers table shell: two never-merged row
 // groups, the Exchanges-style toolbar (Search / Filter / Columns / Export /
 // Save evidence file / Reset view), and the zero-dealings acceptance check.
+// [a18-evidence-peers-dedup-network]: the online-status filter is retired
+// along with the row's own online badge/latency/Route button; only the
+// Alarm filter remains.
 import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
@@ -11,7 +14,7 @@ import {
   PEER_TAB_HARNESS_MESH_PEERS
 } from '@/features/capsules/lib/peer-fixtures'
 import { advertisedOnlyPeers, deriveMeshStatus } from '@/features/capsules/lib/peer-mesh-status'
-import { advertisedOnlyRowView, dealtWithRowView, peerDisplayId } from '@/features/capsules/lib/peer-row-view'
+import { advertisedOnlyRowView, dealtWithRowView } from '@/features/capsules/lib/peer-row-view'
 
 const [CLEAN_ROW, ALARMED_ROW] = HARNESS_PANE_B_PAYLOAD.rows
 
@@ -20,10 +23,8 @@ function buildFixtureProps() {
     deriveMeshStatus(peerId, PEER_TAB_HARNESS_MESH_PEERS, PEER_TAB_HARNESS_MESH_MODELS)
   const dealtWithRawRows = [CLEAN_ROW, ALARMED_ROW]
   const advertisedRawPeers = advertisedOnlyPeers(dealtWithRawRows, PEER_TAB_HARNESS_MESH_PEERS)
-  const dealtWith = dealtWithRawRows.map((row) => dealtWithRowView(row, statusFor(peerDisplayId(row) ?? '')))
-  const advertisedUnused = advertisedRawPeers.map((peer) =>
-    advertisedOnlyRowView(peer.shortId ?? peer.id, statusFor(peer.id))
-  )
+  const dealtWith = dealtWithRawRows.map((row) => dealtWithRowView(row))
+  const advertisedUnused = advertisedRawPeers.map((peer) => advertisedOnlyRowView(peer.shortId ?? peer.id))
   return {
     dealtWith,
     advertisedUnused,
@@ -52,13 +53,12 @@ describe('LedgerPeersTable — two row groups, never merged', () => {
     expect(within(advertisedGroup as HTMLElement).getByText('11223344')).toBeInTheDocument()
   })
 
-  it('a zero-dealings peer in the advertised group shows "No exchanges yet" with block C populated', () => {
+  it('a zero-dealings peer in the advertised group shows "no exchanges yet" with "—" accountability columns', () => {
     const props = buildFixtureProps()
     render(<LedgerPeersTable {...props} />)
 
-    const rows = screen.getAllByText('No exchanges yet')
-    expect(rows.length).toBeGreaterThan(0)
-    expect(screen.getAllByText(/not yet checked/i).length).toBeGreaterThan(0)
+    expect(screen.getByText('no exchanges yet')).toBeInTheDocument()
+    expect(screen.getAllByText('—').length).toBeGreaterThan(0)
   })
 
   it('never carries a percentage or ratio ramp on any peer figure', () => {
@@ -68,6 +68,15 @@ describe('LedgerPeersTable — two row groups, never merged', () => {
     for (const cell of bodyCells) {
       expect(cell.textContent ?? '').not.toContain('%')
     }
+  })
+
+  it('no online status, latency, or Route here control remains anywhere in the table', () => {
+    const props = buildFixtureProps()
+    render(<LedgerPeersTable {...props} />)
+
+    expect(screen.queryByRole('button', { name: 'Route here' })).not.toBeInTheDocument()
+    expect(screen.queryByText(/\bms\b/)).not.toBeInTheDocument()
+    expect(screen.queryByLabelText(/filter peers/i)).toBeInTheDocument()
   })
 })
 
@@ -83,19 +92,32 @@ describe('LedgerPeersTable — toolbar', () => {
     expect(screen.queryByText(CLEAN_ROW.peer_id ?? '')).not.toBeInTheDocument()
   })
 
+  it('the Alarm filter narrows to only the alarmed peer', async () => {
+    const user = userEvent.setup()
+    const props = buildFixtureProps()
+    render(<LedgerPeersTable {...props} />)
+
+    await user.click(screen.getByRole('button', { name: /filter peers/i }))
+    await user.click(screen.getByRole('button', { name: /^none$/i }))
+    await user.click(screen.getByRole('checkbox', { name: /has alarm/i }))
+
+    expect(screen.getByText(ALARMED_ROW.peer_id ?? '')).toBeInTheDocument()
+    expect(screen.queryByText(CLEAN_ROW.peer_id ?? '')).not.toBeInTheDocument()
+  })
+
   it('the Columns menu hides a column, Reset view restores it', async () => {
     const user = userEvent.setup()
     const props = buildFixtureProps()
     render(<LedgerPeersTable {...props} />)
 
-    expect(screen.getByRole('columnheader', { name: 'What they say' })).toBeInTheDocument()
+    expect(screen.getByRole('columnheader', { name: 'Match' })).toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: /columns/i }))
-    await user.click(screen.getByRole('menuitemcheckbox', { name: 'What they say' }))
-    expect(screen.queryByRole('columnheader', { name: 'What they say' })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('menuitemcheckbox', { name: 'Match' }))
+    expect(screen.queryByRole('columnheader', { name: 'Match' })).not.toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: /reset view/i }))
-    expect(screen.getByRole('columnheader', { name: 'What they say' })).toBeInTheDocument()
+    expect(screen.getByRole('columnheader', { name: 'Match' })).toBeInTheDocument()
   })
 
   it('Reset view is disabled when the view is already at its default', () => {

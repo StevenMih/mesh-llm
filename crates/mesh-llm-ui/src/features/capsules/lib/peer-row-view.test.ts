@@ -1,34 +1,38 @@
-// Honesty-backbone invariants for the Peers tab ([mesh-ledger-peers-tab]):
-// with-you/their-chain facts are never summed, adjudications always carry
-// a denominator, and NOT_CHECKED never renders as a silent corroborated
-// pass. These are the properties an adversarial reviewer would try to
-// break, so they're asserted directly against the pure view-model
-// functions rather than only through component snapshots.
+// Honesty-backbone invariants for the Peers tab ([mesh-ledger-peers-tab],
+// [a18-evidence-peers-dedup-network]): with-you/their-chain facts are never
+// summed, adjudications always carry a denominator, NOT_CHECKED never
+// renders as a silent corroborated pass, and the new accountability columns
+// (confirmed-by-other-side, match, period) never invent a fraction the
+// sidecar doesn't back. These are the properties an adversarial reviewer
+// would try to break, so they're asserted directly against the pure
+// view-model functions rather than only through component snapshots.
 import { describe, expect, it } from 'vitest'
 import type { PaneBRow } from '@/features/capsules/api/sidecarTypes'
 import { LatencySource } from '@/lib/api/types'
 import type { PeerMeshStatus } from '@/features/capsules/lib/peer-mesh-status'
 import {
-  admissionStateLabel,
-  advertisedOnlyRowView,
+  adjudicationCompactText,
   adjudicationSummary,
   adjudicationSummaryText,
   alarmSignal,
-  answeredWhenAskedText,
-  blockAAnnouncementLine,
+  advertisedOnlyRowView,
+  confirmedByOtherSide,
+  confirmedByOtherSideText,
   dealtWithRowView,
   isUnattributedPeerRow,
-  latencyWithProvenanceText,
+  matchTally,
+  matchTallyText,
+  meshMetaLine,
   peerDisplayId,
+  periodRangeText,
   peerSortKey,
-  ROUTE_DISABLED_REASON,
   SELF_REPORTED_NOTE,
   sortPeerRows,
   theirChainSummary,
   unattributedExchangesLine,
-  WITNESS_COVERAGE_UNAVAILABLE_TEXT,
   withYouCounts,
-  withYouCountsText
+  withYouCountsText,
+  WITNESS_COVERAGE_COMPACT_TEXT
 } from '@/features/capsules/lib/peer-row-view'
 
 function baseRow(overrides: Partial<PaneBRow> = {}): PaneBRow {
@@ -78,9 +82,10 @@ describe('adjudicationSummary honesty invariants', () => {
     const text = adjudicationSummaryText(summary)
     expect(text).not.toMatch(/corroborated/)
     expect(text.toLowerCase()).toContain('not yet checked')
+    expect(adjudicationCompactText(summary)).toBe('none sealed')
   })
 
-  it('always carries the exchange_count denominator alongside a real tally', () => {
+  it('always carries the exchange_count denominator alongside a real tally, compact form matches the full form', () => {
     const row = baseRow({
       exchange_count: 24,
       verdicts: { state: 'present', text: '', tally: { corroborated: 8, contradicted: 0, inconclusive: 0 } }
@@ -95,15 +100,17 @@ describe('adjudicationSummary honesty invariants', () => {
       notChecked: false
     })
     expect(adjudicationSummaryText(summary)).toBe('8 of 24 adjudicated · 8 corroborated')
+    expect(adjudicationCompactText(summary)).toBe('8 of 24 · 8 corroborated')
   })
 
-  it('never drops a contradicted/inconclusive count out of the summary text', () => {
+  it('never drops a contradicted/inconclusive count out of either the full or compact summary text', () => {
     const row = baseRow({
       exchange_count: 14,
       verdicts: { state: 'contradicted', text: '', tally: { corroborated: 6, contradicted: 1, inconclusive: 2 } }
     })
-    const text = adjudicationSummaryText(adjudicationSummary(row))
-    expect(text).toBe('9 of 14 adjudicated · 6 corroborated · 1 contradicted · 2 inconclusive')
+    const summary = adjudicationSummary(row)
+    expect(adjudicationSummaryText(summary)).toBe('9 of 14 adjudicated · 6 corroborated · 1 contradicted · 2 inconclusive')
+    expect(adjudicationCompactText(summary)).toBe('9 of 14 · 6 corroborated · 1 contradicted · 2 inconclusive')
   })
 
   it('treats an all-zero tally as not-checked even if the cell state claims "present"', () => {
@@ -152,6 +159,69 @@ describe('theirChainSummary — never presents your own chain as theirs', () => 
     const chain = theirChainSummary(row)
     expect(chain.text).not.toMatch(/^Unbroken/)
     expect(chain.text).toMatch(/failed/i)
+  })
+})
+
+describe('confirmedByOtherSide — the on-demand peer-fetch mechanism, distinct from local match', () => {
+  it('is honestly 0/total with "peer-fetch pending" when no peer-fetch has ever run (the common case today)', () => {
+    const row = baseRow({ exchange_count: 11, history: { state: 'NOT_CHECKED', text: null } })
+    const summary = confirmedByOtherSide(row)
+    expect(summary).toEqual({ confirmed: 0, total: 11, note: 'peer-fetch pending' })
+    expect(confirmedByOtherSideText(summary)).toBe('0 / 11 (peer-fetch pending)')
+  })
+
+  it('counts every exchange confirmed only when the peer-fetch actually verified their chain -- never invented partial credit', () => {
+    const row = baseRow({
+      exchange_count: 24,
+      history: { state: 'verified', text: '', history_summary: { verified_bundles: 5, checkpoint_count: 41 } }
+    })
+    const summary = confirmedByOtherSide(row)
+    expect(summary).toEqual({ confirmed: 24, total: 24, note: null })
+    expect(confirmedByOtherSideText(summary)).toBe('24 / 24')
+  })
+
+  it('reports a failed peer-fetch as 0, never as unbroken', () => {
+    const row = baseRow({ exchange_count: 14, history: { state: 'failed', text: 'chain diverged' } })
+    expect(confirmedByOtherSideText(confirmedByOtherSide(row))).toBe('0 / 14 (peer-fetch failed)')
+  })
+
+  it('reports a refused peer-fetch distinctly from a failed one', () => {
+    const row = baseRow({ exchange_count: 3, history: { state: 'refused', text: 'refused' } })
+    expect(confirmedByOtherSideText(confirmedByOtherSide(row))).toBe('0 / 3 (peer refused)')
+  })
+})
+
+describe('matchTally — local two-sided-capture reconciliation, distinct from confirmedByOtherSide', () => {
+  it('always shows clean/mismatch even at zero, omits contradicted when zero', () => {
+    const row = baseRow({ pair: { state: 'verified', text: '', verified: 11, failed: 0, missing: 0, details: [] } })
+    expect(matchTally(row)).toEqual({ clean: 11, mismatch: 0, contradicted: 0 })
+    expect(matchTallyText(matchTally(row))).toBe('11 clean · 0 mismatch')
+  })
+
+  it('appends the contradicted count from the adjudication tally when nonzero', () => {
+    const row = baseRow({
+      pair: { state: 'failed', text: '', verified: 9, failed: 1, missing: 0, details: [] },
+      verdicts: { state: 'contradicted', text: '', tally: { corroborated: 6, contradicted: 1, inconclusive: 0 } }
+    })
+    expect(matchTallyText(matchTally(row))).toBe('9 clean · 1 mismatch · 1 contradicted')
+  })
+})
+
+describe('periodRangeText', () => {
+  it('is "—" with no exchange history to bound', () => {
+    expect(periodRangeText(null, null)).toBe('—')
+  })
+
+  it('compresses a same-month range to "D–D Mon"', () => {
+    expect(periodRangeText('2026-09-22T00:00:00Z', '2026-09-23T00:00:00Z')).toBe('22–23 Sep')
+  })
+
+  it('spells out both months when the range crosses a month boundary', () => {
+    expect(periodRangeText('2026-08-20T09:12:00Z', '2026-09-08T16:58:05Z')).toBe('20 Aug – 8 Sep')
+  })
+
+  it('spells out both years when the range crosses a year boundary', () => {
+    expect(periodRangeText('2025-12-30T00:00:00Z', '2026-01-02T00:00:00Z')).toBe('30 Dec 2025 – 2 Jan 2026')
   })
 })
 
@@ -249,160 +319,71 @@ describe('unattributedExchangesLine', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// [ledger-T7-peers-table] Block A/B/C view-model.
-// ---------------------------------------------------------------------------
-
-function meshStatus(overrides: Partial<PeerMeshStatus> = {}): PeerMeshStatus {
-  return {
-    modelName: 'Qwen3.6-27B-UD',
-    quant: 'Q4_K_XL',
-    contextLengthK: 256,
-    latencyMs: 38,
-    latencySource: LatencySource.DIRECT,
-    online: true,
-    ...overrides
-  }
-}
-
-describe('admissionStateLabel — never renders the literal word "rung" (ledger grep gate)', () => {
-  it('humanizes the raw ladder value', () => {
-    const row = baseRow({ rung: { state: 'present', text: '', rung: 'full_bilateral' } })
-    expect(admissionStateLabel(row)).toBe('full bilateral')
-  })
-
-  it('never contains the word "rung" for any known ladder value', () => {
-    for (const value of ['unilateral_fallback', 'acknowledged_receipt', 'full_bilateral']) {
-      const label = admissionStateLabel(baseRow({ rung: { state: 'present', text: '', rung: value } }))
-      expect(label).not.toMatch(/\brung\b/i)
+describe('meshMetaLine — still used by the PeerInspector modal', () => {
+  function meshStatus(overrides: Partial<PeerMeshStatus> = {}): PeerMeshStatus {
+    return {
+      modelName: 'Qwen3.6-27B-UD',
+      quant: 'Q4_K_XL',
+      contextLengthK: 256,
+      latencyMs: 38,
+      latencySource: LatencySource.DIRECT,
+      online: true,
+      ...overrides
     }
-  })
+  }
 
-  it('is null when the cell carries no rung value, never a fabricated default', () => {
-    expect(admissionStateLabel(baseRow({ rung: { state: 'absent', text: null } }))).toBeNull()
-  })
-})
-
-describe('blockAAnnouncementLine — self-reported, "self-reported" stated once by the caller', () => {
-  it('joins model/quant/context with the admission state', () => {
-    expect(blockAAnnouncementLine(meshStatus(), 'full bilateral')).toBe(
-      'Qwen3.6-27B-UD · Q4_K_XL · 256k ctx · full bilateral'
-    )
+  it('joins model/quant/context', () => {
+    expect(meshMetaLine(meshStatus())).toBe('Qwen3.6-27B-UD · Q4_K_XL · 256k ctx')
   })
 
   it('degrades to null (never a fabricated line) when nothing is known', () => {
-    expect(blockAAnnouncementLine(null, null)).toBeNull()
-  })
-
-  it('SELF_REPORTED_NOTE is a distinct constant, never baked into the announcement line itself', () => {
-    expect(blockAAnnouncementLine(meshStatus(), null)).not.toContain(SELF_REPORTED_NOTE)
-  })
-})
-
-describe('latencyWithProvenanceText — chooser-v2 §3: latency always carries its source', () => {
-  it('DIRECT reads "you measured"', () => {
-    expect(latencyWithProvenanceText(meshStatus({ latencyMs: 38, latencySource: LatencySource.DIRECT }))).toBe(
-      '38 ms (you measured)'
-    )
-  })
-
-  it('ESTIMATED reads "reported by another node", never "you measured"', () => {
-    const text = latencyWithProvenanceText(meshStatus({ latencyMs: 145, latencySource: LatencySource.ESTIMATED }))
-    expect(text).toBe('145 ms (reported by another node)')
-    expect(text).not.toContain('you measured')
-  })
-
-  it('an unspecified/unknown source renders the bare figure, never guessing a provenance', () => {
-    expect(latencyWithProvenanceText(meshStatus({ latencyMs: 90, latencySource: LatencySource.UNKNOWN }))).toBe('90 ms')
-  })
-
-  it('is "latency unknown" when no mesh status resolved, never a fabricated number', () => {
-    expect(latencyWithProvenanceText(null)).toBe('latency unknown')
-  })
-})
-
-describe('answeredWhenAskedText', () => {
-  it('surfaces the asked_cell text verbatim, never re-derives a rate from it', () => {
-    const row = baseRow({ asked: { state: 'absent', text: "this node doesn't persist a send log yet", count: 0 } })
-    expect(answeredWhenAskedText(row)).toBe("this node doesn't persist a send log yet")
-  })
-
-  it('degrades honestly when the cell carries no text', () => {
-    const row = baseRow({ asked: { state: 'absent', text: null, count: 0 } })
-    expect(answeredWhenAskedText(row)).toBe('Answered when asked: not available yet.')
+    expect(meshMetaLine(null)).toBeNull()
   })
 })
 
 describe('dealtWithRowView / advertisedOnlyRowView — one shape, honest degradation', () => {
-  it('a dealt-with row carries the real Pane B row and its counts/adjudication text', () => {
+  it('a dealt-with row carries the real Pane B row, exchange count, and every accountability column', () => {
     const row = baseRow({
       peer_id: 'node:abc',
-      role: {
-        state: 'present',
-        text: '',
-        role: 'both',
-        you_to_them_count: 16,
-        them_to_you_count: 8,
-        exchange_count: 24
-      },
       pair: { state: 'verified', text: '', verified: 16, failed: 0, missing: 0, details: [] },
       exchange_count: 24,
+      first_seen: '2026-09-01T00:00:00Z',
+      last_seen: '2026-09-03T00:00:00Z',
       verdicts: { state: 'present', text: '', tally: { corroborated: 8, contradicted: 0, inconclusive: 0 } }
     })
-    const view = dealtWithRowView(row, meshStatus())
+    const view = dealtWithRowView(row)
     expect(view.hasDealings).toBe(true)
     expect(view.row).toBe(row)
-    expect(view.blockBCounts).toBe('16 requested · 8 served · 16 confirmed')
-    expect(view.blockCAdjudication).toBe('8 of 24 adjudicated · 8 corroborated')
-    expect(view.canRouteToChat).toBe(true)
-    expect(view.routeDisabledReason).toBeNull()
+    expect(view.identityNote).toBe(SELF_REPORTED_NOTE)
+    expect(view.exchangeCount).toBe(24)
+    expect(view.match).toBe('16 clean · 0 mismatch')
+    expect(view.adjudicationCompact).toBe('8 of 24 · 8 corroborated')
+    expect(view.witnessCompact).toBe(WITNESS_COVERAGE_COMPACT_TEXT)
+    expect(view.period).toBe('1–3 Sep')
+    expect(view.confirmedByOtherSide).toBe('0 / 24 (peer-fetch pending)')
   })
 
-  it('a zero-dealings advertised-only peer shows "No exchanges yet" with block C still populated, never blank', () => {
-    const view = advertisedOnlyRowView('node:unused', meshStatus())
+  it('a zero-dealings advertised-only peer shows "no exchanges yet" and "—" for every accountability column, never a fabricated zero-of-zero', () => {
+    const view = advertisedOnlyRowView('node:unused')
     expect(view.hasDealings).toBe(false)
     expect(view.row).toBeNull()
-    expect(view.blockBCounts).toBe('No exchanges yet')
-    // block C is POPULATED (a real, honest sentence), not omitted/blank --
-    // review §3-F's acceptance check.
-    expect(view.blockCAdjudication.length).toBeGreaterThan(0)
-    expect(view.blockCAdjudication.toLowerCase()).toContain('not yet checked')
-    expect(view.blockCWitness).toBe(WITNESS_COVERAGE_UNAVAILABLE_TEXT)
-  })
-
-  it('Route here is disabled by the FACT of no mesh status, never by an outcome, and carries a visible reason', () => {
-    const dealtWith = dealtWithRowView(baseRow(), null)
-    const advertised = advertisedOnlyRowView('node:unused', null)
-    for (const view of [dealtWith, advertised]) {
-      expect(view.canRouteToChat).toBe(false)
-      expect(view.routeDisabledReason).toBe(ROUTE_DISABLED_REASON)
+    expect(view.identityNote).toBe('no exchanges yet')
+    expect(view.exchangeCount).toBe(0)
+    for (const field of [view.confirmedByOtherSide, view.match, view.adjudicationCompact, view.witnessCompact, view.period]) {
+      expect(field).toBe('—')
     }
   })
 
-  it('no peer figure in either block ever renders a percentage or ratio ramp (R-D)', () => {
+  it('no accountability figure on either view ever renders a percentage or ratio ramp (R-D)', () => {
     const row = baseRow({
-      role: {
-        state: 'present',
-        text: '',
-        role: 'both',
-        you_to_them_count: 16,
-        them_to_you_count: 8,
-        exchange_count: 24
-      },
       exchange_count: 24,
       verdicts: { state: 'present', text: '', tally: { corroborated: 8, contradicted: 0, inconclusive: 0 } }
     })
-    const dealtWith = dealtWithRowView(row, meshStatus())
-    const advertised = advertisedOnlyRowView('node:unused', meshStatus())
+    const dealtWith = dealtWithRowView(row)
+    const advertised = advertisedOnlyRowView('node:unused')
     for (const view of [dealtWith, advertised]) {
-      for (const text of [
-        view.blockA,
-        view.blockBCounts,
-        view.blockBLatency,
-        view.blockCAdjudication,
-        view.blockCWitness
-      ]) {
-        expect(text ?? '').not.toContain('%')
+      for (const text of [view.confirmedByOtherSide, view.match, view.adjudicationCompact, view.witnessCompact, view.period]) {
+        expect(text).not.toContain('%')
       }
     }
   })
