@@ -103,7 +103,7 @@ export function ExchangeStreamRow({
   // hooks require it run unconditionally, same as `useRecomputedIdentity`
   // below).
   const theirsRecompute = usePeerLedgerRecompute(row.raw)
-  const state = deriveRightCellState(row.raw, theirsRecompute)
+  const state = deriveRightCellState(row.raw, theirsRecompute, localRecord)
   const alarm = isAlarmState(state)
   // [ledger-T1-ask-half-action] Do (2): an ask action with no recorded
   // counterparty renders no button at all -- there is nothing to ask yet.

@@ -11,7 +11,11 @@ import {
   type RightCellStateKind
 } from '@/features/capsules/lib/exchange-row-state'
 import type { PaneCRow } from '@/features/capsules/api/sidecarTypes'
+import type { CapsuleRecord } from '@/features/capsules/api/types'
 import type { PeerRecomputeState } from '@/features/capsules/lib/recompute-identity'
+
+const REQUEST_DIGEST = 'a'.repeat(64)
+const RESPONSE_DIGEST = 'b'.repeat(64)
 
 function paneCRow(overrides: Partial<PaneCRow> = {}): PaneCRow {
   return {
@@ -25,6 +29,22 @@ function paneCRow(overrides: Partial<PaneCRow> = {}): PaneCRow {
     unilateral: false,
     timestamp: '2026-09-08T00:00:00Z',
     ...overrides
+  }
+}
+
+/** Our own record, carrying the two §6.2/L-G digests CLOSED requires a
+ *  peer's fetched record to cite. */
+function localRecordWithDigests(): CapsuleRecord {
+  return { capsule_id: 'mine-1', effect: { request_digest: REQUEST_DIGEST, response_digest: RESPONSE_DIGEST } }
+}
+
+/** A peer record that actually cites both of `localRecordWithDigests()`'s
+ *  digests -- the ONLY peerRecord shape `digestsCiteOurHalf` reads as
+ *  CLOSED-eligible. */
+function citingPeerRecord(): Record<string, unknown> {
+  return {
+    capsule_id: 't'.repeat(64),
+    effect: { request_digest: REQUEST_DIGEST, response_digest: RESPONSE_DIGEST }
   }
 }
 
@@ -56,14 +76,48 @@ describe('deriveRightCellState — finding 1 (2026-09-23 assessment): CLOSED req
     expect(deriveRightCellState(row).kind).toBe('open_pending_fetch')
   })
 
-  it('a real fetch that matches -> CLOSED', () => {
+  it('a real fetch that matches, is signed, AND cites our half by digest -> CLOSED', () => {
     const row = paneCRow()
-    expect(deriveRightCellState(row, fetched({ idMatch: true })).kind).toBe('closed')
+    const state = deriveRightCellState(
+      row,
+      fetched({ idMatch: true, signatureOk: true, peerRecord: citingPeerRecord() }),
+      localRecordWithDigests()
+    )
+    expect(state.kind).toBe('closed')
   })
 
   it('a real fetch that does NOT match -> CONTRADICTED, never CLOSED', () => {
     const row = paneCRow()
     expect(deriveRightCellState(row, fetched({ idMatch: false })).kind).toBe('contradicted')
+  })
+
+  it('BOUNCE REPRO (finding 1): idMatch true but signatureOk false is NOT CLOSED -- an id match proves nothing without a verified signature over the fetched bytes', () => {
+    const row = paneCRow()
+    const state = deriveRightCellState(
+      row,
+      fetched({ idMatch: true, signatureOk: false, peerRecord: citingPeerRecord() }),
+      localRecordWithDigests()
+    )
+    expect(state.kind).not.toBe('closed')
+    expect(state.kind).toBe('open_pending_fetch')
+  })
+
+  it('idMatch true, signature verified, but the peer record does not cite our request/response digests (§6.2/L-G) -- NOT CLOSED', () => {
+    const row = paneCRow()
+    const state = deriveRightCellState(
+      row,
+      fetched({ idMatch: true, signatureOk: true, peerRecord: { capsule_id: 't'.repeat(64) } }),
+      localRecordWithDigests()
+    )
+    expect(state.kind).not.toBe('closed')
+    expect(state.kind).toBe('open_pending_fetch')
+  })
+
+  it('idMatch true, signature verified, digests cite, but with no localRecord passed at all -- NOT CLOSED (never a fabricated match against nothing)', () => {
+    const row = paneCRow()
+    const state = deriveRightCellState(row, fetched({ idMatch: true, signatureOk: true, peerRecord: citingPeerRecord() }))
+    expect(state.kind).not.toBe('closed')
+    expect(state.kind).toBe('open_pending_fetch')
   })
 
   it('a fetch still in flight is not evidence of anything -> stays open_pending_fetch', () => {
@@ -135,7 +189,13 @@ describe('deriveRightCellState — all seven states reachable', () => {
 
   it('every one of the seven kinds is reachable', () => {
     const reached = new Set<RightCellStateKind>()
-    reached.add(deriveRightCellState(paneCRow(), fetched({ idMatch: true })).kind)
+    reached.add(
+      deriveRightCellState(
+        paneCRow(),
+        fetched({ idMatch: true, signatureOk: true, peerRecord: citingPeerRecord() }),
+        localRecordWithDigests()
+      ).kind
+    )
     reached.add(deriveRightCellState(paneCRow(), fetched({ idMatch: false })).kind)
     reached.add(
       deriveRightCellState(
