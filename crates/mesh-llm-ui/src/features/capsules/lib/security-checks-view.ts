@@ -130,17 +130,28 @@ export function buildIdentityRow(
 export type HeaderCell = { value: string; note?: string }
 export type HeaderRow = { label: string; yours: HeaderCell; theirs: HeaderCell | null }
 
+/** Finding 2, reworked (2026-09-23 bounce): the whole `theirs` column is
+ *  `null` (no cell at all, not even a placeholder) only when `!held` --
+ *  `row.theirs.state === 'absent'`, no counterparty recorded, nothing to
+ *  ever fetch (L-G). Once a counterparty IS recorded (`held`), a field this
+ *  panel could compare renders a real value if the fetch resolved one, or
+ *  the honest `{ value: '—', note: 'not held' }` placeholder while it
+ *  hasn't -- an EMPTY DIV there used to read as "nothing to show", visually
+ *  indistinguishable from the true not-held-a-counterparty case this same
+ *  function already renders correctly for `absent` rows. Never a fabricated
+ *  value either way. */
+function heldCell(held: boolean, value: string | null): HeaderCell | null {
+  if (!held) return null
+  return value ? { value } : { value: '—', note: 'not held' }
+}
+
 export function buildHeaderRows(
   row: PaneCRow,
   localRecord: CapsuleRecord | null,
   theirsRecompute?: PeerRecomputeState
 ): HeaderRow[] {
   const keyId = localRecord && typeof localRecord.key_id === 'string' ? (localRecord.key_id as string) : null
-  // Finding 2: the theirs column is `null` (absent, not "not available"
-  // mirrored under a held flag) until real peer bytes are actually held --
-  // a peer-asserted id alone used to be enough to fabricate every one of
-  // these cells, including a literal copy of our own `exchange_key` stamped
-  // `✓ same`.
+  const held = theirsHeld(row)
   const peerRecord = peerRecordFor(theirsRecompute)
   const peerTimestamp = peerRecord && typeof peerRecord.timestamp === 'string' ? peerRecord.timestamp : null
   const peerKeyId = peerRecord && typeof peerRecord.key_id === 'string' ? peerRecord.key_id : null
@@ -148,7 +159,7 @@ export function buildHeaderRows(
     {
       label: 'sealed at',
       yours: { value: row.timestamp ?? 'timestamp unavailable' },
-      theirs: peerTimestamp ? { value: peerTimestamp } : null
+      theirs: heldCell(held, peerTimestamp)
     },
     {
       label: 'algorithm',
@@ -156,18 +167,19 @@ export function buildHeaderRows(
       // A true system-wide constant, not a per-record claim -- safe to
       // state once real peer bytes are held, without needing to re-read it
       // off the fetched record.
-      theirs: peerRecord ? { value: 'EdDSA / Ed25519' } : null
+      theirs: heldCell(held, peerRecord ? 'EdDSA / Ed25519' : null)
     },
     {
       label: 'key id',
       yours: { value: keyId ?? 'unavailable' },
-      theirs: peerKeyId ? { value: peerKeyId } : null
+      theirs: heldCell(held, peerKeyId)
     },
     {
       // No peer-record field is this node's own `exchange_key` (a per-node
       // grouping derivation, `exchange_key_for` -- `capsule_panes_native.
       // rs`) -- there is nothing to compare even once bytes are held, so
-      // `theirs` never renders here, not even a mirrored `✓ same`.
+      // `theirs` never renders here, not even a `not held` placeholder: this
+      // is a structurally-absent field, not an unfetched value.
       label: 'exchange id',
       yours: { value: row.exchange_key },
       theirs: null
@@ -220,13 +232,19 @@ export function buildCommitsToRows(
   const effect = (localRecord?.effect ?? null) as { request_digest?: string; response_digest?: string } | null
   const taskBindingCell = row.properties?.task_binding ?? null
   const modelId = localRecord?.model_attestation?.model_id ?? null
+  const held = theirsHeld(row)
   const peerRecord = peerRecordFor(theirsRecompute)
 
-  /** `theirs` is absent until the peer's real record is held, and then
+  /** `theirs` is `null` (no cell at all) only when `!held` -- no
+   *  counterparty is recorded for this row, so there is nothing to ever
+   *  fetch (L-G). Once a counterparty IS recorded, this renders the honest
+   *  `not held` placeholder until a real peer fetch resolves, and then
    *  compares THAT record's own value at `path` to `yoursValue` -- never a
-   *  mirror of `yoursValue` itself. */
+   *  mirror of `yoursValue` itself, and never a bare empty cell while a
+   *  real comparison is merely pending (finding 2, 2026-09-23 bounce). */
   function theirsFor(yoursValue: string, path: readonly string[]): CommitsToCell | null {
-    if (!peerRecord) return null
+    if (!held) return null
+    if (!peerRecord) return { value: '—', note: 'not held' }
     const peerValue = recordString(peerRecord, path)
     if (peerValue === null) return { value: '—', note: 'not held' }
     return peerValue === yoursValue ? { value: peerValue, note: '✓ same' } : { value: peerValue, note: '✕ differs' }
