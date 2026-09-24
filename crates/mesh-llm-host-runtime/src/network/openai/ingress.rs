@@ -834,7 +834,7 @@ fn warn_pipeline_fallback(strong_name: &str) {
 #[allow(clippy::too_many_arguments)]
 async fn route_missing_local_model(
     tcp_stream: ClientStream,
-    request: &proxy::BufferedHttpRequest,
+    request: &mut proxy::BufferedHttpRequest,
     ctx: &IngressRouteContext<'_>,
     model_name: &str,
     target: Option<iroh::EndpointId>,
@@ -948,15 +948,32 @@ async fn route_missing_local_model(
             )
             .await;
             if let Some(ch) = channel {
-                ch.publish(&OpenAiExchangeEnvelope::terminal_remote_mesh(
+                let mut terminal = OpenAiExchangeEnvelope::terminal_remote_mesh(
                     exchange_id,
                     model_name,
                     plugin_route_status(&outcome),
                     forwarded_nonce,
                     nonce_source,
                     peer_capsule_id_sink.take(),
-                ))
-                .await;
+                );
+                // `terminal_remote_mesh` never resolves `serving_provenance`
+                // or `usage` for itself -- true of both, since this node's
+                // own hardware/weights don't serve the exchange -- but the
+                // request body is a different fact: this node parsed it to
+                // route the request and is relaying that exact body to the
+                // peer, so it can digest it the same way
+                // `publish_raw_proxy_terminal`'s host-served branch already
+                // does. `ensure_body_json` is idempotent and only paid here,
+                // inside the `channel.is_some()` branch.
+                request.ensure_body_json();
+                if let Some(digest) = request
+                    .body_json
+                    .as_ref()
+                    .and_then(|body| request_body_digest(body, request.body_bytes.as_deref()))
+                {
+                    terminal = terminal.with_request_digest(digest);
+                }
+                ch.publish(&terminal).await;
             }
             return outcome;
         }

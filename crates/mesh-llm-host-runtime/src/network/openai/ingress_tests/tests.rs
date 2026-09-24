@@ -1388,7 +1388,7 @@ async fn route_missing_local_model_enters_remote_mesh_branch_when_peer_serves_mo
     .into_iter()
     .chain(body.iter().copied())
     .collect::<Vec<u8>>();
-    let request = proxy::BufferedHttpRequest {
+    let mut request = proxy::BufferedHttpRequest {
         raw,
         method: "POST".to_owned(),
         path: "/v1/chat/completions".to_owned(),
@@ -1428,7 +1428,7 @@ async fn route_missing_local_model_enters_remote_mesh_branch_when_peer_serves_mo
 
     let outcome = route_missing_local_model(
         tcp_stream.into(),
-        &request,
+        &mut request,
         &ctx,
         model,
         None,
@@ -1497,6 +1497,104 @@ async fn route_missing_local_model_enters_remote_mesh_branch_when_peer_serves_mo
     );
 }
 
+/// `terminal_remote_mesh` never resolves a request digest for itself (see
+/// its doc comment) -- but the routing node that calls it already holds the
+/// exact body it forwarded to the peer, so `route_missing_local_model`
+/// attaches a real digest of that body onto the terminal envelope, the same
+/// way the host-served path's `publish_raw_proxy_terminal` already does.
+/// This pins that the digest on the terminal envelope matches an
+/// independently computed digest of the same fixture body.
+///
+/// MUTANT: dropping the `.with_request_digest(...)` call at the RemoteMesh
+/// callsite makes this fail -- `events[1].request_digest` would read `None`.
+#[tokio::test]
+async fn route_missing_local_model_remote_mesh_terminal_carries_the_real_request_digest() {
+    use crate::plugin::openai_exchange::request_body_digest;
+
+    let model = "acme/remote-model:Q4_K_M";
+    let node = mesh::Node::new_for_tests(crate::mesh::NodeRole::Worker)
+        .await
+        .expect("test node");
+    node.insert_test_peer(test_remote_peer(1, model)).await;
+
+    let targets = election::ModelTargets::default();
+    let affinity = affinity::AffinityRouter::new();
+    let recording = RecordingChannel::default();
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind loopback listener");
+    let addr = listener.local_addr().expect("local addr");
+    let client_connect = tokio::net::TcpStream::connect(addr);
+    let server_accept = async { listener.accept().await.map(|(s, _)| s) };
+    let (_client_side, server_side) = tokio::join!(client_connect, server_accept);
+    let tcp_stream = server_side.expect("accept server side");
+
+    let body =
+        br#"{"model":"acme/remote-model:Q4_K_M","messages":[{"role":"user","content":"hi"}]}"#;
+    let raw = format!(
+        "POST /v1/chat/completions HTTP/1.1\r\nHost: t\r\nContent-Type: application/json\r\nContent-Length: {len}\r\n\r\n",
+        len = body.len(),
+    )
+    .into_bytes()
+    .into_iter()
+    .chain(body.iter().copied())
+    .collect::<Vec<u8>>();
+    let mut request = proxy::BufferedHttpRequest {
+        raw,
+        method: "POST".to_owned(),
+        path: "/v1/chat/completions".to_owned(),
+        client_path: "/v1/chat/completions".to_owned(),
+        request_id: RequestId::default(),
+        body_json: None,
+        body_json_attempted: false,
+        body_bytes: None,
+        body_len_bytes: body.len(),
+        completion_tokens: None,
+        stream: None,
+        model_name: Some(model.to_owned()),
+        request_object_request_ids: Vec::new(),
+        response_adapter: proxy::ResponseAdapter::OpenAiChatCompletionsJson,
+        correlation_id: None,
+    };
+
+    let ctx = IngressRouteContext {
+        node: &node,
+        targets: &targets,
+        affinity: &affinity,
+        plugin_manager: None,
+        exchange_channel: Some(&recording),
+    };
+    let lifecycle = OpenAiLifecycleAttachment::unowned();
+
+    let _outcome = route_missing_local_model(
+        tcp_stream.into(),
+        &mut request,
+        &ctx,
+        model,
+        None,
+        &[],
+        None,
+        lifecycle.route_observer(),
+    )
+    .await;
+
+    let expected_digest = {
+        let parsed: serde_json::Value = serde_json::from_slice(body).expect("valid JSON fixture");
+        request_body_digest(&parsed, Some(body)).expect("fixture body must digest")
+    };
+
+    let events = recording.events.lock().unwrap();
+    assert_eq!(events.len(), 2, "expected effective + terminal envelopes");
+    assert_eq!(
+        events[1].request_digest.as_deref(),
+        Some(expected_digest.as_str()),
+        "terminal envelope on the RemoteMesh branch must carry the real \
+         canonical digest of the forwarded request body, not the None a \
+         reverted fix would leave it as"
+    );
+}
+
 /// Verifies that `route_missing_local_model` sets `nonce_source =
 /// Some(SidecarGeneratedFallback)` on both published envelopes when the
 /// request carries BOTH `x-capsule-client-nonce` AND `x-capsule-nonce-origin`.
@@ -1550,7 +1648,7 @@ async fn route_missing_local_model_sidecar_generated_nonce_origin_sets_sidecar_f
     .into_iter()
     .chain(body.iter().copied())
     .collect::<Vec<u8>>();
-    let request = proxy::BufferedHttpRequest {
+    let mut request = proxy::BufferedHttpRequest {
         raw,
         method: "POST".to_owned(),
         path: "/v1/chat/completions".to_owned(),
@@ -1591,7 +1689,7 @@ async fn route_missing_local_model_sidecar_generated_nonce_origin_sets_sidecar_f
 
     let outcome = route_missing_local_model(
         tcp_stream.into(),
-        &request,
+        &mut request,
         &ctx,
         model,
         None,
@@ -2096,10 +2194,10 @@ async fn route_missing_local_model_excluding_self_blocks_local_plugin_fallback()
     let mut client_side = client_side.expect("connect");
     let tcp_stream: ClientStream = server_side.expect("accept").into();
 
-    let request = plugin_only_request(model);
+    let mut request = plugin_only_request(model);
     let outcome = route_missing_local_model(
         tcp_stream,
-        &request,
+        &mut request,
         &ctx,
         model,
         None,

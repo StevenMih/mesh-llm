@@ -590,12 +590,17 @@ impl OpenAiExchangeEnvelope {
     /// `ClientSupplied` for the identical nonce. See
     /// [`OpenAiExchangeEnvelope::nonce_source`] for the full explanation.
     ///
-    /// `serving_provenance`/`usage`/`request_digest`/the output digests are
-    /// never attached on this constructor — the raw-proxy host-served
-    /// callsite that resolves those
-    /// (`network/openai/ingress.rs::publish_raw_proxy_terminal`) is a
-    /// different dispatch path (`RawProxy`); a routing node forwarding to a
-    /// peer never resolves them for itself.
+    /// `serving_provenance`, `usage` and the output digests are never
+    /// attached on this dispatch path at all — a routing node forwarding to
+    /// a peer never resolves the peer's own hardware/weights or the
+    /// response the peer returns, unlike the raw-proxy host-served callsite
+    /// (`network/openai/ingress.rs::publish_raw_proxy_terminal`), which is a
+    /// different dispatch path (`RawProxy`). `request_digest` is the
+    /// exception: this constructor never sets it (`None` below), but the
+    /// `RemoteMesh` callsite in `ingress.rs` attaches it afterward via
+    /// [`Self::with_request_digest`] — the routing node DOES hold the exact
+    /// request body it relays to the peer, so it can digest it the same way
+    /// the host-served path does.
     pub fn terminal_remote_mesh(
         exchange_id: impl Into<String>,
         model: impl Into<String>,
