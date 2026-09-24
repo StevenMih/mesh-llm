@@ -204,6 +204,12 @@ pub enum OpenAiLifecycleEvent {
     NonStreamTerminal {
         context: OpenAiLifecycleContext,
         result: OpenAiTerminalResult,
+        /// The host-minted per-exchange id ([`ChatCompletionResponse::exchange_id`][crate::chat::ChatCompletionResponse::exchange_id]),
+        /// when this terminal request was a chat/responses completion
+        /// dispatched through the exchange-tracked path. `None` for every
+        /// other route, and for an exchange that never reached a response
+        /// (a rejection or backend error before dispatch).
+        exchange_id: Option<String>,
     },
     StreamTerminal {
         context: OpenAiLifecycleContext,
@@ -547,6 +553,7 @@ mod tests {
                 status_code: 504,
                 failure: OpenAiFailure::Timeout,
             },
+            exchange_id: None,
         };
 
         assert!(matches!(
@@ -560,6 +567,7 @@ mod tests {
                     status_code: 504,
                     failure: OpenAiFailure::Timeout,
                 },
+                ..
             }
         ));
         assert_eq!(

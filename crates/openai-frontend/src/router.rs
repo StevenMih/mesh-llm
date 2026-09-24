@@ -583,11 +583,17 @@ async fn chat_completions(
         );
         let usage = response.usage.clone();
         let capsule_marker = response.capsule_marker.clone();
+        let exchange_id = response.exchange_id.clone();
         let mut http_response = json_response_with_usage(response, &usage);
         if let Some(marker) = capsule_marker {
             http_response
                 .extensions_mut()
                 .insert(CapsuleMarkerExtension(marker));
+        }
+        if let Some(exchange_id) = exchange_id {
+            http_response
+                .extensions_mut()
+                .insert(ExchangeIdExtension(exchange_id));
         }
         Ok(http_response)
     }
@@ -686,12 +692,18 @@ async fn non_streaming_responses(
     state.response_completed(context, OpenAiBackendOperation::Responses, &response.usage);
     let usage = response.usage.clone();
     let capsule_marker = response.capsule_marker.clone();
+    let exchange_id = response.exchange_id.clone();
     let translated = translate_chat_completion_response_to_responses(&response)?;
     let mut http_response = json_response_with_usage(translated, &usage);
     if let Some(marker) = capsule_marker {
         http_response
             .extensions_mut()
             .insert(CapsuleMarkerExtension(marker));
+    }
+    if let Some(exchange_id) = exchange_id {
+        http_response
+            .extensions_mut()
+            .insert(ExchangeIdExtension(exchange_id));
     }
     Ok(http_response)
 }
@@ -981,6 +993,17 @@ struct CapsuleMarkerExtension(CapsuleMarker);
 /// `docs/plugins/openai-exchange-lifecycle-design-note.md`.
 static X_CAPSULE_ID_HEADER: HeaderName = HeaderName::from_static("x-capsule-id");
 
+/// Threads [`ChatCompletionResponse::exchange_id`] from the handler to
+/// `frontend_lifecycle_middleware`, mirroring [`CapsuleMarkerExtension`] —
+/// the same relay, for the ledger join-key rather than the rung-ladder
+/// marker.
+#[derive(Clone)]
+struct ExchangeIdExtension(String);
+
+/// The per-exchange join-key header shared with the Ledger's sealed record —
+/// see [`crate::hooks::ChatExchangeRoute::exchange_id`].
+static X_EXCHANGE_ID_HEADER: HeaderName = HeaderName::from_static("x-exchange-id");
+
 fn authoritative_usage(usage: &Usage) -> Option<TokenUsage> {
     TokenUsage::from_counts(
         Some(u64::from(usage.prompt_tokens)),
@@ -1133,6 +1156,17 @@ async fn frontend_lifecycle_middleware(
             .headers_mut()
             .insert(X_CAPSULE_ID_HEADER.clone(), value);
     }
+    let exchange_id = response
+        .extensions()
+        .get::<ExchangeIdExtension>()
+        .map(|extension| extension.0.clone());
+    if let Some(exchange_id) = &exchange_id
+        && let Ok(value) = HeaderValue::from_str(exchange_id)
+    {
+        response
+            .headers_mut()
+            .insert(X_EXCHANGE_ID_HEADER.clone(), value);
+    }
     if is_streaming_response(&response) {
         lifecycle.transfer_to_stream();
     } else {
@@ -1140,7 +1174,7 @@ async fn frontend_lifecycle_middleware(
             .extensions()
             .get::<TerminalUsage>()
             .map(|usage| usage.0);
-        lifecycle.finish_with_usage(response.status(), usage);
+        lifecycle.finish_with_usage(response.status(), usage, exchange_id);
     }
     tracing::info!(
         request_id = %request_id.as_ref(),

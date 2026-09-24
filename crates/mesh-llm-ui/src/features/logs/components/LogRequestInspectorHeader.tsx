@@ -1,5 +1,6 @@
 import * as DialogPrimitive from '@radix-ui/react-dialog'
-import { X } from 'lucide-react'
+import { useNavigate } from '@tanstack/react-router'
+import { ArrowUpRight, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { CopyInstructionRow } from '@/components/ui/CopyInstructionRow'
 import { SharedModalDescription, SharedModalHeader, SharedModalTitle } from '@/components/ui/SharedModal'
@@ -30,6 +31,8 @@ const OUTCOME_PRESENTATION: Record<LogOutcome, OutcomePresentation> = {
 export function LogRequestInspectorHeader({ requestId, knownRequest }: LogRequestInspectorHeaderProps) {
   const summaryQuery = useLogRequestSummaryQuery(requestId, knownRequest)
   const outcome = summaryQuery.data ? OUTCOME_PRESENTATION[summaryQuery.data.outcome] : undefined
+  const exchangeId = summaryQuery.data?.exchangeId
+  const navigate = useNavigate()
 
   return (
     <SharedModalHeader className="relative min-w-0 shrink-0 px-4 pb-3 pt-3 sm:px-5 sm:pb-4 sm:pt-4.5">
@@ -58,6 +61,17 @@ export function LogRequestInspectorHeader({ requestId, knownRequest }: LogReques
       <div className="mt-2.5 min-w-0 max-w-3xl sm:mt-3">
         <CopyInstructionRow label="Request ID" value={requestId.toString()} />
       </div>
+      {exchangeId ? (
+        <Button
+          className="mt-2.5 h-auto w-fit gap-1 p-0 text-xs font-medium text-primary hover:bg-transparent hover:underline"
+          onClick={() => navigate({ params: { exchangeKey: exchangeId }, to: '/capsules/exchange/$exchangeKey' })}
+          type="button"
+          variant="ghost"
+        >
+          Open in Ledger
+          <ArrowUpRight aria-hidden="true" className="size-3" />
+        </Button>
+      ) : null}
     </SharedModalHeader>
   )
 }

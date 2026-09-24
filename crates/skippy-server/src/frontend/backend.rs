@@ -1579,6 +1579,15 @@ impl StageOpenAiBackend {
             .unwrap_or_default();
         let mut result = dispatch(request).await;
 
+        // Attach the join-key only when this exchange is actually tracked
+        // (a `TerminalGuard` is armed) — otherwise `on_chat_completion_terminal`
+        // never fires for it and there is no Ledger record to link to.
+        if guard.is_some()
+            && let Ok(response) = &mut result
+        {
+            response.exchange_id = Some(exchange_id.clone());
+        }
+
         if let (Some(policy), Ok(response)) = (self.hook_policy.as_ref(), &mut result)
             && let Some(marker) = policy
                 .capsule_marker_for_response(&marker_request, &*response)
