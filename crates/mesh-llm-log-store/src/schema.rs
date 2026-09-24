@@ -6,7 +6,7 @@ CREATE TABLE summaries (
         CHECK (state IN ('active', 'completed', 'failed', 'rejected', 'cancelled', 'dropped')),
     created_at TEXT NOT NULL, terminal_at TEXT, route TEXT, model TEXT, provider TEXT,
     engine TEXT, status_code INTEGER, error_msg TEXT, tenant_id TEXT, account_id TEXT, user_id TEXT,
-    caller_endpoint_id TEXT, caller_addr TEXT, caller_path_type TEXT
+    caller_endpoint_id TEXT, caller_addr TEXT, caller_path_type TEXT, exchange_id TEXT
 );
 CREATE INDEX idx_summaries_created ON summaries (created_at DESC, request_id DESC);
 CREATE INDEX idx_summaries_state ON summaries (state);
@@ -18,6 +18,7 @@ CREATE INDEX idx_summaries_provider_created ON summaries (provider, created_at D
 CREATE INDEX idx_summaries_engine_created ON summaries (engine, created_at DESC, request_id DESC);
 CREATE INDEX idx_summaries_status_created ON summaries (status_code, created_at DESC, request_id DESC);
 CREATE INDEX idx_summaries_state_created ON summaries (state, created_at DESC, request_id DESC);
+CREATE UNIQUE INDEX idx_summaries_exchange_id ON summaries (exchange_id) WHERE exchange_id IS NOT NULL;
 
 CREATE TABLE lifecycle_events (
     event_id TEXT PRIMARY KEY,

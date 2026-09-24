@@ -1,4 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { HARNESS_PANE_C_PAYLOAD } from '@/features/capsules/lib/exchange-fixtures'
+import { LogRequestId } from '@/features/logs/api/ids'
+import type { LogRequest } from '@/features/logs/api/schemas'
+import type { RequestLogEvent } from '@/features/logs/lib/log-event-ledger'
 import {
   advanceLogsPage,
   closeLogInspector,
@@ -7,6 +11,7 @@ import {
   openLogInspector,
   parseLogsLedgerSearch,
   resetLogsSearch,
+  resolveFocusExchangeRequestId,
   resolveRelativeTime,
   toLogsRequestQuery,
   updateLogCategories,
@@ -284,5 +289,72 @@ describe('logs ledger URL search', () => {
     const thirtyDaysAgo = new Date(NOW_MS - 30 * 86_400_000).toISOString()
     const oldLabel = formatRelativeTime(thirtyDaysAgo)
     expect(oldLabel.length).toBeGreaterThan(5)
+  })
+
+  it('carries a non-empty focusExchangeId through and drops an empty one', () => {
+    expect(parseLogsLedgerSearch({ focusExchangeId: 'exch-closed-00' })).toMatchObject({
+      focusExchangeId: 'exch-closed-00'
+    })
+    expect(parseLogsLedgerSearch({ focusExchangeId: '' }).focusExchangeId).toBeUndefined()
+    expect(parseLogsLedgerSearch({}).focusExchangeId).toBeUndefined()
+  })
+})
+
+function requestRow(overrides: Partial<LogRequest> = {}): RequestLogEvent {
+  const request: LogRequest = {
+    requestId: LogRequestId.parse(REQUEST_ID),
+    outcome: 'completed',
+    createdAt: '2026-09-11T16:58:05Z',
+    terminalAt: '2026-09-11T16:58:06Z',
+    route: 'chat_completions',
+    model: 'llama-2-7b',
+    provider: 'mesh',
+    engine: 'skippy',
+    statusCode: 200,
+    source: 'durable',
+    ...overrides
+  }
+  return {
+    type: 'request',
+    id: request.requestId.toString(),
+    occurredAt: request.createdAt,
+    category: 'requests',
+    request
+  }
+}
+
+describe('resolveFocusExchangeRequestId', () => {
+  // The Ledger's own curated exchange_key, read from the fixture module
+  // (not retyped) so a drift there breaks this test rather than passing
+  // two independently-hardcoded literals against each other.
+  const LEDGER_EXCHANGE_KEY = HARNESS_PANE_C_PAYLOAD.rows[0].exchange_key
+
+  // [ledger-T5-join-key] §3-G: the id on the Logs row equals the id on the
+  // Ledger row for a fixture call -- LEDGER_EXCHANGE_KEY is read straight
+  // off the Ledger's own curated row, so this proves the join key resolves
+  // a real Logs row against the Ledger's actual fixture data, not just the
+  // resolver's string-equality shape.
+  it('finds the request whose exchangeId matches the Ledger row exchange_key', () => {
+    const rows = [requestRow({ exchangeId: LEDGER_EXCHANGE_KEY })]
+
+    expect(resolveFocusExchangeRequestId(rows, LEDGER_EXCHANGE_KEY)).toBe(REQUEST_ID)
+  })
+
+  it('never fabricates a match for an exchange id no loaded row carries', () => {
+    const rows = [requestRow({ exchangeId: LEDGER_EXCHANGE_KEY })]
+
+    expect(resolveFocusExchangeRequestId(rows, 'exch-not-loaded-yet')).toBeUndefined()
+  })
+
+  it('never matches a request with no exchangeId at all', () => {
+    const rows = [requestRow({ exchangeId: undefined })]
+
+    expect(resolveFocusExchangeRequestId(rows, LEDGER_EXCHANGE_KEY)).toBeUndefined()
+  })
+
+  it('returns undefined without a focusExchangeId to resolve', () => {
+    const rows = [requestRow({ exchangeId: LEDGER_EXCHANGE_KEY })]
+
+    expect(resolveFocusExchangeRequestId(rows, undefined)).toBeUndefined()
   })
 })

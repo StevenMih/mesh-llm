@@ -8,6 +8,7 @@
 import type { ColumnDef } from '@/components/ui/data-table'
 import { DataTableColumnHeader } from '@/components/ui/data-table-column-header'
 import { StatusPill } from '@/components/ui/status-pill'
+import { ExchangeIdCell } from '@/features/capsules/components/ExchangeIdCell'
 import type { ExchangeLedgerRow } from '@/features/capsules/lib/exchange-ledger'
 
 export const EXCHANGE_COLUMN_LABELS = {
@@ -45,11 +46,7 @@ export function buildExchangeColumns(): ColumnDef<ExchangeLedgerRow>[] {
       id: 'exchange_id',
       accessorFn: (row) => row.exchangeKey,
       header: ({ column }) => <DataTableColumnHeader column={column} title={EXCHANGE_COLUMN_LABELS.exchange_id} />,
-      cell: ({ row }) => (
-        <span className="font-mono text-foreground" title={row.original.exchangeKey}>
-          {row.original.exchangeKey.slice(0, 8)}
-        </span>
-      )
+      cell: ({ row }) => <ExchangeIdCell exchangeKey={row.original.exchangeKey} />
     },
     {
       id: 'counterparty',

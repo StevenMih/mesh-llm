@@ -69,6 +69,7 @@ fn fresh_database_is_exactly_complete_current_schema() {
             "caller_endpoint_id",
             "caller_addr",
             "caller_path_type",
+            "exchange_id",
         ]
     );
     assert_eq!(
