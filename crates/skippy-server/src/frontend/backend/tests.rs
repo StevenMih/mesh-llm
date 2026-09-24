@@ -8,6 +8,7 @@ use crate::frontend::iteration_scheduler::IterationScheduler;
 use crate::frontend::prefill::PrefillChunkPolicy;
 use crate::runtime_state::RuntimeState;
 use futures_util::StreamExt;
+use openai_frontend::CapsuleMarker;
 use openai_frontend::ChatCompletionChunk;
 use openai_frontend::ChatCompletionRequest;
 use openai_frontend::ChatCompletionResponse;
@@ -1343,11 +1344,29 @@ enum HookTerminalRecord {
     StreamCompleted,
 }
 
-#[derive(Default)]
 struct RecordingHookPolicy {
     deny: bool,
     hang_before_dispatch: bool,
+    marker: Option<CapsuleMarker>,
+    observes_dispatched_request: bool,
+    marker_request_model: Mutex<Option<String>>,
     terminals: Mutex<Vec<HookTerminalRecord>>,
+}
+
+impl Default for RecordingHookPolicy {
+    // Mirrors `OpenAiHookPolicy::observes_dispatched_request`'s own default
+    // of `true`, so every existing test built via `..Default::default()`
+    // keeps getting the real post-dispatch request unless it opts out.
+    fn default() -> Self {
+        Self {
+            deny: false,
+            hang_before_dispatch: false,
+            marker: None,
+            observes_dispatched_request: true,
+            marker_request_model: Mutex::new(None),
+            terminals: Mutex::new(Vec::new()),
+        }
+    }
 }
 
 #[async_trait]
@@ -1363,6 +1382,19 @@ impl OpenAiHookPolicy for RecordingHookPolicy {
             return Err(OpenAiError::invalid_request("denied by policy"));
         }
         Ok(ChatHookOutcome::none())
+    }
+
+    async fn capsule_marker_for_response(
+        &self,
+        request: &ChatCompletionRequest,
+        _response: &ChatCompletionResponse,
+    ) -> Option<CapsuleMarker> {
+        *self.marker_request_model.lock().unwrap() = Some(request.model.clone());
+        self.marker.clone()
+    }
+
+    fn observes_dispatched_request(&self) -> bool {
+        self.observes_dispatched_request
     }
 
     async fn on_chat_completion_terminal(
@@ -1435,6 +1467,106 @@ async fn stage_backend_success_fires_terminal_exactly_once() {
         [HookTerminalRecord::Success {
             model: "hooks-test-model".to_string()
         }]
+    );
+}
+
+/// The response-leg marker must ride EVERY served completion, not only
+/// mesh-hook-enabled ones -- a plain request (no `mesh_hooks` flag, the
+/// common case, and every mesh-routed peer request) must still come back
+/// with `capsule_marker` set whenever a hook policy is installed. Regression
+/// for the bug where the marker was minted from a hook policy that had
+/// already been filtered out by `chat_mesh_hooks_enabled`, so a plain
+/// request silently got no marker at all.
+///
+/// MUTANT: reintroducing the `chat_mesh_hooks_enabled` filter ahead of the
+/// marker mint makes this fail -- `response.capsule_marker` would read
+/// `None` because the request below never sets the mesh-hooks flag.
+#[tokio::test]
+async fn stage_backend_mints_capsule_marker_on_a_plain_request_without_mesh_hooks_flag() {
+    let marker = CapsuleMarker {
+        capsule_id: "capsule-plain-request".to_string(),
+        nonce: "nonce-plain-request".to_string(),
+    };
+    let policy = Arc::new(RecordingHookPolicy {
+        marker: Some(marker.clone()),
+        ..RecordingHookPolicy::default()
+    });
+    let backend = hooks_test_backend(Some(policy.clone()));
+    // Deliberately NOT `mesh_hooks_request` -- a plain request never calls
+    // `set_chat_mesh_hooks_enabled`, so `chat_mesh_hooks_enabled` reads
+    // false, the common case for every mesh-routed peer request.
+    let request: ChatCompletionRequest = serde_json::from_value(json!({
+        "model": "hooks-test-model",
+        "messages": [{"role": "user", "content": "hi"}],
+    }))
+    .expect("minimal chat completion request");
+
+    let response = backend
+        .chat_completion_with_hooks(request, |request| async move {
+            Ok(ChatCompletionResponse::new(
+                request.model,
+                "ok",
+                Usage::new(1, 1),
+            ))
+        })
+        .await
+        .expect("fake dispatch succeeds");
+
+    assert_eq!(
+        response.capsule_marker,
+        Some(marker),
+        "a served completion must carry the response-leg marker even when \
+         the request never set the mesh_hooks flag"
+    );
+}
+
+/// The marker-path clone must be gated by `observes_dispatched_request()`,
+/// the same switch the guard's own post-dispatch snapshot already uses --
+/// not cloned unconditionally on every completion. Regression for
+/// review-round-2: `marker_request` was built from `request.clone()`
+/// regardless of the policy, so a policy that opts out of the post-dispatch
+/// clone (like production's `MeshAutoHookPolicy`) still paid it on every
+/// served completion.
+///
+/// MUTANT: cloning `request` into `marker_request` unconditionally (ignoring
+/// `observes_dispatched_request()`) makes this fail -- the recorded model
+/// would read `Some("gpt-marker-gate")` instead of `Some(String::new())`.
+#[tokio::test]
+async fn stage_backend_skips_marker_request_clone_when_policy_does_not_observe_it() {
+    let policy = Arc::new(RecordingHookPolicy {
+        marker: Some(CapsuleMarker {
+            capsule_id: "capsule-gate-check".to_string(),
+            nonce: "nonce-gate-check".to_string(),
+        }),
+        observes_dispatched_request: false,
+        ..RecordingHookPolicy::default()
+    });
+    let backend = hooks_test_backend(Some(policy.clone()));
+    let request: ChatCompletionRequest = serde_json::from_value(json!({
+        "model": "gpt-marker-gate",
+        "messages": [{"role": "user", "content": "hi"}],
+    }))
+    .expect("minimal chat completion request");
+
+    let response = backend
+        .chat_completion_with_hooks(request, |request| async move {
+            Ok(ChatCompletionResponse::new(
+                request.model,
+                "ok",
+                Usage::new(1, 1),
+            ))
+        })
+        .await
+        .expect("fake dispatch succeeds");
+
+    // The marker still mints -- the policy always returns one regardless of
+    // what it was handed. What's under test is what request it saw.
+    assert!(response.capsule_marker.is_some());
+    assert_eq!(
+        policy.marker_request_model.lock().unwrap().clone(),
+        Some(String::new()),
+        "observes_dispatched_request() == false must skip the marker_request \
+         clone and hand capsule_marker_for_response a default request"
     );
 }
 

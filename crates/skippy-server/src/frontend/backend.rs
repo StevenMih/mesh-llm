@@ -1540,7 +1540,6 @@ impl StageOpenAiBackend {
         let mut guard = hooks
             .as_ref()
             .map(|hooks| TerminalGuard::new(hooks.clone(), request.clone(), exchange_id.clone()));
-        let mut dispatched_request = None;
 
         if let Some(hooks) = hooks.clone() {
             match hooks.before_chat_completion(&mut request).await {
@@ -1570,17 +1569,34 @@ impl StageOpenAiBackend {
                 ChatCompletionRequest::default()
             };
             if let Some(guard) = guard.as_mut() {
-                guard.set_request(effective.clone());
+                guard.set_request(effective);
             }
-            dispatched_request = Some(effective);
         }
 
+        // The response-leg marker (-> `X-Capsule-Id` header) must ride EVERY
+        // served non-streaming completion, not only mesh-hook-enabled ones:
+        // it is the join key a routing peer reads back to record
+        // `peer_capsule_id` for its half of the exchange, and a plain request
+        // (no `mesh_hooks` flag) is the common case. So it is minted from the
+        // UNFILTERED `self.hook_policy`, independent of the
+        // `chat_mesh_hooks_enabled` gate that (correctly) still fences off
+        // the heavier pre-dispatch virtual hooks above. Snapshot the request
+        // before `dispatch` moves it, gated on `observes_dispatched_request()`
+        // -- the same gate `effective` above uses, and for the same reason:
+        // skip the real-bytes clone when the installed policy doesn't read
+        // the post-dispatch request at all.
+        let marker_policy = self.hook_policy.as_ref();
+        let marker_request =
+            if marker_policy.is_some_and(|policy| policy.observes_dispatched_request()) {
+                request.clone()
+            } else {
+                ChatCompletionRequest::default()
+            };
         let mut result = dispatch(request).await;
 
-        if let (Some(hooks), Some(dispatched_request), Ok(response)) =
-            (&hooks, &dispatched_request, &mut result)
-            && let Some(marker) = hooks
-                .capsule_marker_for_response(dispatched_request, &*response)
+        if let (Some(policy), Ok(response)) = (marker_policy, &mut result)
+            && let Some(marker) = policy
+                .capsule_marker_for_response(&marker_request, &*response)
                 .await
         {
             if capsule_id_is_valid(&marker.capsule_id) {
