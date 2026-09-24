@@ -573,6 +573,46 @@ describe('buildHeaderRows / buildCommitsToRows — no fabricated fields', () => 
     expect(keyId?.yours.value).toBe('unavailable')
   })
 
+  // Finding 2, reworked (2026-09-23 bounce): every comparable header field
+  // ('sealed at' / 'algorithm' / 'key id') on a HELD-but-unfetched row must
+  // render the 'not held' placeholder, not a bare empty cell -- checked
+  // per property so a regression in any one field's wiring is caught, not
+  // just averaged over the whole row.
+  it.each(['sealed at', 'algorithm', 'key id'])(
+    "held/not-held per property: '%s' renders 'not held' when a counterparty is recorded but nothing has been fetched",
+    (label) => {
+      const row = paneCRow({ theirs: { state: 'NOT_CHECKED', capsule_id: 'a'.repeat(64), peer_id: 'peer-1' } })
+      const headerRows = buildHeaderRows(row, null)
+      expect(headerRows.find((r) => r.label === label)?.theirs).toEqual({ value: '—', note: 'not held' })
+    }
+  )
+
+  it.each(['sealed at', 'algorithm', 'key id'])(
+    "held/not-held per property: '%s' has no theirs cell at all when theirs.state is absent (no counterparty recorded)",
+    (label) => {
+      const row = paneCRow({ theirs: { state: 'absent', capsule_id: null } })
+      const headerRows = buildHeaderRows(row, null)
+      expect(headerRows.find((r) => r.label === label)?.theirs).toBeNull()
+    }
+  )
+
+  it.each(['sealed at', 'algorithm', 'key id'])(
+    "held/not-held per property: '%s' renders the real fetched value once a peer fetch actually resolves",
+    (label) => {
+      const row = paneCRow({ theirs: { state: 'NOT_CHECKED', capsule_id: 'a'.repeat(64), peer_id: 'peer-1' } })
+      const theirsRecompute: PeerRecomputeState = {
+        status: 'found',
+        idMatch: true,
+        signatureOk: true,
+        peerRecord: { timestamp: '2026-09-09T00:00:00Z', key_id: 'peer-key-1' },
+        fetch: () => {}
+      }
+      const headerRows = buildHeaderRows(row, null, theirsRecompute)
+      expect(headerRows.find((r) => r.label === label)?.theirs).not.toEqual({ value: '—', note: 'not held' })
+      expect(headerRows.find((r) => r.label === label)?.theirs).not.toBeNull()
+    }
+  )
+
   it('commits-to reads real digests off the local record when present', () => {
     const rows = buildCommitsToRows(paneCRow(), {
       effect: { request_digest: 'a'.repeat(64), response_digest: 'b'.repeat(64) }
@@ -598,14 +638,37 @@ describe('[ledger-T4-inline-inspector] buildCommitsToRows — theirs column, fin
 
   // MUTANT (finding 2): the old behaviour mirrored `yours` into `theirs`
   // labelled `✓ same` the instant the row read CLOSED -- restating our own
-  // value as though it were an independent fact. `theirs` must stay
-  // absent until this browser actually holds the peer's OWN record.
-  it('MUTANT-GUARD: no theirsRecompute supplied -- every theirs cell is absent, never a mirrored ✓ same', () => {
+  // value as though it were an independent fact. `theirs` must never render
+  // that mirrored `✓ same` until this browser actually holds the peer's OWN
+  // record.
+  it('MUTANT-GUARD: no theirsRecompute supplied -- no theirs cell ever reads ✓ same (never a mirror of our own value)', () => {
     const rows = buildCommitsToRows(paneCRow(), LOCAL_RECORD)
     for (const row of rows) {
-      expect(row.theirs).toBeNull()
+      expect(row.theirs?.note).not.toBe('✓ same')
     }
   })
+
+  // Finding 2, reworked (2026-09-23 bounce): a comparable field on a HELD
+  // row (a counterparty is recorded) with no fetch yet is the "unfetched"
+  // case an empty div used to hide -- it must render the SAME honest
+  // `not held` placeholder a found-but-missing-field fetch already gets,
+  // never a bare `null`/empty cell that looks indistinguishable from the
+  // true absent-counterparty case below.
+  it.each(['request digest', 'response digest', 'model identity'])(
+    "held/not-held per property: '%s' renders the 'not held' placeholder on an unfetched but HELD row, never an empty cell",
+    (label) => {
+      const rows = buildCommitsToRows(paneCRow(), LOCAL_RECORD)
+      expect(rows.find((r) => r.label === label)?.theirs).toEqual({ value: '—', note: 'not held' })
+    }
+  )
+
+  it.each(['request digest', 'response digest', 'model identity'])(
+    "held/not-held per property: '%s' has no theirs cell at all when theirs.state is absent (no counterparty recorded)",
+    (label) => {
+      const rows = buildCommitsToRows(paneCRow({ theirs: { state: 'absent', capsule_id: null } }), LOCAL_RECORD)
+      expect(rows.find((r) => r.label === label)?.theirs).toBeNull()
+    }
+  )
 
   it('a found fetch whose peer record genuinely matches renders check same off the peers own field, not a mirror', () => {
     const theirsRecompute: PeerRecomputeState = {
