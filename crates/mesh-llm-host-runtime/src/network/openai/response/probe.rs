@@ -18,6 +18,14 @@ pub(in crate::network::openai::response) struct ParsedResponseHeaders {
     /// rebuild fresh HTTP responses instead of forwarding upstream headers.
     pub(in crate::network::openai::response) client_nonce: Option<String>,
     pub(in crate::network::openai::response) nonce_origin: Option<String>,
+    /// The inner (skippy) frontend's `X-Capsule-Id` response header — the
+    /// self-minted served-leg marker (`capsule-<response.id>`). Echoed on the
+    /// inner frontend's response but otherwise lost, exactly like the nonce
+    /// above, because the public-proxy JSON/stream adapters rebuild fresh
+    /// responses instead of forwarding upstream headers. Preserved here so a
+    /// routing peer's `PeerCapsuleIdSink` can still read it back off THIS
+    /// node's public response.
+    pub(in crate::network::openai::response) capsule_id: Option<String>,
 }
 
 /// Append the capsule client nonce and origin-marker headers (when present)
@@ -39,6 +47,23 @@ pub(in crate::network::openai::response) fn append_capsule_nonce_headers(
             "{}: {origin}\r\n",
             openai_frontend::lifecycle::CLIENT_NONCE_ORIGIN_HEADER.as_str()
         ));
+    }
+}
+
+/// Append the inner frontend's `X-Capsule-Id` served-leg marker (when present)
+/// to a hand-built response header string. Sibling of
+/// [`append_capsule_nonce_headers`]: the public-proxy JSON/stream adapters
+/// rebuild fresh responses and would otherwise drop this header, so a routing
+/// peer reading it back off this node's public response would see nothing.
+/// CR/LF-stripped defensively even though the value is a self-minted
+/// `capsule-<id>`.
+pub(in crate::network::openai::response) fn append_capsule_id_header(
+    header: &mut String,
+    capsule_id: Option<&str>,
+) {
+    if let Some(id) = capsule_id {
+        let safe: String = id.chars().filter(|c| *c != '\r' && *c != '\n').collect();
+        header.push_str(&format!("{PEER_CAPSULE_ID_HEADER}: {safe}\r\n"));
     }
 }
 
@@ -214,6 +239,7 @@ pub(in crate::network::openai::response) fn try_parse_response_headers(
             let mut content_type = None;
             let mut client_nonce = None;
             let mut nonce_origin = None;
+            let mut capsule_id = None;
             let nonce_header = openai_frontend::lifecycle::CLIENT_NONCE_HEADER.as_str();
             let nonce_origin_header =
                 openai_frontend::lifecycle::CLIENT_NONCE_ORIGIN_HEADER.as_str();
@@ -240,6 +266,11 @@ pub(in crate::network::openai::response) fn try_parse_response_headers(
                     nonce_origin = std::str::from_utf8(header.value)
                         .ok()
                         .map(|value| value.trim().to_string());
+                } else if header.name.eq_ignore_ascii_case(PEER_CAPSULE_ID_HEADER) {
+                    capsule_id = std::str::from_utf8(header.value)
+                        .ok()
+                        .map(|value| value.trim().to_string())
+                        .filter(|value| !value.is_empty());
                 }
             }
             Ok(Some(ParsedResponseHeaders {
@@ -249,6 +280,7 @@ pub(in crate::network::openai::response) fn try_parse_response_headers(
                 content_type,
                 client_nonce,
                 nonce_origin,
+                capsule_id,
             }))
         }
         Ok(httparse::Status::Partial) => Ok(None),

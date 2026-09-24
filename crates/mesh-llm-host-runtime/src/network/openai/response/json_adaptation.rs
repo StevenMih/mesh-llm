@@ -4,7 +4,7 @@ use super::common::{
     retryable_quality_result,
 };
 use super::probe::{
-    ResponseBodyReadLimits, ResponseProbe, append_capsule_nonce_headers,
+    ResponseBodyReadLimits, ResponseProbe, append_capsule_id_header, append_capsule_nonce_headers,
     append_mesh_served_by_header, read_transformed_response_body, try_parse_response_headers,
 };
 use super::relay::relay_error_response;
@@ -76,6 +76,10 @@ pub(in crate::network::openai::response) async fn relay_translated_responses_jso
         parsed.client_nonce.as_deref(),
         parsed.nonce_origin.as_deref(),
     );
+    // Preserve the inner frontend's served-leg `X-Capsule-Id` marker across
+    // this rebuild -- without it a routing peer reads no capsule id back off
+    // this node's public response.
+    append_capsule_id_header(&mut header, parsed.capsule_id.as_deref());
     append_mesh_served_by_header(&mut header, served_by);
     header.push_str("Connection: close\r\n\r\n");
     tcp_stream.write_all(header.as_bytes()).await?;
@@ -144,6 +148,10 @@ pub(in crate::network::openai::response) async fn relay_normalized_chat_completi
         parsed.client_nonce.as_deref(),
         parsed.nonce_origin.as_deref(),
     );
+    // Preserve the inner frontend's served-leg `X-Capsule-Id` marker across
+    // this rebuild -- without it a routing peer reads no capsule id back off
+    // this node's public response.
+    append_capsule_id_header(&mut header, parsed.capsule_id.as_deref());
     append_mesh_served_by_header(&mut header, served_by);
     header.push_str("Connection: close\r\n\r\n");
     tcp_stream.write_all(header.as_bytes()).await?;
@@ -301,7 +309,7 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let header = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nx-capsule-client-nonce: nonce-under-test\r\nx-capsule-nonce-origin: frontend\r\n\r\n",
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nx-capsule-client-nonce: nonce-under-test\r\nx-capsule-nonce-origin: frontend\r\nx-capsule-id: capsule-chatcmpl-a\r\n\r\n",
             body.len()
         );
         let header_end = header.len();
@@ -344,6 +352,76 @@ mod tests {
         assert!(
             output_text.contains("x-capsule-nonce-origin: frontend\r\n"),
             "public-proxy JSON response must echo the nonce origin marker: {output_text}"
+        );
+        // The regression this file's fix closes: the served-leg X-Capsule-Id
+        // marker must survive the JSON rebuild, or a routing peer reads no
+        // capsule id back and correlates nothing to this exchange.
+        assert!(
+            output_text.contains("x-capsule-id: capsule-chatcmpl-a\r\n"),
+            "public-proxy JSON response must preserve the upstream X-Capsule-Id: {output_text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn relay_translated_responses_json_echoes_capsule_nonce_headers() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let body = br#"{"id":"chatcmpl-a","object":"chat.completion","created":1,"model":"test","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}"#;
+        let (mut upstream_writer, mut upstream_reader) = tokio::io::duplex(64 * 1024);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let header = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nx-capsule-client-nonce: nonce-under-test\r\nx-capsule-nonce-origin: frontend\r\nx-capsule-id: capsule-chatcmpl-a\r\n\r\n",
+            body.len()
+        );
+        let header_end = header.len();
+        let server_task = tokio::spawn(async move {
+            let (client_socket, _) = listener.accept().await.unwrap();
+            let mut client_socket: ClientStream = client_socket.into();
+            let probe = ResponseProbe {
+                buffered: header.into_bytes(),
+                header_end,
+                status_code: 200,
+                retryable_context_overflow: false,
+            };
+            relay_translated_responses_json(
+                &mut client_socket,
+                &mut upstream_reader,
+                probe,
+                ResponseRetryPolicy::next_target_available(false),
+                None,
+                OpenAiRouteObserver::default(),
+            )
+            .await
+            .expect("relay")
+        });
+
+        upstream_writer.write_all(body).await.unwrap();
+        let mut client = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let mut output = Vec::new();
+        tokio::time::timeout(Duration::from_secs(1), client.read_to_end(&mut output))
+            .await
+            .expect("relay should not wait for upstream keep-alive close")
+            .unwrap();
+        drop(upstream_writer);
+        server_task.await.expect("server task");
+
+        let output_text = String::from_utf8_lossy(&output);
+        assert!(
+            output_text.contains("x-capsule-client-nonce: nonce-under-test\r\n"),
+            "public-proxy Responses-JSON response must echo the client nonce header: {output_text}"
+        );
+        assert!(
+            output_text.contains("x-capsule-nonce-origin: frontend\r\n"),
+            "public-proxy Responses-JSON response must echo the nonce origin marker: {output_text}"
+        );
+        // Same regression as the chat-JSON adapter's test above, but on the
+        // Responses-API adapter: the served-leg X-Capsule-Id marker must
+        // survive this rebuild too, or a routing peer reads no capsule id
+        // back and correlates nothing to this exchange.
+        assert!(
+            output_text.contains("x-capsule-id: capsule-chatcmpl-a\r\n"),
+            "public-proxy Responses-JSON response must preserve the upstream X-Capsule-Id: {output_text}"
         );
     }
 
