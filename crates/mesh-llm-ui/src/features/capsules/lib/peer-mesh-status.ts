@@ -73,12 +73,14 @@ export function deriveMeshStatus(
  *  exchange has ever happened. Reuses `findMeshPeer`'s own best-effort
  *  matching (the same logic `deriveMeshStatus` already applies per row) so
  *  the group split can never disagree with what a row's own mesh-status
- *  lookup found. */
+ *  lookup found. Excludes this node's own self entry (`status-adapter`'s
+ *  `adaptSelfPeer`, `role: 'you'`) -- a node never exchanges with itself,
+ *  so it can never be "unused" in the counterparty sense this group means. */
 export function advertisedOnlyPeers(paneBRows: readonly PaneBRow[], peers: readonly Peer[]): Peer[] {
   const dealtWithMeshIds = new Set(
     paneBRows.map((row) => findMeshPeer(peerDisplayId(row) ?? '', peers)?.id).filter((id): id is string => Boolean(id))
   )
-  return peers.filter((peer) => !dealtWithMeshIds.has(peer.id))
+  return peers.filter((peer) => peer.role !== 'you' && !dealtWithMeshIds.has(peer.id))
 }
 
 export type PeerMeshStatusIndex = {
