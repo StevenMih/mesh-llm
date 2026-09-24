@@ -234,6 +234,55 @@ describe('ExchangeStreamRow — six states render distinct text/status/action', 
   })
 })
 
+describe('ExchangeStreamRow — bilateral-retention-decay-property (agent-action-capsule @7f8a78d8, Steven-ratified 2026-09-23): one-half-unavailable renders the honest OPEN sub-state, never CONTRADICTED, never CLOSED/"attested by both"', () => {
+  it('not_found (peer legitimately holds nothing -- retention decay or never held) renders OPEN · pending fetch', () => {
+    const row = makeRow('open_pending_fetch')
+    vi.mocked(usePeerLedgerRecompute).mockReturnValue({
+      status: 'not_found',
+      idMatch: null,
+      signatureOk: null,
+      peerRecord: null,
+      fetch: vi.fn()
+    })
+    render(<ExchangeStreamRow onAction={vi.fn()} {...toggleProps()} rail={NO_RAIL} row={row} />)
+    expect(screen.getByText('OPEN · pending fetch')).toBeInTheDocument()
+    expect(screen.queryByText('CONTRADICTED')).not.toBeInTheDocument()
+    expect(screen.queryByText('CLOSED')).not.toBeInTheDocument()
+  })
+
+  it('error (transport/verification failure -- not a disagreement) renders OPEN · pending fetch, never CONTRADICTED', () => {
+    const row = makeRow('open_pending_fetch')
+    vi.mocked(usePeerLedgerRecompute).mockReturnValue({
+      status: 'error',
+      idMatch: null,
+      signatureOk: null,
+      peerRecord: null,
+      errorMessage: 'transport error',
+      fetch: vi.fn()
+    })
+    render(<ExchangeStreamRow onAction={vi.fn()} {...toggleProps()} rail={NO_RAIL} row={row} />)
+    expect(screen.getByText('OPEN · pending fetch')).toBeInTheDocument()
+    expect(screen.queryByText('CONTRADICTED')).not.toBeInTheDocument()
+  })
+
+  it('MUTANT: the only shape this row ever renders CONTRADICTED for is a completed fetch whose recomputed id demonstrably disagrees -- every other unavailable shape must go red if it starts reading CONTRADICTED', () => {
+    const row = makeRow('open_pending_fetch')
+    const unavailableShapes: PeerRecomputeState[] = [
+      { status: 'not_fetched', idMatch: null, signatureOk: null, peerRecord: null, fetch: vi.fn() },
+      { status: 'fetching', idMatch: null, signatureOk: null, peerRecord: null, fetch: vi.fn() },
+      { status: 'not_found', idMatch: null, signatureOk: null, peerRecord: null, fetch: vi.fn() },
+      { status: 'error', idMatch: null, signatureOk: null, peerRecord: null, fetch: vi.fn() },
+      { status: 'found', idMatch: null, signatureOk: null, peerRecord: { x: 1 }, fetch: vi.fn() }
+    ]
+    for (const recompute of unavailableShapes) {
+      vi.mocked(usePeerLedgerRecompute).mockReturnValue(recompute)
+      const { unmount } = render(<ExchangeStreamRow onAction={vi.fn()} {...toggleProps()} rail={NO_RAIL} row={row} />)
+      expect(screen.queryByText('CONTRADICTED')).not.toBeInTheDocument()
+      unmount()
+    }
+  })
+})
+
 describe('ExchangeStreamRow — [ledger-T2-counterparty-not-recorded] counterparty field', () => {
   it('renders the node id when a counterparty is attributed', () => {
     render(<ExchangeStreamRow onAction={vi.fn()} {...toggleProps()} rail={NO_RAIL} row={makeRow('closed')} />)
