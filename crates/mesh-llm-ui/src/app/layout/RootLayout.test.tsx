@@ -5,6 +5,7 @@ import { AppProviders } from '@/app/providers/AppProviders'
 import { RootLayout } from '@/app/layout/RootLayout'
 import type { PluginSummaryRaw, PluginWebUiStateRaw } from '@/lib/api/plugin-types'
 import { pluginKeys } from '@/lib/query/query-keys'
+import { env } from '@/lib/env'
 
 const routerState = vi.hoisted(() => ({ pathname: '/' }))
 const navigateSpy = vi.hoisted(() => vi.fn())
@@ -182,6 +183,44 @@ describe('RootLayout', () => {
     )
     expect(JSON.stringify(topNavProps)).toContain('invite-token-123')
     expect(footerSpy.mock.calls.at(-1)?.[0]).toEqual(expect.objectContaining({ version: '0.99.0' }))
+  })
+
+  it('live mode with /api/status not yet resolved shows "checking…", never the compiled-in build version', () => {
+    useStatusQuerySpy.mockReturnValue({ data: undefined })
+
+    renderRootLayout('live')
+
+    expect(topNavSpy.mock.calls.at(-1)?.[0]).toEqual(expect.objectContaining({ version: 'checking…' }))
+    expect(footerSpy.mock.calls.at(-1)?.[0]).toEqual(expect.objectContaining({ version: 'checking…' }))
+    expect(topNavSpy.mock.calls.at(-1)?.[0]).not.toEqual(expect.objectContaining({ version: env.appVersion }))
+  })
+
+  it('MUTANT: live mode never falls back to the compiled-in build version, even once /api/status has answered without one', () => {
+    useStatusQuerySpy.mockReturnValue({
+      data: {
+        node_id: 'node-1',
+        node_state: 'serving',
+        model_name: 'Qwen-Test',
+        peers: [],
+        models: [],
+        my_vram_gb: 24,
+        api_port: 3131,
+        gpus: [],
+        serving_models: []
+        // no `version` field -- the running host answered, just without one.
+      }
+    })
+
+    renderRootLayout('live')
+
+    expect(topNavSpy.mock.calls.at(-1)?.[0]).toEqual(expect.objectContaining({ version: 'checking…' }))
+    expect(topNavSpy.mock.calls.at(-1)?.[0]).not.toEqual(expect.objectContaining({ version: env.appVersion }))
+  })
+
+  it('harness mode (no live host to ask) shows the compiled-in build version', () => {
+    renderRootLayout('harness')
+
+    expect(topNavSpy.mock.calls.at(-1)?.[0]).toEqual(expect.objectContaining({ version: env.appVersion }))
   })
 
   it('does not replace the configured API target with a public mesh node id', () => {
