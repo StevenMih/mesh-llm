@@ -115,7 +115,10 @@ describe('deriveRightCellState — finding 1 (2026-09-23 assessment): CLOSED req
 
   it('idMatch true, signature verified, digests cite, but with no localRecord passed at all -- NOT CLOSED (never a fabricated match against nothing)', () => {
     const row = paneCRow()
-    const state = deriveRightCellState(row, fetched({ idMatch: true, signatureOk: true, peerRecord: citingPeerRecord() }))
+    const state = deriveRightCellState(
+      row,
+      fetched({ idMatch: true, signatureOk: true, peerRecord: citingPeerRecord() })
+    )
     expect(state.kind).not.toBe('closed')
     expect(state.kind).toBe('open_pending_fetch')
   })
@@ -141,6 +144,48 @@ describe('deriveRightCellState — finding 1 (2026-09-23 assessment): CLOSED req
   it('theirs.state === absent is open_not_asked regardless of any fetch state (no join key exists to fetch from)', () => {
     const row = paneCRow({ theirs: { state: 'absent', capsule_id: null } })
     expect(deriveRightCellState(row, fetched()).kind).toBe('open_not_asked')
+  })
+})
+
+describe('deriveRightCellState — bilateral-retention-decay-property (agent-action-capsule @7f8a78d8, Steven-ratified 2026-09-23): one-half-unavailable MUST NOT collapse into both-present-disagreeing', () => {
+  it('a peer fetch that legitimately comes back not_found (their retention decayed the record away, or they never held it) renders OPEN — never CONTRADICTED, never CLOSED/"attested by both"', () => {
+    const row = paneCRow()
+    const state = deriveRightCellState(
+      row,
+      fetched({ status: 'not_found', idMatch: null, signatureOk: null, peerRecord: null })
+    )
+    expect(state.kind).not.toBe('contradicted')
+    expect(state.kind).not.toBe('closed')
+    expect(state.kind).toBe('open_pending_fetch')
+  })
+
+  it('an errored peer fetch (transport/verification failure, not a disagreement) renders OPEN — never CONTRADICTED', () => {
+    const row = paneCRow()
+    const state = deriveRightCellState(
+      row,
+      fetched({ status: 'error', idMatch: null, signatureOk: null, peerRecord: null })
+    )
+    expect(state.kind).not.toBe('contradicted')
+    expect(state.kind).toBe('open_pending_fetch')
+  })
+
+  it('MUTANT: only an ACTUAL fetched-and-compared idMatch===false is CONTRADICTED — every other "half unavailable" shape (not_fetched, fetching, not_found, error, or a fetch whose own id-recompute could not run) must go red if it starts reading as CONTRADICTED', () => {
+    const row = paneCRow()
+    const unavailableShapes: PeerRecomputeState[] = [
+      fetched({ status: 'not_fetched', idMatch: null, signatureOk: null, peerRecord: null }),
+      fetched({ status: 'fetching', idMatch: null, signatureOk: null, peerRecord: null }),
+      fetched({ status: 'not_found', idMatch: null, signatureOk: null, peerRecord: null }),
+      fetched({ status: 'error', idMatch: null, signatureOk: null, peerRecord: null }),
+      fetched({ status: 'found', idMatch: null, signatureOk: null, peerRecord: { x: 1 } })
+    ]
+    for (const recompute of unavailableShapes) {
+      expect(deriveRightCellState(row, recompute).kind).not.toBe('contradicted')
+    }
+    // The one and only shape that IS a real disagreement: a completed
+    // fetch whose recomputed id demonstrably does not match the peer's
+    // own claimed id -- the "both-present-disagreeing" case the property
+    // says MUST stay a contradiction, never downgraded to missing-half.
+    expect(deriveRightCellState(row, fetched({ status: 'found', idMatch: false })).kind).toBe('contradicted')
   })
 })
 
