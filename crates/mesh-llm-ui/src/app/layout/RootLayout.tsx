@@ -88,7 +88,13 @@ export function RootLayout({ data = SHELL_HARNESS }: RootLayoutProps = {}) {
     () => (liveMode ? resolveLiveTopNavData(statusQuery.data) : resolveHarnessTopNavData(data)),
     [liveMode, statusQuery.data, data]
   )
-  const displayVersion = liveMode ? (statusQuery.data?.version ?? env.appVersion) : env.appVersion
+  // Live mode never shows the version this bundle was compiled with -- the
+  // host binary a console build ships against can (and does) drift from the
+  // one actually running, so `env.appVersion` would silently lie about which
+  // version is live. Until `/api/status` answers, that is stated honestly
+  // ('checking…', same idiom as `CapsuleCard.tsx`'s 'sealed — checking…'),
+  // never backfilled with a compiled-in guess.
+  const displayVersion = liveMode ? (statusQuery.data?.version ?? 'checking…') : env.appVersion
   const apiTargetLiveness = resolveApiTargetLiveness(statusQuery, liveMode)
   const enabledConfigurationTabs = useMemo(
     () =>
