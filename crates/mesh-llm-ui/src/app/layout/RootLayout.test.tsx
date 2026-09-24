@@ -323,7 +323,10 @@ describe('RootLayout', () => {
   })
 })
 
-function pluginWebUi(state: PluginWebUiStateRaw['state']): PluginWebUiStateRaw {
+function pluginWebUi(
+  state: PluginWebUiStateRaw['state'],
+  options: { placement?: 'primary' | 'auxiliary'; primaryTabEnabled?: boolean } = {}
+): PluginWebUiStateRaw {
   if (state === 'ready') {
     return {
       state: 'ready',
@@ -336,11 +339,13 @@ function pluginWebUi(state: PluginWebUiStateRaw['state']): PluginWebUiStateRaw {
           label: 'Blackboard dashboard',
           route: 'dashboard',
           bundle_id: 'main',
-          entry_script: 'dashboard.js'
+          entry_script: 'dashboard.js',
+          placement: options.placement
         }
       ],
       config_sections: [],
-      asset_base_url: '/api/plugins/blackboard/web-ui/assets/'
+      asset_base_url: '/api/plugins/blackboard/web-ui/assets/',
+      primary_tab_enabled: options.primaryTabEnabled ?? false
     }
   }
 
@@ -349,7 +354,8 @@ function pluginWebUi(state: PluginWebUiStateRaw['state']): PluginWebUiStateRaw {
     declared: state !== 'none',
     enabled: state !== 'disabled',
     available: false,
-    unavailable_reason: 'not eligible'
+    unavailable_reason: 'not eligible',
+    primary_tab_enabled: false
   }
 }
 

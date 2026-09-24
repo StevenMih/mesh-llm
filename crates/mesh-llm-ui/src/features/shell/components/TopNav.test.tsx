@@ -380,6 +380,54 @@ describe('TopNav', () => {
     })
   })
 
+  it('renders a promoted plugin page as a primary tab alongside Network and Chat', async () => {
+    const user = userEvent.setup()
+    const onPluginPageChange = vi.fn()
+
+    renderTopNav({
+      onPluginPageChange,
+      primaryPluginTabs: [
+        {
+          pluginName: 'blackboard',
+          pageId: 'dashboard',
+          label: 'Blackboard dashboard',
+          href: '/plugins/blackboard/dashboard',
+          active: true
+        }
+      ]
+    })
+
+    expect(screen.getByRole('link', { name: 'Network' })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Chat' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Plugin pages' })).not.toBeInTheDocument()
+
+    const primaryPluginLink = screen.getByRole('link', { name: 'Blackboard dashboard' })
+    expect(primaryPluginLink).toHaveAttribute('href', '/plugins/blackboard/dashboard')
+    expect(primaryPluginLink).toHaveAttribute('aria-current', 'page')
+
+    await user.click(primaryPluginLink)
+
+    expect(onPluginPageChange).toHaveBeenCalledWith({
+      pluginName: 'blackboard',
+      pageId: 'dashboard',
+      label: 'Blackboard dashboard',
+      href: '/plugins/blackboard/dashboard',
+      active: true
+    })
+  })
+
+  it('keeps a promoted primary plugin tab separate from the auxiliary plugin menu', async () => {
+    renderTopNav({
+      primaryPluginTabs: [
+        { pluginName: 'blackboard', pageId: 'dashboard', label: 'Blackboard dashboard', href: '/plugins/blackboard/dashboard' }
+      ],
+      pluginNavItems: [{ pluginName: 'notes', pageId: 'notes', label: 'Notes', href: '/plugins/notes/notes' }]
+    })
+
+    expect(screen.getByRole('link', { name: 'Blackboard dashboard' })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Notes' })).toBeInTheDocument()
+  })
+
   it('groups multiple plugin pages in the auxiliary navigation menu', async () => {
     const user = userEvent.setup()
 
