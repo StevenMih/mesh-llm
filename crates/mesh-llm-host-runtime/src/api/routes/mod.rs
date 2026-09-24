@@ -9,6 +9,7 @@ mod mesh_hook;
 mod model_interests;
 mod model_targets;
 mod objects;
+mod openai_exchanges;
 mod path_picker;
 mod plugins;
 pub(crate) mod runtime;
@@ -119,6 +120,10 @@ pub(super) const DISPATCH_REQUEST: DispatchRequestFn =
                 }
                 ("GET", "/api/search") => {
                     search::handle(stream, path).await?;
+                    Ok(true)
+                }
+                ("GET", "/api/openai/exchanges/recent") => {
+                    openai_exchanges::handle(stream, state, path).await?;
                     Ok(true)
                 }
                 ("GET", "/api/model-interests") | ("POST", "/api/model-interests") => {

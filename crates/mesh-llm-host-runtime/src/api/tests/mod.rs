@@ -88,6 +88,7 @@ include!("model_targets.rs");
 include!("wakeable_inventory.rs");
 include!("status_metrics.rs");
 include!("openai_smoke.rs");
+include!("openai_exchanges_route.rs");
 include!("ui_routes.rs");
 include!("runtime_events_v1.rs");
 include!("runtime_capabilities_parity.rs");

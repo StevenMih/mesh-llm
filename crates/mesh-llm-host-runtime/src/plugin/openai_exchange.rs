@@ -4,6 +4,7 @@
 //! transport, so a plugin sees one unified stream regardless of which
 //! in-process Rust hook interface produced an event.
 
+use std::collections::VecDeque;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -12,6 +13,7 @@ use openai_frontend::{
     ChatExchangeRoute, OpenAiHookPolicy,
 };
 use serde::Serialize;
+use tokio::sync::Mutex;
 
 use super::PluginManager;
 
@@ -631,6 +633,114 @@ mod canonical_digest;
 pub use canonical_digest::request_body_digest;
 use canonical_digest::{canonical_digest_bytes, checked_canonical_digest_bytes};
 
+/// How many terminal envelopes [`RecentOpenAiExchanges`] retains. Kept small
+/// and in-memory-only — this is a management-API convenience for "what
+/// recently happened," not a durable audit log. Anything needing retention
+/// beyond a host restart, or a bound wider than this, already has
+/// [`OpenAiExchangeChannel`] to subscribe to directly.
+const RECENT_EXCHANGE_RING_CAPACITY: usize = 200;
+
+/// The projection of a terminal [`OpenAiExchangeEnvelope`] the
+/// `/api/openai/exchanges/recent` route exposes. Not a new wire shape: every
+/// field here is copied verbatim from a field the envelope (or its
+/// `serving_provenance`) already carries, under the same name — this is a
+/// narrower view, not a re-derived one.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct RecentExchangeEvent {
+    pub exchange_id: String,
+    pub dispatch_path: OpenAiExchangeDispatchPath,
+    pub model: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<u16>,
+    /// From `serving_provenance.served_by_node_id` — absent exactly when the
+    /// envelope carried no serving provenance (see
+    /// [`OpenAiExchangeEnvelope::serving_provenance`] for when that is).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub served_by_node_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usage: Option<ExchangeUsage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_digest: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response_digest: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_calls_digest: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_digest: Option<String>,
+}
+
+impl From<&OpenAiExchangeEnvelope> for RecentExchangeEvent {
+    fn from(envelope: &OpenAiExchangeEnvelope) -> Self {
+        Self {
+            exchange_id: envelope.exchange_id.clone(),
+            dispatch_path: envelope.dispatch_path,
+            model: envelope.model.clone(),
+            status: envelope.status,
+            served_by_node_id: envelope
+                .serving_provenance
+                .as_ref()
+                .map(|provenance| provenance.served_by_node_id.clone()),
+            usage: envelope.usage,
+            request_digest: envelope.request_digest.clone(),
+            response_digest: envelope.response_digest.clone(),
+            tool_calls_digest: envelope.tool_calls_digest.clone(),
+            reasoning_digest: envelope.reasoning_digest.clone(),
+        }
+    }
+}
+
+/// A small in-memory, bounded ring of terminal [`OpenAiExchangeEnvelope`]s,
+/// recorded as a side effect of the same [`OpenAiExchangeChannel::publish`]
+/// call that already delivers them to subscribing plugins — so the
+/// management API can answer "what recently happened on
+/// `openai.exchange.v1`" without a plugin needing to be running to observe
+/// it. Capacity is fixed at [`RECENT_EXCHANGE_RING_CAPACITY`]; see that
+/// constant's doc for why this stays a small convenience buffer rather than
+/// a durable store.
+#[derive(Clone, Default)]
+pub struct RecentOpenAiExchanges {
+    ring: Arc<Mutex<VecDeque<OpenAiExchangeEnvelope>>>,
+}
+
+impl RecentOpenAiExchanges {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Record a terminal envelope, evicting the oldest entry once the ring
+    /// is at capacity. A no-op for `EffectiveRequest` envelopes — this ring
+    /// exists to answer "what recently finished," not to track in-flight
+    /// requests.
+    async fn record(&self, event: &OpenAiExchangeEnvelope) {
+        if event.phase != OpenAiExchangePhase::Terminal {
+            return;
+        }
+        let mut ring = self.ring.lock().await;
+        if ring.len() == RECENT_EXCHANGE_RING_CAPACITY {
+            ring.pop_front();
+        }
+        ring.push_back(event.clone());
+    }
+
+    /// The most recent terminal envelopes, newest first, capped at `limit`.
+    pub async fn recent(&self, limit: usize) -> Vec<RecentExchangeEvent> {
+        let ring = self.ring.lock().await;
+        ring.iter()
+            .rev()
+            .take(limit)
+            .map(RecentExchangeEvent::from)
+            .collect()
+    }
+}
+
+impl PluginManager {
+    /// The most recent terminal `openai.exchange.v1` envelopes this node has
+    /// published, newest first — backs `GET /api/openai/exchanges/recent`.
+    pub async fn recent_openai_exchanges(&self, limit: usize) -> Vec<RecentExchangeEvent> {
+        self.inner.recent_openai_exchanges.recent(limit).await
+    }
+}
+
 /// Publishes [`OpenAiExchangeEnvelope`]s to whatever is subscribed on
 /// [`OPENAI_EXCHANGE_CHANNEL`] — an out-of-process plugin in production, a
 /// recording double in tests. Fire-and-forget by design, mirroring
@@ -654,6 +764,7 @@ pub trait OpenAiExchangeChannel: Send + Sync + 'static {
 #[async_trait]
 impl OpenAiExchangeChannel for PluginManager {
     async fn publish(&self, event: &OpenAiExchangeEnvelope) {
+        self.inner.recent_openai_exchanges.record(event).await;
         let body = match serde_json::to_vec(event) {
             Ok(body) => body,
             Err(error) => {
@@ -1837,5 +1948,149 @@ mod tests {
         assert!(envelope.response_digest.is_none());
         assert!(envelope.tool_calls_digest.is_none());
         assert!(envelope.reasoning_digest.is_none());
+    }
+
+    // --- RecentOpenAiExchanges: the bounded ring `/api/openai/exchanges/recent`
+    // reads from. ---
+
+    fn terminal_envelope(exchange_id: &str) -> OpenAiExchangeEnvelope {
+        OpenAiExchangeEnvelope::terminal(
+            exchange_id,
+            OpenAiExchangeDispatchPath::RawProxy,
+            "llama-3.2-3b-instruct",
+            Some(200),
+            None,
+            None,
+        )
+    }
+
+    /// Recorded terminal envelopes come back newest first — the opposite of
+    /// insertion order — since that's the order a "recent events" list needs.
+    #[tokio::test]
+    async fn recent_returns_newest_first() {
+        let ring = RecentOpenAiExchanges::new();
+        ring.record(&terminal_envelope("exch-1")).await;
+        ring.record(&terminal_envelope("exch-2")).await;
+        ring.record(&terminal_envelope("exch-3")).await;
+
+        let recent = ring.recent(10).await;
+        let ids: Vec<&str> = recent
+            .iter()
+            .map(|event| event.exchange_id.as_str())
+            .collect();
+        assert_eq!(ids, vec!["exch-3", "exch-2", "exch-1"]);
+    }
+
+    /// An `EffectiveRequest` envelope is never recorded — the ring exists to
+    /// answer "what recently finished," not to track in-flight requests.
+    #[tokio::test]
+    async fn effective_request_envelopes_are_not_recorded() {
+        let ring = RecentOpenAiExchanges::new();
+        ring.record(&OpenAiExchangeEnvelope::effective(
+            "exch-1",
+            OpenAiExchangeDispatchPath::RawProxy,
+            "m",
+        ))
+        .await;
+
+        assert!(ring.recent(10).await.is_empty());
+    }
+
+    /// Past `RECENT_EXCHANGE_RING_CAPACITY` entries, the OLDEST is evicted —
+    /// confirmed here with a ring shrunk to a size a test can actually fill,
+    /// by asserting directly against the real capacity constant rather than a
+    /// hand-picked smaller one.
+    #[tokio::test]
+    async fn oldest_entry_is_evicted_once_the_ring_is_at_capacity() {
+        let ring = RecentOpenAiExchanges::new();
+        for i in 0..RECENT_EXCHANGE_RING_CAPACITY {
+            ring.record(&terminal_envelope(&format!("exch-{i}"))).await;
+        }
+        // One more push: "exch-0" (the oldest) must be gone, and the ring
+        // must not have grown past capacity.
+        ring.record(&terminal_envelope("exch-overflow")).await;
+
+        let recent = ring.recent(RECENT_EXCHANGE_RING_CAPACITY + 1).await;
+        assert_eq!(recent.len(), RECENT_EXCHANGE_RING_CAPACITY);
+        assert_eq!(recent[0].exchange_id, "exch-overflow");
+        assert!(
+            recent.iter().all(|event| event.exchange_id != "exch-0"),
+            "oldest entry must have been evicted, not just left off by the limit"
+        );
+    }
+
+    /// `recent(limit)` caps the returned count even when the ring holds more.
+    #[tokio::test]
+    async fn recent_respects_the_requested_limit() {
+        let ring = RecentOpenAiExchanges::new();
+        for i in 0..5 {
+            ring.record(&terminal_envelope(&format!("exch-{i}"))).await;
+        }
+
+        assert_eq!(ring.recent(2).await.len(), 2);
+    }
+
+    /// [`RecentExchangeEvent`] copies fields verbatim off the source envelope
+    /// — including `served_by_node_id` pulled out of `serving_provenance` —
+    /// under the same names, never re-derived or renamed.
+    #[test]
+    fn recent_exchange_event_projects_fields_verbatim_from_the_envelope() {
+        let envelope = terminal_envelope("exch-proj")
+            .with_serving_provenance(ServingProvenance {
+                served_by_node_id: "node-xyz".to_string(),
+                hostname: None,
+                quantization: None,
+                architecture: None,
+                context_length: None,
+                parameter_size: None,
+                layer_count: None,
+                model_identity_hash: None,
+                model_canonical_ref: None,
+                model_revision: None,
+                weights_digest: None,
+                gpu: None,
+                vram_bytes: None,
+                is_soc: None,
+            })
+            .with_usage(ExchangeUsage {
+                prompt_tokens: 10,
+                cached_prompt_tokens: None,
+                completion_tokens: 2,
+                total_tokens: 12,
+            })
+            .with_request_digest("req-digest".to_string());
+
+        let event = RecentExchangeEvent::from(&envelope);
+        assert_eq!(event.exchange_id, "exch-proj");
+        assert_eq!(event.model, "llama-3.2-3b-instruct");
+        assert_eq!(event.status, Some(200));
+        assert_eq!(event.served_by_node_id.as_deref(), Some("node-xyz"));
+        assert_eq!(event.usage, Some(envelope.usage.unwrap()));
+        assert_eq!(event.request_digest.as_deref(), Some("req-digest"));
+    }
+
+    /// No `serving_provenance` on the source envelope -> `served_by_node_id`
+    /// is absent, never fabricated — matches the honesty contract the source
+    /// field itself documents.
+    #[test]
+    fn recent_exchange_event_omits_served_by_node_id_when_no_serving_provenance() {
+        let event = RecentExchangeEvent::from(&terminal_envelope("exch-no-prov"));
+        assert!(event.served_by_node_id.is_none());
+        let value = serde_json::to_value(&event).expect("serialize");
+        assert!(value.get("served_by_node_id").is_none());
+    }
+
+    /// `PluginManager::publish` (the production `OpenAiExchangeChannel` impl)
+    /// records into the ring as a side effect, alongside broadcasting to
+    /// plugins — proven end to end, not just against the ring type directly.
+    #[tokio::test]
+    async fn plugin_manager_publish_records_terminal_events_into_the_recent_ring() {
+        let plugin_manager = PluginManager::for_test_summaries(Vec::new());
+
+        OpenAiExchangeChannel::publish(&plugin_manager, &terminal_envelope("exch-live")).await;
+
+        let recent = plugin_manager.recent_openai_exchanges(10).await;
+        assert_eq!(recent.len(), 1);
+        assert_eq!(recent[0].exchange_id, "exch-live");
     }
 }

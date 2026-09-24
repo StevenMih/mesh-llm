@@ -117,6 +117,7 @@ pub(in crate::plugin) struct PluginManagerInner {
     pub(in crate::plugin) endpoint_health: Arc<Mutex<BTreeMap<String, EndpointHealthState>>>,
     pub(in crate::plugin) runtime_data: RuntimeDataCollector,
     pub(in crate::plugin) rpc_bridge: Arc<Mutex<Option<Arc<dyn PluginRpcBridge>>>>,
+    pub(in crate::plugin) recent_openai_exchanges: openai_exchange::RecentOpenAiExchanges,
     pub(in crate::plugin) shutting_down: AtomicBool,
     #[cfg(test)]
     pub(in crate::plugin) bridged_plugins: BTreeSet<String>,
@@ -157,6 +158,7 @@ impl PluginManager {
                 endpoint_health: Arc::new(Mutex::new(BTreeMap::new())),
                 runtime_data,
                 rpc_bridge,
+                recent_openai_exchanges: openai_exchange::RecentOpenAiExchanges::new(),
                 shutting_down: AtomicBool::new(false),
                 #[cfg(test)]
                 bridged_plugins: BTreeSet::new(),
@@ -371,6 +373,7 @@ impl PluginManager {
                 endpoint_health: Arc::new(Mutex::new(BTreeMap::new())),
                 runtime_data: RuntimeDataCollector::new(),
                 rpc_bridge: Arc::new(Mutex::new(Some(bridge))),
+                recent_openai_exchanges: openai_exchange::RecentOpenAiExchanges::new(),
                 shutting_down: AtomicBool::new(false),
                 bridged_plugins: plugin_names
                     .iter()
@@ -396,6 +399,7 @@ impl PluginManager {
                 endpoint_health: Arc::new(Mutex::new(BTreeMap::new())),
                 runtime_data: RuntimeDataCollector::new(),
                 rpc_bridge: Arc::new(Mutex::new(None)),
+                recent_openai_exchanges: openai_exchange::RecentOpenAiExchanges::new(),
                 shutting_down: AtomicBool::new(false),
                 bridged_plugins: BTreeSet::new(),
                 test_endpoints: Arc::new(Mutex::new(Vec::new())),
