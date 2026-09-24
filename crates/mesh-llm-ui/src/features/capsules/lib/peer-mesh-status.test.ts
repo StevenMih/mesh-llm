@@ -58,6 +58,12 @@ describe('advertisedOnlyPeers', () => {
     const only = peer({ id: 'aa11bb22cc33dd44' })
     expect(advertisedOnlyPeers([paneBRow('node:aa11bb22cc33dd44')], [only])).toEqual([])
   })
+
+  it('excludes this node\'s own self entry (role "you"), even with no dealt-with row', () => {
+    const self = peer({ id: '9d2590f7aabbccdd', shortId: '9d2590f7', role: 'you' })
+    const unused = peer({ id: 'ff99ee88dd77cc66', shortId: 'ff99ee88', hostname: 'unused.local' })
+    expect(advertisedOnlyPeers([], [self, unused])).toEqual([unused])
+  })
 })
 
 describe('deriveMeshStatus — carries latency provenance through the join', () => {
