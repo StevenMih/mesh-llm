@@ -5,6 +5,8 @@
 // peer-asserted capsule id with no bytes fetched yet is its own honest
 // state, not a fast path into `closed`.
 import type { PaneCRow } from '@/features/capsules/api/sidecarTypes'
+import type { CapsuleRecord } from '@/features/capsules/api/types'
+import { isDigestShaped } from '@/features/capsules/lib/canonical'
 import type { PeerRecomputeState } from '@/features/capsules/lib/recompute-identity'
 
 export type RightCellStateKind =
@@ -42,31 +44,40 @@ const EVIDENCE_OUTCOME_TO_KIND: Record<string, RightCellStateKind> = {
  * If the row already carries `theirs.evidence_outcome` (one of the four
  * evidence-request outcomes named above), that value wins outright.
  *
- * **Finding 1 (2026-09-23 assessment): CLOSED requires a held artifact, not
- * a peer-asserted id.** `theirs.state === 'NOT_CHECKED'` (the only
- * non-absent state `theirs_cell` -- `capsule_panes_native.rs` -- emits)
- * means a peer-asserted `capsule_id` is on the record and is fetchable, and
- * nothing more: no bytes are held, nothing has been checked. Reading that
- * alone as "artifact, agrees" rendered ~110 of 135 live rows CLOSED with
- * zero corroboration ever performed -- the one claim this tab exists to
- * make ("we both say so"), true when it was false. CLOSED/CONTRADICTED are
- * now reachable only via `theirsRecompute`, the record of an ACTUAL
- * `mesh_ledger_fetch` this browser ran (`recompute-identity.ts`):
- *   - `status === 'found'` and `idMatch === true` (the peer's bytes,
- *     independently recomputed here, produce the exact `capsule_id` they
- *     asserted, and the signature over them verifies) -> CLOSED. This
- *     verifies the fetched artifact is authentic and unmodified; it does
- *     not yet cross-check every one of its properties against `mine`'s
- *     value (`security-checks-view.ts`'s `buildCommitsToRows` does that
- *     per-field once `peerRecord` is held) -- an honest, narrower claim
- *     than the six-state table's "cites your half by digest" until that
- *     cross-reference is wired.
+ * **Finding 1 (2026-09-23 assessment, reworked 2026-09-23 bounce): CLOSED
+ * requires a held, SIGNED, and CITING artifact, not just a matching id.**
+ * `theirs.state === 'NOT_CHECKED'` (the only non-absent state `theirs_cell`
+ * -- `capsule_panes_native.rs` -- emits) means a peer-asserted `capsule_id`
+ * is on the record and is fetchable, and nothing more: no bytes are held,
+ * nothing has been checked. Reading that alone as "artifact, agrees"
+ * rendered ~110 of 135 live rows CLOSED with zero corroboration ever
+ * performed -- the one claim this tab exists to make ("we both say so"),
+ * true when it was false. CLOSED/CONTRADICTED are now reachable only via
+ * `theirsRecompute`, the record of an ACTUAL `mesh_ledger_fetch` this
+ * browser ran (`recompute-identity.ts`):
  *   - `status === 'found'` and `idMatch === false` -> CONTRADICTED: the
  *     peer's own bytes don't produce the id they claimed for them.
- *   - anything else (not fetched, fetching, not_found, error, or a fetch
- *     whose id recompute itself couldn't run) leaves the row at
- *     `open_pending_fetch` below -- a fetch that hasn't resolved to a
- *     definite match/mismatch is not evidence of either.
+ *   - `status === 'found'` and `idMatch === true` but `signatureOk` is not
+ *     `true` (the bounce's own repro: `idMatch: true, signatureOk: false`
+ *     used to read CLOSED) -> not CLOSED. An id match with no verified
+ *     signature over the fetched bytes proves nothing was tampered with in
+ *     transit -- it is still an unauthenticated artifact, so it falls
+ *     through to `open_pending_fetch` below, same as a fetch that hasn't
+ *     resolved yet.
+ *   - `status === 'found'`, `idMatch === true`, `signatureOk === true`, AND
+ *     the peer's own fetched record actually cites `mine`'s
+ *     `effect.request_digest`/`effect.response_digest` (§6.2/L-G: "cites
+ *     your half by digest" is a claim about THOSE two fields, not a
+ *     byproduct of the id/signature check) -> CLOSED. `digestsCiteOurHalf`
+ *     below runs the SAME per-field comparison `security-checks-view.ts`'s
+ *     `buildCommitsToRows` already does for the CHECKS panel (peer record
+ *     absent the field, or `localRecord` missing/non-digest-shaped on our
+ *     own side, both read as "does not cite" -- never a fabricated match).
+ *   - anything else (not fetched, fetching, not_found, error, a fetch whose
+ *     id recompute itself couldn't run, or a verified-and-matching fetch
+ *     that doesn't cite our digests) leaves the row at `open_pending_fetch`
+ *     below -- a fetch that hasn't resolved to full corroboration is not
+ *     evidence of either CLOSED or CONTRADICTED.
  *
  * With no evidence_outcome and no confirmed fetch, `theirs.state`
  * distinguishes only two real facts -- **L-C: the right cell never renders
@@ -78,7 +89,46 @@ const EVIDENCE_OUTCOME_TO_KIND: Record<string, RightCellStateKind> = {
  *     their half") -- `open_asked`/`open_refused`/`open_absent` would all
  *     require a signed statement or ask-log this row carries none of.
  */
-export function deriveRightCellState(row: PaneCRow, theirsRecompute?: PeerRecomputeState): RightCellState {
+/** Reads a dotted-path string field off a loosely-typed record, `null` when
+ *  the path doesn't resolve to a non-empty string -- same discipline as
+ *  `security-checks-view.ts`'s own `recordString`. */
+function recordString(record: Record<string, unknown> | null | undefined, path: readonly string[]): string | null {
+  let cursor: unknown = record
+  for (const key of path) {
+    if (typeof cursor !== 'object' || cursor === null) return null
+    cursor = (cursor as Record<string, unknown>)[key]
+  }
+  return typeof cursor === 'string' && cursor.length > 0 ? cursor : null
+}
+
+/** §6.2/L-G: CLOSED's "cites your half by digest" claim, checked for real.
+ *  `ours` must actually be a digest (never `unavailable`/`not a digest`
+ *  read as a coincidental string match), and the peer's own fetched record
+ *  must carry that exact value at the same path -- absent on either side
+ *  reads as "does not cite", never a fabricated match. */
+function digestFieldCitesOurs(
+  localRecord: CapsuleRecord | null | undefined,
+  peerRecord: Record<string, unknown> | null,
+  path: readonly string[]
+): boolean {
+  const ours = recordString(localRecord, path)
+  if (!ours || !isDigestShaped(ours)) return false
+  return recordString(peerRecord, path) === ours
+}
+
+/** Both halves of §6.2/L-G's digest citation -- request AND response. */
+function digestsCiteOurHalf(localRecord: CapsuleRecord | null | undefined, peerRecord: Record<string, unknown> | null): boolean {
+  return (
+    digestFieldCitesOurs(localRecord, peerRecord, ['effect', 'request_digest']) &&
+    digestFieldCitesOurs(localRecord, peerRecord, ['effect', 'response_digest'])
+  )
+}
+
+export function deriveRightCellState(
+  row: PaneCRow,
+  theirsRecompute?: PeerRecomputeState,
+  localRecord?: CapsuleRecord | null
+): RightCellState {
   const outcome = row.theirs.evidence_outcome
   const mappedKind = outcome ? EVIDENCE_OUTCOME_TO_KIND[outcome] : undefined
   if (mappedKind) {
@@ -97,7 +147,9 @@ export function deriveRightCellState(row: PaneCRow, theirsRecompute?: PeerRecomp
   }
 
   if (theirsRecompute?.status === 'found' && theirsRecompute.idMatch !== null) {
-    return { kind: theirsRecompute.idMatch ? 'closed' : 'contradicted', date: null }
+    if (!theirsRecompute.idMatch) return { kind: 'contradicted', date: null }
+    const closed = theirsRecompute.signatureOk === true && digestsCiteOurHalf(localRecord, theirsRecompute.peerRecord)
+    return { kind: closed ? 'closed' : 'open_pending_fetch', date: null }
   }
 
   return { kind: 'open_pending_fetch', date: null }

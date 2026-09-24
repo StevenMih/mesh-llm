@@ -10,7 +10,21 @@ import type { ExchangeLedgerRow } from '@/features/capsules/lib/exchange-ledger'
 import type { RightCellStateKind } from '@/features/capsules/lib/exchange-row-state'
 import type { RailSegment } from '@/features/capsules/lib/exchange-stream'
 import type { PaneCRow } from '@/features/capsules/api/sidecarTypes'
+import type { CapsuleRecord } from '@/features/capsules/api/types'
 import { usePeerLedgerRecompute, type PeerRecomputeState } from '@/features/capsules/lib/recompute-identity'
+
+const REQUEST_DIGEST = 'a'.repeat(64)
+const RESPONSE_DIGEST = 'b'.repeat(64)
+
+/** Our own record, carrying the §6.2/L-G digests a peer's fetched record
+ *  must cite for `deriveRightCellState` to land on CLOSED. Passed via
+ *  `toggleProps()` on every render -- harmless for every non-`closed` kind,
+ *  since `deriveRightCellState` never reads `localRecord` unless
+ *  `idMatch`/`signatureOk` both already came back true. */
+const LOCAL_RECORD_WITH_DIGESTS: CapsuleRecord = {
+  capsule_id: 'mine-1',
+  effect: { request_digest: REQUEST_DIGEST, response_digest: RESPONSE_DIGEST }
+}
 
 // [mesh-console-evidence-tab-honesty-defects] finding 1: `ExchangeStreamRow`
 // now derives its own right-cell state from `row.raw` + a live
@@ -43,7 +57,13 @@ function fixturesFor(kind: RightCellStateKind): { theirs: PaneCRow['theirs']; re
     case 'closed':
       return {
         theirs: { state: 'NOT_CHECKED', capsule_id: 't'.repeat(64), peer_id: 'peer-1' },
-        recompute: { ...NOT_FETCHED, status: 'found', idMatch: true, signatureOk: true, peerRecord: {} }
+        recompute: {
+          ...NOT_FETCHED,
+          status: 'found',
+          idMatch: true,
+          signatureOk: true,
+          peerRecord: { effect: { request_digest: REQUEST_DIGEST, response_digest: RESPONSE_DIGEST } }
+        }
       }
     case 'contradicted':
       return {
@@ -120,7 +140,7 @@ const NO_RAIL: RailSegment = { hasRail: false, isSegmentStart: false }
 /** Every test needs these two now that the modal is gone -- named to make
  *  call sites read like "row props", not boilerplate. */
 function toggleProps() {
-  return { onToggleChecks: vi.fn(), onToggleContent: vi.fn() }
+  return { localRecord: LOCAL_RECORD_WITH_DIGESTS, onToggleChecks: vi.fn(), onToggleContent: vi.fn() }
 }
 
 describe('ExchangeStreamRow — L-A/L-B alarm styling', () => {
