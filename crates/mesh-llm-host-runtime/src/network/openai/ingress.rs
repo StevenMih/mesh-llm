@@ -235,25 +235,47 @@ fn exchange_output_digests_from_outcome(
 /// the model — the same narrow route fact path 1's `ChatExchangeRoute`
 /// carries. Mints the exchange id here, at admission, so it can pair this
 /// effective event with its terminal event even when concurrent raw-proxy
-/// requests share the same model. Returns `None` — no id minted, no publish
-/// — when nobody declares `openai.exchange.v1`: nothing downstream would
-/// ever see it.
+/// requests share the same model.
+///
+/// The id is always minted, regardless of `has_subscriber()`: the terminal
+/// event this pairs with (see the `publish_raw_proxy_terminal` call site)
+/// always gets recorded into `RecentOpenAiExchanges` so
+/// `/api/openai/exchanges/recent` has something to report even when no
+/// plugin is running — "nothing downstream would ever see it" stopped being
+/// true once that ring existed. Only the *effective* broadcast itself stays
+/// conditional on `has_subscriber()`: it is never recorded into the ring
+/// (`RecentOpenAiExchanges::record` is a no-op for `EffectiveRequest`
+/// envelopes), so there is still nothing downstream for it specifically when
+/// no plugin subscribes.
 async fn mint_and_publish_effective_raw_proxy(
     plugin_manager: &crate::plugin::PluginManager,
     model_name: &str,
-) -> Option<String> {
-    if !plugin_manager.has_subscriber().await {
-        return None;
-    }
+) -> String {
     let exchange_id = uuid::Uuid::new_v4().to_string();
-    plugin_manager
-        .publish(&OpenAiExchangeEnvelope::effective(
-            exchange_id.clone(),
-            OpenAiExchangeDispatchPath::RawProxy,
-            model_name,
-        ))
-        .await;
-    Some(exchange_id)
+    if plugin_manager.has_subscriber().await {
+        plugin_manager
+            .publish(&OpenAiExchangeEnvelope::effective(
+                exchange_id.clone(),
+                OpenAiExchangeDispatchPath::RawProxy,
+                model_name,
+            ))
+            .await;
+    }
+    exchange_id
+}
+
+/// Whether the host-served raw-proxy branch should mint an exchange id and
+/// record this chat exchange at all — independent of `has_subscriber()` (see
+/// [`mint_and_publish_effective_raw_proxy`]'s doc for why: the recent-events
+/// ring wants every real chat exchange this node serves, subscriber or not).
+/// `false` only when there is genuinely nothing to record: a tokenize
+/// request is not a chat exchange, and no `plugin_manager` means no
+/// `RecentOpenAiExchanges` ring exists to record into.
+fn should_record_raw_proxy_exchange(
+    is_tokenize_request: bool,
+    plugin_manager: Option<&crate::plugin::PluginManager>,
+) -> bool {
+    !is_tokenize_request && plugin_manager.is_some()
 }
 
 /// Map a `RemoteMesh` forwarded nonce's origin marker (see
@@ -1325,9 +1347,6 @@ async fn try_route_plugin_model(
             } else {
                 outcome
             };
-            let Some(exchange_id) = exchange_id else {
-                return final_outcome;
-            };
             // Bind the real request body digest when the parsed body is already
             // available (this path holds `request` by shared ref, so it does not
             // force parsing); `None` otherwise, never fabricated. The
@@ -1449,19 +1468,24 @@ async fn route_request(
         // canonical digest of the real request body, so one sealed capsule can
         // hold real model identity + real usage + real hardware + what was asked
         // together. Tokenize requests are not chat exchanges, so they are not
-        // announced. `plugin_manager` is `None` when no plugin is loaded, and
-        // even with one loaded nothing may declare `openai.exchange.v1` — in
-        // either case there is no subscriber, so skip minting an exchange id
-        // and, below, the body digest and served-model provenance lookup
-        // that only exist to build an event nobody would receive.
+        // announced.
+        //
+        // Minting/recording the exchange no longer depends on `has_subscriber`:
+        // the terminal event is what `RecentOpenAiExchanges` records into
+        // `/api/openai/exchanges/recent`, and that ring wants every real chat
+        // exchange this node serves, plugin or no plugin. Only the *effective*
+        // pre-dispatch broadcast (below) stays conditional on `has_subscriber` —
+        // it is never recorded into the ring, so there is genuinely nothing
+        // downstream for it specifically when no plugin subscribes.
         let has_subscriber = match ctx.plugin_manager {
             Some(plugin_manager) => plugin_manager.has_subscriber().await,
             None => false,
         };
-        let announce = (!request.is_tokenize_request() && has_subscriber)
-            .then_some(ctx.plugin_manager)
-            .flatten()
-            .map(|plugin_manager| (plugin_manager, uuid::Uuid::new_v4().to_string()));
+        let exchange =
+            should_record_raw_proxy_exchange(request.is_tokenize_request(), ctx.plugin_manager)
+                .then_some(ctx.plugin_manager)
+                .flatten()
+                .map(|plugin_manager| (plugin_manager, uuid::Uuid::new_v4().to_string()));
         // Digest the REAL request body up front, while the parsed body is still
         // in hand and before `route_model_request` streams it to the backend —
         // this is the one binding a downstream capsule needs to tie its
@@ -1469,14 +1493,14 @@ async fn route_request(
         // is idempotent; `None` when the request carried no JSON body (e.g. a
         // non-chat proxy passthrough), in which case no digest is forwarded
         // rather than a fabricated one.
-        let request_digest = announce.as_ref().and_then(|_| {
+        let request_digest = exchange.as_ref().and_then(|_| {
             request.ensure_body_json();
             request
                 .body_json
                 .as_ref()
                 .and_then(|body| request_body_digest(body, request.body_bytes.as_deref()))
         });
-        if let Some((plugin_manager, exchange_id)) = announce.as_ref() {
+        if has_subscriber && let Some((plugin_manager, exchange_id)) = exchange.as_ref() {
             plugin_manager
                 .publish(&OpenAiExchangeEnvelope::effective(
                     exchange_id.clone(),
@@ -1509,7 +1533,7 @@ async fn route_request(
             },
         )
         .await;
-        if let Some((plugin_manager, exchange_id)) = announce.as_ref() {
+        if let Some((plugin_manager, exchange_id)) = exchange.as_ref() {
             publish_raw_proxy_terminal(
                 ctx.node,
                 *plugin_manager,

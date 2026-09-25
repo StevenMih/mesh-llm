@@ -4,6 +4,7 @@ use crate::logging::{
     LoggingService, OpenAiLifecycleAttachment, RawMeshLifecycleOwners, RawMeshRequestLifecycle,
     TerminalOutcome,
 };
+use crate::plugin;
 use crate::plugin::openai_exchange::{OpenAiExchangeChannel, OpenAiExchangeEnvelope};
 use async_trait::async_trait;
 use mesh_llm_events::logging::{events::LifecycleEvent, identifiers::RequestId};
@@ -793,6 +794,100 @@ fn plugin_route_status_maps_failed_with_status_and_omits_statusless_outcomes() {
         )),
         None
     );
+}
+
+// --- recent-events ring: recording must not depend on `has_subscriber` ---
+//
+// `try_route_plugin_model` and the host-served raw-proxy branch are not
+// economical to drive end to end in a unit test (see the M2 note above), so
+// the no-subscriber fix is tested at the two seams that actually decide
+// whether an exchange gets minted/recorded: `should_record_raw_proxy_exchange`
+// (the pure gating decision) and `publish_raw_proxy_terminal` /
+// `mint_and_publish_effective_raw_proxy` against a real, plugin-less
+// `PluginManager` (so `has_subscriber()` is really `false`, not just a stubbed
+// return value).
+
+fn subscriberless_plugin_manager_specs() -> plugin::ResolvedPlugins {
+    plugin::ResolvedPlugins {
+        externals: vec![],
+        inactive: vec![],
+    }
+}
+
+async fn subscriberless_plugin_manager() -> plugin::PluginManager {
+    let (mesh_tx, _mesh_rx) = tokio::sync::mpsc::channel(1);
+    plugin::PluginManager::start(
+        &subscriberless_plugin_manager_specs(),
+        plugin::PluginHostMode {
+            mesh_visibility: mesh_llm_plugin::MeshVisibility::Private,
+        },
+        mesh_tx,
+    )
+    .await
+    .expect("plugin-less manager should start")
+}
+
+#[test]
+fn should_record_raw_proxy_exchange_ignores_tokenize_requests() {
+    assert!(!should_record_raw_proxy_exchange(true, None));
+}
+
+#[tokio::test]
+async fn should_record_raw_proxy_exchange_is_true_with_no_subscriber() {
+    let plugin_manager = subscriberless_plugin_manager().await;
+    assert!(!plugin_manager.has_subscriber().await);
+    // The gate must say "record" purely off request-shape and plugin-manager
+    // presence -- `has_subscriber` never enters the decision.
+    assert!(should_record_raw_proxy_exchange(
+        false,
+        Some(&plugin_manager)
+    ));
+}
+
+#[tokio::test]
+async fn mint_and_publish_effective_raw_proxy_still_mints_an_id_with_no_subscriber() {
+    let plugin_manager = subscriberless_plugin_manager().await;
+    assert!(!plugin_manager.has_subscriber().await);
+
+    let exchange_id = mint_and_publish_effective_raw_proxy(&plugin_manager, "some-model").await;
+
+    assert!(
+        !exchange_id.is_empty(),
+        "an id must still be minted so the paired terminal event can be recorded"
+    );
+}
+
+#[tokio::test]
+async fn raw_proxy_terminal_event_is_recorded_into_the_ring_with_no_subscriber() {
+    let plugin_manager = subscriberless_plugin_manager().await;
+    assert!(
+        !plugin_manager.has_subscriber().await,
+        "precondition: nothing declares openai.exchange.v1"
+    );
+
+    let node = mesh::Node::new_for_tests(mesh::NodeRole::Client)
+        .await
+        .expect("test node should start");
+    publish_raw_proxy_terminal(
+        &node,
+        &plugin_manager,
+        "exch-no-subscriber",
+        "some-model",
+        &proxy::RouteDispatchOutcome::Responded(200),
+        false, // plugin-served: no hardware/weights lookup needed for this test
+        None,
+    )
+    .await;
+
+    let recent = plugin_manager.recent_openai_exchanges(10).await;
+    assert_eq!(
+        recent.len(),
+        1,
+        "the recent-events ring must record a terminal exchange even when no \
+         plugin subscribes to openai.exchange.v1 -- that is the entire point \
+         of /api/openai/exchanges/recent working without a plugin running"
+    );
+    assert_eq!(recent[0].exchange_id, "exch-no-subscriber");
 }
 
 #[test]

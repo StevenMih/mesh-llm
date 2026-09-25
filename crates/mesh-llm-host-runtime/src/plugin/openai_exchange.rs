@@ -1997,9 +1997,9 @@ mod tests {
     }
 
     /// Past `RECENT_EXCHANGE_RING_CAPACITY` entries, the OLDEST is evicted —
-    /// confirmed here with a ring shrunk to a size a test can actually fill,
-    /// by asserting directly against the real capacity constant rather than a
-    /// hand-picked smaller one.
+    /// confirmed here by filling the ring to its real capacity directly (200
+    /// is small enough for a test loop), rather than adding a way to shrink
+    /// capacity just for the test.
     #[tokio::test]
     async fn oldest_entry_is_evicted_once_the_ring_is_at_capacity() {
         let ring = RecentOpenAiExchanges::new();
