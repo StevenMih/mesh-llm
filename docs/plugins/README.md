@@ -219,11 +219,13 @@ labeled from its page manifest. When more than one plugin page is ready, the
 console groups those entries under the auxiliary `Plugins` menu to protect
 header space. A page whose manifest requests `placement = "primary"` and whose
 plugin has the `web_ui_primary_tab` preference on instead renders alongside the
-fixed tabs, using its own manifest label and icon rather than joining the
-`AppTab` union (see "Primary Tab Placement" above); everything else about it —
-the static route, the eligibility rules below — is unchanged. Disabled,
-invalid, or stopped projections contribute no navigation item, in either
-placement. The existing Configuration `Plugins` tab owns config-section
+fixed tabs rather than joining the `AppTab` union (see "Primary Tab Placement"
+above), using its manifest label (hidden below the `md` breakpoint, same as
+the fixed tabs) and the same generic plugin icon as auxiliary placement — the
+page manifest's own `icon` is not rendered in either placement; everything
+else about it — the static route, the eligibility rules below — is unchanged.
+Disabled, invalid, or stopped projections contribute no navigation item, in
+either placement. The existing Configuration `Plugins` tab owns config-section
 projection, and only ready config sections in the `integrations` projection
 mount there.
 
