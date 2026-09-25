@@ -180,21 +180,36 @@ fn lifecycle_block(record: &Value) -> Option<&Value> {
     record.pointer("/model_attestation/compute_attestation/x-mesh-lifecycle-v1")
 }
 
-/// `capsule_exchange_tab.exchange_key_for`: the serving-provenance
-/// `exchange_id` when a later protocol PR has populated it
-/// (`capsule_mesh_viewer.serving_provenance` reads
-/// `poc.serving_provenance.exchange_id`), else `digest:<request_digest>`,
-/// else `None` (nothing to group this record by).
+/// The exchange grouping key -- the join order matches
+/// `served_request_join.py`'s own CORRELATION FALLBACK
+/// (`exchange_id` -> `request_digest` -> `twin_bracket_id`), but reduced to
+/// the ONE key that survives a cross-node exchange.
+///
+/// `exchange_id` is **host-minted**: each host mints its OWN id for the same
+/// real exchange, so two cross-node halves that attest the identical exchange
+/// routinely carry DIFFERENT `exchange_id` values (M4 `914b61c1…` vs M3
+/// `82777e20…`), while both independently compute the SAME `request_digest`
+/// over the same wire bytes. Keying on `exchange_id` therefore split the two
+/// halves of one cross-node exchange into two rows that could never reconcile
+/// -- the empirical "6 OPEN rows instead of 3 CLOSED pairs" finding. So the
+/// digest is preferred whenever a record carries one: `digest:<request_digest>`
+/// groups both halves as one exchange. This subsumes the same-node case (two
+/// records of one exchange share a `request_digest` too) and correctly SPLITS
+/// the CONFLICTING case `served_request_join.py` refuses to join (an equal
+/// host-minted `exchange_id` but a different `request_digest` -- two different
+/// requests the wire bytes contradict, which distinct digest keys keep apart).
+/// Falls back to the host-minted `exchange_id` only when a record carries no
+/// `request_digest` at all (e.g. a plugin-served stub with no digested body),
+/// and `None` when neither exists (nothing to group this record by).
 fn exchange_key_for(record: &Value) -> Option<String> {
-    if let Some(id) = poc_block(record)
+    if let Some(digest) = request_digest(record) {
+        return Some(format!("digest:{digest}"));
+    }
+    poc_block(record)
         .and_then(|poc| poc.pointer("/serving_provenance/exchange_id"))
         .and_then(Value::as_str)
-        && !id.is_empty()
-        && id != "unknown"
-    {
-        return Some(id.to_string());
-    }
-    request_digest(record).map(|digest| format!("digest:{digest}"))
+        .filter(|id| !id.is_empty() && *id != "unknown")
+        .map(str::to_string)
 }
 
 /// [ledger-T11b-twin-bracket] the id shared by BOTH halves of an ambient
@@ -1024,12 +1039,76 @@ mod tests {
         assert_eq!(role_tag(&record), "ASKED");
     }
 
+    /// The digest is the correlator that survives a cross-node exchange, so
+    /// it is preferred over the host-minted `exchange_id` whenever a record
+    /// carries one (see `exchange_key_for`'s doc + `served_request_join.py`'s
+    /// CORRELATION FALLBACK). A record with BOTH keys groups by digest.
     #[test]
-    fn exchange_key_for_prefers_serving_provenance_exchange_id_over_digest() {
+    fn exchange_key_for_prefers_request_digest_over_host_minted_exchange_id() {
         let mut record = fixture_record("cap-1", "2026-09-01T00:00:00Z", "req-1", None);
         record["model_attestation"]["compute_attestation"]["x-mesh-poc-v1"] =
             json!({ "serving_provenance": { "exchange_id": "exch-real" } });
+        assert_eq!(exchange_key_for(&record).as_deref(), Some("digest:req-1"));
+    }
+
+    /// A record with no `request_digest` at all (e.g. a plugin-served stub
+    /// with no digested body) falls back to the host-minted `exchange_id`.
+    #[test]
+    fn exchange_key_for_falls_back_to_exchange_id_when_no_request_digest() {
+        let record = json!({
+            "capsule_id": "cap-1",
+            "timestamp": "2026-09-01T00:00:00Z",
+            "model_attestation": { "compute_attestation": {
+                "x-mesh-poc-v1": { "serving_provenance": { "exchange_id": "exch-real" } }
+            } },
+        });
+        // No `effect.request_digest` on this record.
+        assert!(record.pointer("/effect/request_digest").is_none());
         assert_eq!(exchange_key_for(&record).as_deref(), Some("exch-real"));
+    }
+
+    /// [mesh-reconcile-join-request-digest] the empirical CLOSED-tour finding:
+    /// two cross-node halves of ONE real exchange carry DIFFERENT host-minted
+    /// `exchange_id`s (M4 vs M3) but the SAME `request_digest` (each host
+    /// digested the same wire bytes). They MUST group into one exchange, not
+    /// two OPEN rows. MUTANT: revert `exchange_key_for` to exchange_id-first
+    /// and this row_count goes from 1 to 2.
+    #[test]
+    fn pane_c_groups_two_cross_node_halves_with_differing_exchange_ids_as_one_exchange() {
+        // Requester half (M4): role requested, its own host-minted exchange_id.
+        let mut requester = fixture_record("cap-m4", "2026-09-25T00:00:00Z", "shared-req-digest", None);
+        requester["model_attestation"]["compute_attestation"]["x-mesh-poc-v1"] = json!({
+            "role": "requested",
+            "serving_provenance": { "exchange_id": "914b61c1", "role": "requester" }
+        });
+        // Provider half (M3, pushed into M4's ledger): a DIFFERENT host-minted
+        // exchange_id, the SAME request_digest.
+        let mut provider = fixture_record("cap-m3", "2026-09-25T00:00:01Z", "shared-req-digest", None);
+        provider["model_attestation"]["compute_attestation"]["x-mesh-poc-v1"] = json!({
+            "role": "served",
+            "serving_provenance": { "exchange_id": "82777e20", "role": "provider" }
+        });
+
+        let both = vec![requester.clone(), provider.clone()];
+        // Both records share the digest key -> one exchange group.
+        assert_eq!(exchange_key_for(&requester), exchange_key_for(&provider));
+        assert_eq!(exchange_key_for(&requester).as_deref(), Some("digest:shared-req-digest"));
+
+        // The drilldown groups both halves under the one shared key -- the
+        // CLOSED-eligible pair the reconcile must produce, not two OPEN rows.
+        let pane = build_pane_c_drilldown(&both, "digest:shared-req-digest");
+        assert_eq!(pane["found"], json!(true));
+
+        // And a CONFLICTING pair (equal host-minted exchange_id, DIFFERENT
+        // request_digest) stays SPLIT -- distinct digest keys keep two
+        // different requests apart, matching served_request_join.py's refusal.
+        let mut conflict_a = fixture_record("cap-a", "2026-09-25T00:00:00Z", "digest-a", None);
+        conflict_a["model_attestation"]["compute_attestation"]["x-mesh-poc-v1"] =
+            json!({ "serving_provenance": { "exchange_id": "same-id" } });
+        let mut conflict_b = fixture_record("cap-b", "2026-09-25T00:00:01Z", "digest-b", None);
+        conflict_b["model_attestation"]["compute_attestation"]["x-mesh-poc-v1"] =
+            json!({ "serving_provenance": { "exchange_id": "same-id" } });
+        assert_ne!(exchange_key_for(&conflict_a), exchange_key_for(&conflict_b));
     }
 
     #[test]
