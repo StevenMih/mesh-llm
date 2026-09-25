@@ -877,7 +877,14 @@ function ChainStrip({ sealedCount, checkpointCount }: { sealedCount: number; che
       <p className="type-caption text-fg-dim">
         {hasCheckpoint
           ? `covered by checkpoint (${checkpointCount} leaves) · after the last checkpoint is unshaded`
-          : `${sealedCount} entr${sealedCount === 1 ? 'y' : 'ies'}, all sealed · no checkpoint yet · nothing here is registered`}
+          : checkpointCount === null
+            ? // Not reported by the host -- NEVER a false "none exists". A null
+              // card (host did not compute/report a checkpoint_count) must not
+              // read as "no checkpoint yet"; that conflation is the bug this
+              // three-state guards against -- Integrity is the highest-cost tab
+              // for a false absence.
+              `${sealedCount} entr${sealedCount === 1 ? 'y' : 'ies'}, all sealed · checkpoint status not reported`
+            : `${sealedCount} entr${sealedCount === 1 ? 'y' : 'ies'}, all sealed · no checkpoint yet · nothing here is registered`}
       </p>
     </div>
   )

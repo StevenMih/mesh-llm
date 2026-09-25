@@ -9,8 +9,10 @@ import {
 } from '@/features/capsules/lib/integrity-view'
 
 describe('buildSetupSteps — ledger-ux-from-the-user §6, three steps in value order', () => {
-  it('renders all three steps "not set up" / "never asked" on a bare node', () => {
-    const steps = buildSetupSteps(null, null)
+  it('renders all three steps "not set up" / "never asked" on a bare node (checkpoint_count REPORTED 0)', () => {
+    // A bare node's host reports `checkpoint_count: 0` (capsule_panes_native's
+    // build_pane_a always supplies the card) -- genuinely none yet, "not set up".
+    const steps = buildSetupSteps({ checkpoint_count: 0 }, null)
     expect(steps.map((step) => step.title)).toEqual([
       'Register your checkpoints',
       'Bind an owner identity',
@@ -24,6 +26,23 @@ describe('buildSetupSteps — ledger-ux-from-the-user §6, three steps in value 
     expect(steps[0].body).toMatch(/does not make your records true/)
     expect(steps[1].body).toMatch(/does not prove who you are/)
     expect(steps[2].body).toBe('Corroboration cannot come from you.')
+  })
+
+  it('checkpoints step reads a NULL card as "status not reported", NOT a false "not set up"', () => {
+    // The costliest false absence: a null card means the host did not REPORT a
+    // checkpoint count -- it must never render as "none exists". Three states,
+    // never two: null -> not reported; 0 -> not set up; >0 -> registered.
+    const notReported = buildSetupSteps(null, null)
+    expect(notReported[0].status).toBe('status not reported')
+    expect(notReported[0].done).toBe(false)
+    expect(notReported[0].body).toMatch(/did not report its checkpoint status/)
+    expect(notReported[0].body).not.toMatch(/does not make your records true/)
+
+    const genuinelyNone = buildSetupSteps({ checkpoint_count: 0 }, null)
+    expect(genuinelyNone[0].status).toBe('not set up')
+
+    const registered = buildSetupSteps({ checkpoint_count: 2 }, null)
+    expect(registered[0].status).toBe('registered')
   })
 
   it('step 1 flips to "registered" once a checkpoint exists, and drops its explanatory body', () => {

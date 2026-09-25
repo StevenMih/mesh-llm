@@ -57,7 +57,10 @@ export function balanceCoverage(card: JsonRecord | null | undefined): BalanceCov
   const capturedText =
     mmrSize !== null
       ? `captured under the ${mmrSize}-leaf checkpoint ${shortRoot(coverage?.checkpoint_root)}`
-      : 'captured under no checkpoint yet'
+      : // The coverage carried no mmr_size -- "not reported", never a false
+        // "no checkpoint yet" (that would assert an absence the record does not
+        // state). Same three-state honesty as the Integrity tab.
+        'checkpoint coverage not reported'
   // Never fabricate a witness count when `witnessed` is false -- the
   // statement collapses to the honest "not reconciled" clause instead.
   const reconciledText = witnessed

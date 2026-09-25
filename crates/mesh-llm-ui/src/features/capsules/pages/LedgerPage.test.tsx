@@ -701,7 +701,16 @@ describe('LedgerPageContent — Part T6: Integrity section completion', () => {
     expect(zero?.className).toMatch(/font-semibold/)
   })
 
-  it('shows the three-step setup checklist, in value order, on a bare node', async () => {
+  it('shows the three-step setup checklist, in value order, on a bare node (host reports checkpoint_count 0)', async () => {
+    // A real bare node's host reports `card: { checkpoint_count: 0 }` (build_pane_a
+    // always supplies the card) -- genuinely none yet, so "not set up" copy.
+    const { fetchPaneA } = await import('@/features/capsules/api/sidecarClient')
+    vi.mocked(fetchPaneA).mockResolvedValue({
+      rows: [],
+      operator: null,
+      witness_checkpoint_supplied: false,
+      card: { checkpoint_count: 0 }
+    })
     const user = userEvent.setup()
     render(<LedgerPageContent />, { wrapper: makeWrapper() })
     await user.click(screen.getByRole('tab', { name: /integrity/i }))
@@ -712,6 +721,30 @@ describe('LedgerPageContent — Part T6: Integrity section completion', () => {
     expect(screen.getByText('Corroboration cannot come from you.')).toBeInTheDocument()
     expect(screen.getByText(/does not make your records true/)).toBeInTheDocument()
     expect(screen.getByText(/does not prove who you are/)).toBeInTheDocument()
+  })
+
+  it('Integrity reads a NULL card as "checkpoint status not reported", never a false "no checkpoint yet"', async () => {
+    // `card: null` = the host did not report a count. Integrity must say so --
+    // NOT "no checkpoint yet" (a false absence) and NOT the "not set up" body
+    // that asserts none exists. Highest-cost tab for this bug. Set the mock
+    // explicitly (a prior test overrides fetchPaneA; mocks don't auto-reset).
+    const { fetchPaneA } = await import('@/features/capsules/api/sidecarClient')
+    vi.mocked(fetchPaneA).mockResolvedValue({
+      rows: [],
+      operator: null,
+      witness_checkpoint_supplied: false,
+      card: null
+    })
+    const user = userEvent.setup()
+    render(<LedgerPageContent />, { wrapper: makeWrapper() })
+    await user.click(screen.getByRole('tab', { name: /integrity/i }))
+
+    await screen.findByText(/Register your checkpoints/)
+    // The setup-step body is unique; the two negatives are the false-absence
+    // strings that must NOT appear for a not-reported (null) card.
+    expect(screen.getByText(/did not report its checkpoint status/)).toBeInTheDocument()
+    expect(screen.queryByText(/does not make your records true/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/no checkpoint yet/)).not.toBeInTheDocument()
   })
 
   it('flips step 1 to "registered" and shows registration copy once a checkpoint exists', async () => {
