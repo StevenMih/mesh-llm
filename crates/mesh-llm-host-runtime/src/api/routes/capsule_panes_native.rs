@@ -377,33 +377,132 @@ fn pair_cell(records: &[Value]) -> Value {
     })
 }
 
-/// Pane B ("Peers") -- `peer_accountability_tab.build_peers_payload`. No
-/// counterparty-identity field exists on a plugin-written record today, so
-/// every record groups under the same `UNKNOWN_PEER` bucket
-/// (`peer_accountability_tab.py:156`) -- one row, never fabricated peer
-/// identities.
-pub(super) fn build_pane_b(records: &[Value]) -> Value {
-    if records.is_empty() {
-        return json!({
-            "peer_count": 0,
-            "rows": [],
-            "peer_fetch_enabled": false,
-            "peer_fetch_count": 0,
-        });
+/// First `n` chars of an id (char-safe, mirrors Python's `[:n]` slice on the
+/// ascii node/ref ids this handles).
+fn short_id(id: &str, n: usize) -> String {
+    id.chars().take(n).collect()
+}
+
+/// Best-effort counterparty peer label from a record's OWN fields, mirroring
+/// `capsule_mesh_view.label_counterparty` (the Python reference this reader
+/// pins against). `None` is the honest "unattributed" -- no field resolves to
+/// a DISTINCT peer -- never a fabricated identity.
+///
+/// The key case the earlier single-bucket reader missed: a `RemoteMesh`
+/// requester-side record carries `role: "requested"` (the dispatch-derived
+/// role -- `capsule_emit.rs` doc: "RemoteMesh means this node routed to a
+/// peer") and names the remote server in `served_by_node_id`. That server IS
+/// the counterparty, so a peer this node DEALT WITH -- the count does not wait
+/// on CLOSED (CLOSED is about holding their half, a separate state).
+fn counterparty_peer_label(record: &Value) -> Option<String> {
+    let poc = poc_block(record)?;
+    // Tier 1: bilateral attestation (strongest -- a signed request digest).
+    if let Some(cross_party) = poc.get("cross_party") {
+        if let Some(r) = cross_party
+            .get("initiator_ref")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+        {
+            return Some(format!("initiator:{}", short_id(r, 12)));
+        }
+        if let Some(r) = cross_party
+            .get("counterparty_ref")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+        {
+            return Some(format!("counterparty:{}", short_id(r, 12)));
+        }
     }
+    let sp = poc.get("serving_provenance");
+    if let Some(sp) = sp {
+        // Tier 2: served_by_node_id is the REMOTE peer when this node requested.
+        if let Some(served_by) = sp
+            .get("served_by_node_id")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty() && *s != "unknown")
+        {
+            if poc.get("role").and_then(Value::as_str) == Some("requested") {
+                return Some(format!("node:{}", short_id(served_by, 16)));
+            }
+        }
+        // Tier 3: requesting_party -- who originated, when this node served.
+        if let Some(rp) = sp
+            .get("requesting_party")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty() && *s != "unknown")
+        {
+            return Some(format!("node:{}", short_id(rp, 16)));
+        }
+    }
+    None
+}
+
+fn seen_range(records: &[Value]) -> (Option<&str>, Option<&str>) {
     let mut timestamps: Vec<&str> = records
         .iter()
         .filter_map(|r| r.get("timestamp").and_then(Value::as_str))
         .collect();
     timestamps.sort_unstable();
-    let first_seen = timestamps.first().copied();
-    let last_seen = timestamps.last().copied();
+    (timestamps.first().copied(), timestamps.last().copied())
+}
 
-    // `role_and_count_cell`: every record defaults to `label_role ==
-    // "served"` in this cut (see module docs), so `them_to_you_count`
-    // always equals the group size and `you_to_them_count` is always 0.
-    // Kept as a real per-record fold (not a shortcut) so it stays correct
-    // once an explicit `requested` role starts appearing on some records.
+/// One "Nodes you have dealt with" row: a NAMED counterparty (`label`) this
+/// node exchanged with, `exchange_count` real. Its half being unheld is a
+/// STATE ("their half not held") the CLOSED path fills -- it is never a reason
+/// to omit the peer or show a zero count.
+fn dealt_with_row(label: &str, records: &[Value]) -> Value {
+    let (first_seen, last_seen) = seen_range(records);
+    let total = records.len();
+    let served_count = records.iter().filter(|r| label_role(r) == "served").count();
+    let requested_count = records
+        .iter()
+        .filter(|r| label_role(r) == "requested")
+        .count();
+    json!({
+        "peer_id": label,
+        "node": {
+            "state": CELL_PRESENT,
+            "text": format!("dealt with {label} in {total} exchange(s) — their half not held"),
+            "peer_id": label,
+            "member_kind": Value::Null,
+            "exchange_count": total,
+        },
+        // Counterparty IS present (this node's own record names the peer);
+        // their sealed half is not yet held -- `present-unverified`, not the
+        // false `NOT_PRESENT` the unattributed bucket carries.
+        "cross_party": {
+            "state": STATE_PRESENT_UNVERIFIED,
+            "text": format!("counterparty {label} named by this node's own record — their half not held"),
+            "peer_id": label,
+        },
+        "role": {
+            "state": CELL_PRESENT,
+            "text": format!("you→them · {requested_count} (them→you · {served_count})"),
+            "role": if requested_count > 0 { "you_to_them" } else { "them_to_you" },
+            "you_to_them_count": requested_count,
+            "them_to_you_count": served_count,
+            "exchange_count": total,
+        },
+        "history": not_checked_state(),
+        "served": not_checked_state(),
+        "pair": pair_cell(records),
+        "verdicts": not_checked_state(),
+        "asked": {
+            "state": STATE_ABSENT,
+            "text": "Not yet counted — this node doesn't persist served/refused counts.",
+            "count": 0,
+        },
+        "exchange_count": total,
+        "first_seen": first_seen,
+        "last_seen": last_seen,
+    })
+}
+
+/// The honest residual: records that name NO distinct counterparty. Unchanged
+/// from the prior reader -- one unattributed row, never a fabricated peer and
+/// never counted as "dealt with · 0".
+fn unattributed_row(records: &[Value]) -> Value {
+    let (first_seen, last_seen) = seen_range(records);
     let served_count = records.iter().filter(|r| label_role(r) == "served").count();
     let requested_count = records
         .iter()
@@ -422,8 +521,7 @@ pub(super) fn build_pane_b(records: &[Value]) -> Value {
     } else {
         ("unknown", format!("unknown role · {total}"))
     };
-
-    let row = json!({
+    json!({
         "peer_id": Value::Null,
         "node": {
             "state": STATE_ABSENT,
@@ -434,10 +532,6 @@ pub(super) fn build_pane_b(records: &[Value]) -> Value {
             "member_kind": Value::Null,
             "exchange_count": total,
         },
-        // [ledger-T3-vocabulary-and-states]: five-state property map, not
-        // the retired rung ladder -- see module docs. Fork UI types
-        // (`sidecarTypes.ts`'s `PaneBRow`) still name this cell `rung`;
-        // that rename is `[ledger-batch1-integrate]`'s job, not this one's.
         "cross_party": {
             "state": STATE_NOT_PRESENT,
             "text": NO_COUNTERPARTY_EVIDENCE_TEXT,
@@ -450,9 +544,6 @@ pub(super) fn build_pane_b(records: &[Value]) -> Value {
             "them_to_you_count": served_count,
             "exchange_count": total,
         },
-        // Peer-fetch tranche -- deferred, not computed here (module docs,
-        // gap 1): the sidecar's own real payload for these three carries
-        // long operator-facing prose this cut does not duplicate.
         "history": not_checked_state(),
         "served": not_checked_state(),
         "pair": pair_cell(records),
@@ -465,10 +556,46 @@ pub(super) fn build_pane_b(records: &[Value]) -> Value {
         "exchange_count": total,
         "first_seen": first_seen,
         "last_seen": last_seen,
-    });
+    })
+}
+
+/// Pane B ("Peers") -- `peer_accountability_tab.build_peers_payload`. Records
+/// that name a distinct counterparty (`counterparty_peer_label`, mirroring
+/// `capsule_mesh_view.label_counterparty`) each become a "dealt with" peer row;
+/// the rest fall to ONE honest unattributed residual. A served peer this
+/// node's own record names counts as dealt-with NOW -- "their half not held"
+/// is a state, never a fabricated zero; an unknown counterparty is unattributed,
+/// never a false "dealt with · 0".
+pub(super) fn build_pane_b(records: &[Value]) -> Value {
+    if records.is_empty() {
+        return json!({
+            "peer_count": 0,
+            "rows": [],
+            "peer_fetch_enabled": false,
+            "peer_fetch_count": 0,
+        });
+    }
+    // BTreeMap: deterministic (sorted) peer ordering; attributed peers first,
+    // the unattributed residual last -- so an all-unattributed ledger yields
+    // exactly the prior single-row output (rows[0] == the residual).
+    let mut by_peer: std::collections::BTreeMap<String, Vec<Value>> = std::collections::BTreeMap::new();
+    let mut unattributed: Vec<Value> = Vec::new();
+    for record in records {
+        match counterparty_peer_label(record) {
+            Some(label) => by_peer.entry(label).or_default().push(record.clone()),
+            None => unattributed.push(record.clone()),
+        }
+    }
+    let mut rows: Vec<Value> = by_peer
+        .iter()
+        .map(|(label, group)| dealt_with_row(label, group))
+        .collect();
+    if !unattributed.is_empty() {
+        rows.push(unattributed_row(&unattributed));
+    }
     json!({
-        "peer_count": 1,
-        "rows": [row],
+        "peer_count": rows.len(),
+        "rows": rows,
         "peer_fetch_enabled": false,
         "peer_fetch_count": 0,
     })
@@ -715,6 +842,52 @@ mod tests {
         let pane = build_pane_b(&[]);
         assert_eq!(pane["peer_count"], json!(0));
         assert_eq!(pane["rows"], json!([]));
+    }
+
+    /// A `RemoteMesh` requester-side record (role `"requested"`,
+    /// `served_by_node_id` naming the remote server) counts as a peer this
+    /// node DEALT WITH -- named, "their half not held" -- NOT "advertised but
+    /// unused · dealt with 0". The count does not wait on CLOSED. MUTANT: if
+    /// `build_pane_b` reverts to the single unattributed bucket, `peer_id` goes
+    /// null and `dealt with 0` returns -- this assertion goes red.
+    #[test]
+    fn pane_b_attributes_a_served_remote_peer_as_dealt_with_not_a_false_zero() {
+        let mut record = fixture_record("cap-r1", "2026-09-01T00:00:00Z", "req-1", None);
+        record["model_attestation"]["compute_attestation"]["x-mesh-poc-v1"] = json!({
+            "role": "requested",
+            "serving_provenance": {
+                "served_by_node_id": "16b1362a8ebf00119abc",
+                "dispatch_path": "remote_mesh"
+            }
+        });
+        let pane = build_pane_b(&[record]);
+        assert_eq!(pane["peer_count"], json!(1));
+        let row = &pane["rows"][0];
+        // node:<served_by[:16]>, mirroring capsule_mesh_view.label_counterparty.
+        assert_eq!(row["peer_id"], json!("node:16b1362a8ebf0011"));
+        assert_eq!(row["node"]["state"], json!("present"));
+        assert_eq!(row["cross_party"]["state"], json!("present-unverified"));
+        assert_eq!(row["role"]["you_to_them_count"], json!(1));
+        assert_eq!(row["exchange_count"], json!(1));
+    }
+
+    /// A record with no attributable counterparty stays UNATTRIBUTED -- a
+    /// residual row with `peer_id: null`, never a fabricated peer -- and an
+    /// attributed peer plus an unattributed record yield two honest rows
+    /// (attributed first, residual last).
+    #[test]
+    fn pane_b_keeps_unattributed_records_honest_alongside_a_named_peer() {
+        let mut attributed = fixture_record("cap-a", "2026-09-01T00:00:00Z", "req-a", None);
+        attributed["model_attestation"]["compute_attestation"]["x-mesh-poc-v1"] = json!({
+            "role": "requested",
+            "serving_provenance": { "served_by_node_id": "peerXYZ0123456789ab" }
+        });
+        let plain = fixture_record("cap-b", "2026-09-02T00:00:00Z", "req-b", None);
+        let pane = build_pane_b(&[attributed, plain]);
+        assert_eq!(pane["peer_count"], json!(2));
+        assert_eq!(pane["rows"][0]["peer_id"], json!("node:peerXYZ012345678"));
+        assert_eq!(pane["rows"][1]["peer_id"], Value::Null);
+        assert_eq!(pane["rows"][1]["node"]["state"], json!("absent"));
     }
 
     #[test]
