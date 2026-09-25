@@ -1081,6 +1081,24 @@ async fn route_missing_local_model(
                 {
                     terminal = terminal.with_request_digest(digest);
                 }
+                // The digests over the REAL served response, exactly as the
+                // host-served terminal above attaches them. `terminal_remote_mesh`
+                // hard-coded these absent under the same "a routing node resolves
+                // nothing for itself" reasoning that (correctly) withholds the
+                // PEER's serving provenance -- but the response digests are NOT
+                // the peer's to resolve: this node relayed the peer's response
+                // bytes to the client through `route_model_request`, whose
+                // outcome carries the digest computed over exactly those relayed
+                // bytes at the JSON-relay delivery point (see
+                // `handle_delivered_route_model_attempt`). Omitting them left the
+                // requester half with a null response_digest, so the two halves
+                // never matched on response_digest and the CLOSED digest-equality
+                // gate could not fire. A no-op for an all-`None` bundle (nothing
+                // relayed had a body to digest), so nothing is fabricated.
+                let output_digests = exchange_output_digests_from_outcome(&outcome);
+                if output_digests.has_any() {
+                    terminal = terminal.with_output_digests(output_digests);
+                }
                 ch.publish(&terminal).await;
             }
             return outcome;
@@ -1311,6 +1329,14 @@ fn spawn_ambient_twin_dispatch(args: AmbientTwinDispatchArgs) {
                 .and_then(|body| request_body_digest(body, request.body_bytes.as_deref()))
             {
                 terminal = terminal.with_request_digest(digest);
+            }
+            // Same real response digests as the primary dispatch's terminal
+            // event -- carried on the outcome by the JSON-relay delivery point,
+            // so the twin's requester half also binds the real response and can
+            // reconcile on response_digest. See the primary call site's comment.
+            let output_digests = exchange_output_digests_from_outcome(&outcome);
+            if output_digests.has_any() {
+                terminal = terminal.with_output_digests(output_digests);
             }
             ch.publish(&terminal).await;
         }
