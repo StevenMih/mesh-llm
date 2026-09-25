@@ -55,6 +55,11 @@ export function buildSetupSteps(
   owner: StatusOwner | null | undefined
 ): SetupStep[] {
   const checkpointCount = typeof card?.checkpoint_count === 'number' ? card.checkpoint_count : null
+  // Three honest states, never two: `null` = the host did not REPORT a count
+  // (not evidence of absence -- distinct from a real zero); `0` = reported, and
+  // genuinely none yet; `> 0` = registered. Collapsing null into "not set up"
+  // is a false absence, the costliest kind on the Integrity tab.
+  const checkpointReported = checkpointCount !== null
   const registered = checkpointCount !== null && checkpointCount > 0
   const bound = ownerBound(owner)
   const askedPeerAt = typeof card?.asked_peer_at === 'string' ? card.asked_peer_at : null
@@ -64,10 +69,12 @@ export function buildSetupSteps(
       key: 'checkpoints',
       title: 'Register your checkpoints',
       done: registered,
-      status: registered ? 'registered' : 'not set up',
+      status: registered ? 'registered' : checkpointReported ? 'not set up' : 'status not reported',
       body: registered
         ? null
-        : 'Right now your records are checkable only against themselves. Registering a checkpoint with a service you don’t run is what makes a later rewrite detectable by someone else. It does not make your records true.'
+        : checkpointReported
+          ? 'Right now your records are checkable only against themselves. Registering a checkpoint with a service you don’t run is what makes a later rewrite detectable by someone else. It does not make your records true.'
+          : 'This node did not report its checkpoint status. That is not the same as having none — the status was not reported, so nothing can be concluded either way.'
     },
     {
       key: 'identity',
