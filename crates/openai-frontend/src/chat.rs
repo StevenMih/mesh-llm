@@ -359,6 +359,27 @@ pub fn capsule_id_is_valid(id: &str) -> bool {
     !id.is_empty() && axum::http::HeaderValue::from_str(id).is_ok()
 }
 
+/// Whether `id` has the shape of a real sealed capsule id — the content
+/// digest a capsule-producer writes into its ledger (`capsule-emit-mesh`
+/// `plugins/capsule-producer`: a capsule id is `DIGEST_LEN` bytes of lower-hex,
+/// i.e. a 64-char SHA-256 hex string). This is a strictly narrower test than
+/// [`capsule_id_is_valid`]: a self-minted per-response correlation marker
+/// (`capsule-<response.id>`, e.g. `capsule-chatcmpl-…`) is header-*valid* but
+/// NOT digest-shaped, because the real content-hash capsule id is computed
+/// asynchronously by the out-of-process plugin AFTER the response is sent and
+/// is never knowable at mint time (see
+/// [`crate::hooks::OpenAiHookPolicy::capsule_marker_for_response`]).
+///
+/// The honest consequence for a *peer's* asserted `X-Capsule-Id`: only a
+/// digest-shaped value can be fetched and closed against real bytes; a
+/// non-digest correlation marker must render as "their capsule id: not given"
+/// with fetch disabled, never as "known but not fetched" (which promises a
+/// fetch that can only fail). The peer's raw assertion is still recorded
+/// faithfully as `PeerAsserted`; this only gates whether a fetch is offered.
+pub fn capsule_id_is_digest_shaped(id: &str) -> bool {
+    id.len() == 64 && id.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
 impl ChatCompletionResponse {
     pub fn new(model: impl Into<String>, content: impl Into<String>, usage: Usage) -> Self {
         Self::new_with_reason(model, content, usage, FinishReason::Stop)
@@ -597,6 +618,24 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn capsule_id_digest_shape_distinguishes_real_id_from_self_minted_marker() {
+        // A real sealed capsule id: 64 lowercase hex (DIGEST_LEN bytes).
+        assert!(capsule_id_is_digest_shaped(
+            "6c1a2b41161032677be168d354123594c0e6e67d2b9227c84f296ad037c728ff"
+        ));
+        // The self-minted per-response correlation marker is header-valid but
+        // NOT digest-shaped -- it must not offer a (dead) fetch.
+        assert!(capsule_id_is_valid("capsule-chatcmpl-1790354430635"));
+        assert!(!capsule_id_is_digest_shaped("capsule-chatcmpl-1790354430635"));
+        // Wrong length, uppercase, and non-hex are all rejected.
+        assert!(!capsule_id_is_digest_shaped("abc123"));
+        assert!(!capsule_id_is_digest_shaped(
+            "6C1A2B41161032677BE168D354123594C0E6E67D2B9227C84F296AD037C728FF"
+        ));
+        assert!(!capsule_id_is_digest_shaped(""));
+    }
 
     #[test]
     fn assistant_message_serializes_reasoning_content_when_present() {

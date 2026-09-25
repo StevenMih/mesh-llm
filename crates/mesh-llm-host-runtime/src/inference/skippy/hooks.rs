@@ -425,7 +425,10 @@ fn mid_generation_signals_should_fire(signals: &GenerationHookSignals) -> bool {
 mod tests {
     use std::sync::{Arc, Mutex};
 
-    use openai_frontend::{MessageContent, MessageContentPart, apply_chat_hook_outcome};
+    use openai_frontend::{
+        MessageContent, MessageContentPart, Usage, apply_chat_hook_outcome,
+        capsule_id_is_digest_shaped,
+    };
     use serde_json::json;
 
     use super::*;
@@ -649,6 +652,43 @@ mod tests {
         assert_eq!(media_trigger(ChatMediaKind::Image), "images_no_multimodal");
         assert_eq!(media_trigger(ChatMediaKind::Audio), "audio_no_support");
         assert_eq!(media_trigger(ChatMediaKind::Video), "video_no_support");
+    }
+
+    /// Regression guard for [mesh-closed-on-frozen-base] change (1): the ONLY
+    /// hook policy wired into a production node is `MeshAutoHookPolicy`. If it
+    /// mints nothing, the `X-Capsule-Id` header never rides a real host-served
+    /// response and no peer can correlate (let alone fetch) the served half at
+    /// all -- the "production policy mints nothing" defect from the 2026-09-24
+    /// review. Fails the moment `capsule_marker_for_response` returns `None` on
+    /// the production path.
+    #[tokio::test]
+    async fn production_policy_mints_a_response_marker() {
+        let (policy, _recorder) = policy_with_recorder(HookDebugConfig::default());
+        let request = text_request(true);
+        let response = ChatCompletionResponse::new(
+            "auto",
+            "hi",
+            Usage {
+                prompt_tokens: 1,
+                completion_tokens: 1,
+                total_tokens: 2,
+                prompt_tokens_details: None,
+            },
+        );
+        let marker = policy
+            .capsule_marker_for_response(&request, &response)
+            .await
+            .expect("production MeshAutoHookPolicy must mint a response marker");
+        // Honest by construction: the marker is a self-minted per-response
+        // correlation id, NOT a fetchable content digest (the real sealed
+        // capsule id is computed asynchronously by the out-of-process plugin
+        // after the response is already sent). A peer receiving this must
+        // render "not given", never offer a fetch that can only fail.
+        assert!(
+            !capsule_id_is_digest_shaped(&marker.capsule_id),
+            "self-minted marker must not masquerade as a real sealed capsule digest: {}",
+            marker.capsule_id
+        );
     }
 
     #[tokio::test]
