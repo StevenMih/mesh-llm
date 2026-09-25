@@ -26,7 +26,7 @@ const FAILED_ROW = paneCRow({
 })
 const PEER_ASSERTED_UNFETCHED_ROW = paneCRow({
   exchange_key: 'exch-mismatched',
-  theirs: { state: 'NOT_CHECKED', capsule_id: 't'.repeat(64), peer_id: 'peer-1' }
+  theirs: { state: 'NOT_CHECKED', capsule_id: 'a'.repeat(64), peer_id: 'peer-1' }
 })
 const ASKED_UNANSWERED_ROW = paneCRow({
   exchange_key: 'exch-asked',

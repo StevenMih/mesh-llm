@@ -378,7 +378,7 @@ describe('LedgerPageContent — Part 3: Exchanges two-sided stream + row inspect
           },
           has_issue: false,
           mine: { state: 'present', capsule_id: 'mine-clean' },
-          theirs: { state: 'NOT_CHECKED', capsule_id: 't'.repeat(64), peer_id: 'peer-1' },
+          theirs: { state: 'NOT_CHECKED', capsule_id: 'a'.repeat(64), peer_id: 'peer-1' },
           unilateral: false,
           timestamp: '2026-09-08T16:58:05Z'
         },

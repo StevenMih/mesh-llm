@@ -56,7 +56,7 @@ function fixturesFor(kind: RightCellStateKind): { theirs: PaneCRow['theirs']; re
   switch (kind) {
     case 'closed':
       return {
-        theirs: { state: 'NOT_CHECKED', capsule_id: 't'.repeat(64), peer_id: 'peer-1' },
+        theirs: { state: 'NOT_CHECKED', capsule_id: 'a'.repeat(64), peer_id: 'peer-1' },
         recompute: {
           ...NOT_FETCHED,
           status: 'found',
@@ -67,7 +67,7 @@ function fixturesFor(kind: RightCellStateKind): { theirs: PaneCRow['theirs']; re
       }
     case 'contradicted':
       return {
-        theirs: { state: 'NOT_CHECKED', capsule_id: 't'.repeat(64), peer_id: 'peer-1' },
+        theirs: { state: 'NOT_CHECKED', capsule_id: 'a'.repeat(64), peer_id: 'peer-1' },
         recompute: { ...NOT_FETCHED, status: 'found', idMatch: false, signatureOk: false, peerRecord: {} }
       }
     case 'open_refused':
@@ -97,7 +97,14 @@ function fixturesFor(kind: RightCellStateKind): { theirs: PaneCRow['theirs']; re
       }
     case 'open_pending_fetch':
       return {
-        theirs: { state: 'NOT_CHECKED', capsule_id: 't'.repeat(64), peer_id: 'peer-1' },
+        theirs: { state: 'NOT_CHECKED', capsule_id: 'a'.repeat(64), peer_id: 'peer-1' },
+        recompute: NOT_FETCHED
+      }
+    case 'open_not_given':
+      // Present peer, but only a non-digest self-minted correlation marker --
+      // nothing fetchable.
+      return {
+        theirs: { state: 'NOT_CHECKED', capsule_id: 'capsule-chatcmpl-1', peer_id: 'peer-1' },
         recompute: NOT_FETCHED
       }
     case 'open_not_asked':
@@ -155,6 +162,7 @@ describe('ExchangeStreamRow — L-A/L-B alarm styling', () => {
       ['open_refused', 'OPEN · refused'],
       ['open_absent', 'OPEN · absent'],
       ['open_asked', 'OPEN · asked'],
+      ['open_not_given', 'OPEN'],
       ['open_not_asked', 'OPEN']
     ]
     for (const [kind, status] of openStatuses) {
@@ -191,6 +199,12 @@ describe('ExchangeStreamRow — six states render distinct text/status/action', 
       action: 'View statement'
     },
     { kind: 'open_asked', text: 'Asked 4 Sep. No reply yet.', status: 'OPEN · asked', action: 'Ask again' },
+    {
+      kind: 'open_not_given',
+      text: 'Their capsule id: not given — nothing to fetch yet.',
+      status: 'OPEN',
+      action: null
+    },
     {
       kind: 'open_not_asked',
       text: "You haven't asked for their half.",
