@@ -15,7 +15,8 @@ export type RightCellStateKind =
   | 'open_refused' // signed_refusal
   | 'open_absent' // recorded_absence
   | 'open_asked' // unanswered
-  | 'open_pending_fetch' // peer id known, bytes not fetched
+  | 'open_pending_fetch' // peer id known (digest-shaped, fetchable), bytes not fetched
+  | 'open_not_given' // peer asserted only a non-digest correlation marker: nothing fetchable
   | 'open_not_asked' // not asked
 
 export type RightCellState = {
@@ -124,6 +125,17 @@ function digestsCiteOurHalf(localRecord: CapsuleRecord | null | undefined, peerR
   )
 }
 
+/** A real sealed capsule id is 64 lower-hex (`capsule-emit-mesh`
+ *  capsule-producer `DIGEST_LEN`); the self-minted per-response marker
+ *  `capsule-<response.id>` (e.g. `capsule-chatcmpl-…`) is not. Only a
+ *  digest-shaped id can be fetched and closed against real bytes, so a
+ *  non-digest peer assertion must render "not given" with nothing to fetch,
+ *  never "known but not fetched" (a fetch that can only fail). Mirrors the
+ *  host's `capsule_id_is_digest_shaped` (openai-frontend). */
+export function capsuleIdIsDigestShaped(id: string | null | undefined): boolean {
+  return typeof id === 'string' && /^[0-9a-f]{64}$/.test(id)
+}
+
 export function deriveRightCellState(
   row: PaneCRow,
   theirsRecompute?: PeerRecomputeState,
@@ -152,6 +164,14 @@ export function deriveRightCellState(
     return { kind: closed ? 'closed' : 'open_pending_fetch', date: null }
   }
 
+  // No confirmed fetch yet. A peer id is "known but not fetched" (fetchable)
+  // ONLY when it is digest-shaped; a self-minted correlation marker
+  // (`capsule-chatcmpl-…`) is not fetchable, so the honest state is "not
+  // given", not a pending fetch that can only fail.
+  if (!capsuleIdIsDigestShaped(row.theirs.capsule_id)) {
+    return { kind: 'open_not_given', date: null }
+  }
+
   return { kind: 'open_pending_fetch', date: null }
 }
 
@@ -176,6 +196,8 @@ export function rightCellText(state: RightCellState): string {
       return `Asked ${dateOrFallback(state.date)}. No reply yet.`
     case 'open_pending_fetch':
       return 'A peer capsule is known but not fetched — expand checks to fetch it.'
+    case 'open_not_given':
+      return 'Their capsule id: not given — nothing to fetch yet.'
     case 'open_not_asked':
       return "You haven't asked for their half."
     default: {
@@ -199,6 +221,8 @@ export function rightCellStatusLabel(state: RightCellState): string {
       return 'OPEN · asked'
     case 'open_pending_fetch':
       return 'OPEN · pending fetch'
+    case 'open_not_given':
+      return 'OPEN'
     case 'open_not_asked':
       return 'OPEN'
     default: {
@@ -227,6 +251,8 @@ export function rightCellAction(state: RightCellState): string | null {
     case 'open_asked':
       return 'Ask again'
     case 'open_pending_fetch':
+      return null
+    case 'open_not_given':
       return null
     case 'open_not_asked':
       return 'Ask them for their half'
@@ -285,6 +311,7 @@ export function ledgerStateFilterValue(state: RightCellState): LedgerStateFilter
     case 'open_refused':
     case 'open_absent':
     case 'open_pending_fetch':
+    case 'open_not_given':
     case 'open_not_asked':
       return 'open'
     default: {
