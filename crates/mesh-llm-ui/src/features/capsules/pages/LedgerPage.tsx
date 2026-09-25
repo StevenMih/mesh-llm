@@ -8,10 +8,12 @@
 // Security boundary: NO user-visible strings may name internal tooling,
 // internal item IDs, or any branded service name. Comments are exempt.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useNavigate } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
-import { Search as SearchIcon, ShieldCheck } from 'lucide-react'
+import { ArrowLeftRight, Search as SearchIcon, ShieldCheck, Users } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { EmptyState } from '@/components/ui/EmptyState'
 import { FilterPopover, type FilterValueOption } from '@/components/ui/FilterPopover'
 import { InfoBanner } from '@/components/ui/InfoBanner'
 import { Input } from '@/components/ui/input'
@@ -148,6 +150,7 @@ function ExchangesBalanceHeader({ card }: { card: JsonRecord | null | undefined 
 // ---------------------------------------------------------------------------
 
 function PeersSection({ recordsById }: { recordsById: Map<string, CapsuleRecord> }) {
+  const navigate = useNavigate()
   const { mode } = useDataMode()
   const harnessMode = mode === 'harness'
   const query = useQuery({
@@ -208,14 +211,43 @@ function PeersSection({ recordsById }: { recordsById: Map<string, CapsuleRecord>
   const dealtWithViews = sortedDealtWithRawRows.map((row) => dealtWithRowView(row, resolveTimestamp))
   const advertisedViews = advertisedPeers.map((peer) => advertisedOnlyRowView(peer.shortId ?? peer.id))
 
+  // [mesh-evidence-ui-headlines-and-empty-states] §3E -- the role-aware
+  // headline needs the real advertised/dealt-with counts, which only this
+  // section's data pipeline has (mesh status + pane-b rows); the call
+  // site's own intro sentence stays static prose above it. `role !== 'you'`
+  // excludes this node's own self entry, same exclusion `advertisedOnlyPeers`
+  // already applies to the table's second row group.
+  const advertisedCount = meshStatus.peers.filter((peer) => peer.role !== 'you').length
+  const dealtWithCount = dealtWithViews.length
+
   if (dealtWithViews.length === 0 && advertisedViews.length === 0) {
-    return <p className="text-sm text-muted-foreground">No peer exchanges recorded yet.</p>
+    return (
+      <EmptyState
+        description={`${advertisedCount} peers advertised on the mesh so far · ${dealtWithCount} you have dealt with on the record. Once you ask another node for an answer, or serve one to a peer, this tab will show what they've shown you and whether it holds up.`}
+        hint={
+          <Button
+            className="ui-control h-8 gap-1.5 rounded-[var(--radius)] px-2.5 text-[length:var(--density-type-caption)]"
+            onClick={() => navigate({ to: '/chat' })}
+            size="sm"
+            type="button"
+            variant="outline"
+          >
+            Open Chat to start one
+          </Button>
+        }
+        icon={<Users aria-hidden="true" className="size-10" strokeWidth={1.4} />}
+        title="No peers recorded yet"
+      />
+    )
   }
 
   return (
     <div className="flex flex-col gap-2">
-      {/* L3.1 — Peers section headline lives at the call site (the Peers tab
-         panel in `LedgerPageContent`'s render, below) so it isn't duplicated. */}
+      {/* L3.1/§3E — the role-aware headline, two counts, never a ratio. */}
+      <p className="text-sm font-medium text-foreground">
+        {advertisedCount} peer{advertisedCount === 1 ? '' : 's'} advertised · {dealtWithCount} you have dealt with on
+        the record.
+      </p>
       {unattributedExchangeCount > 0 ? (
         <p className="text-sm text-foreground">{unattributedExchangesLine(unattributedExchangeCount)}</p>
       ) : null}
@@ -286,14 +318,23 @@ function rowMatchesStateFilter(row: ExchangeLedgerRow, selected: ReadonlySet<str
 function ExchangesSection({
   recordsById,
   nodePubKeyPem,
+  onGoToIntegrity,
   requesterStartedDate,
   focusExchangeKey
 }: {
   recordsById: Map<string, CapsuleRecord>
   nodePubKeyPem: string | null
+  /** [mesh-evidence-ui-headlines-and-empty-states] §3E -- "Get the other side’s half" and
+   *  "Register a checkpoint" beside the headline both land on the Integrity
+   *  tab's setup checklist, the one place either step actually exists today
+   *  (`SetupChecklist` — neither has a wired end-to-end action yet, same
+   *  honest-stub discipline as `handleAskForHalf` below). Deep-linking to
+   *  the specific checklist row is `[mesh-evidence-ui-drill-paths]`'s job. */
+  onGoToIntegrity: () => void
   requesterStartedDate?: string | null
   focusExchangeKey?: string
 }) {
+  const navigate = useNavigate()
   const { mode } = useDataMode()
   const harnessMode = mode === 'harness'
   // Distinct queryKey from the top-level/Integrity pane-a query (no `mode`
@@ -562,16 +603,31 @@ function ExchangesSection({
     )
   }
 
-  // L3.7 — Requester empty state
+  // L3.7 / §3F — Requester empty state, as an invitation rather than a
+  // table header over nothing.
   if (!query.data || query.data.row_count === 0) {
     return (
       <div className="flex flex-col gap-2">
         {balanceHeader}
-        {requesterStartedDate ? (
-          <p className="text-sm text-muted-foreground">Your node started keeping its half on {requesterStartedDate}.</p>
-        ) : (
-          <p className="text-sm text-muted-foreground">No exchanges recorded yet.</p>
-        )}
+        <EmptyState
+          description="Once you ask another node for an answer, or serve one to a peer, each exchange appears here as a two-sided record — your sealed half and theirs, as they give it to you."
+          hint={
+            <div className="flex flex-col items-center gap-2">
+              <Button
+                className="ui-control h-8 gap-1.5 rounded-[var(--radius)] px-2.5 text-[length:var(--density-type-caption)]"
+                onClick={() => navigate({ to: '/chat' })}
+                size="sm"
+                type="button"
+                variant="outline"
+              >
+                Open Chat to start one
+              </Button>
+              {requesterStartedDate ? <span>Your node started keeping its half on {requesterStartedDate}.</span> : null}
+            </div>
+          }
+          icon={<ArrowLeftRight aria-hidden="true" className="size-10" strokeWidth={1.4} />}
+          title="No exchanges yet"
+        />
       </div>
     )
   }
@@ -614,10 +670,39 @@ function ExchangesSection({
       <p className="text-sm text-fg-dim">
         Each exchange is a pair of sealed records — yours and theirs. Both sides keep a copy.
       </p>
-      {/* L3.8 — Two counts, no ratio */}
-      <p className="text-sm font-medium text-foreground">
-        {total} exchange{total === 1 ? '' : 's'} · {confirmed} confirmed by the other side
-      </p>
+      {/* L3.8/§3E — Two counts plus registration, no ratio, with the one
+         action that changes each ("Get the other side’s half" / "Register a checkpoint"
+         both land on Integrity's setup checklist — see `onGoToIntegrity`'s
+         doc comment above). */}
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-sm font-medium text-foreground">
+          {/* "You sealed N" not "N sealed by you" -- the exceptions-first
+             line below uses the latter phrase verbatim; a duplicate
+             substring here would make queries for either line ambiguous. */}
+          You sealed {total} exchange{total === 1 ? '' : 's'} · {confirmed} confirmed by the other side ·{' '}
+          {registered ? 'registered' : 'not registered'}.
+        </p>
+        <div className="flex items-center gap-2">
+          <Button
+            className="ui-control h-8 gap-1.5 rounded-[var(--radius)] px-2.5 text-[length:var(--density-type-caption)]"
+            onClick={onGoToIntegrity}
+            size="sm"
+            type="button"
+            variant="outline"
+          >
+            Get the other side’s half
+          </Button>
+          <Button
+            className="ui-control h-8 gap-1.5 rounded-[var(--radius)] px-2.5 text-[length:var(--density-type-caption)]"
+            onClick={onGoToIntegrity}
+            size="sm"
+            type="button"
+            variant="outline"
+          >
+            Register a checkpoint
+          </Button>
+        </div>
+      </div>
       {/* Exceptions-first line — leads with what needs attention, range
          stated, never a flat count that buries a failure below it. */}
       <p className="text-sm text-fg-dim">
@@ -1204,6 +1289,7 @@ export function LedgerPageContent({ focusExchangeKey }: { focusExchangeKey?: str
                   <ExchangesSection
                     focusExchangeKey={focusExchangeKey}
                     nodePubKeyPem={nodePubKeyPem}
+                    onGoToIntegrity={() => setActiveTab('integrity')}
                     recordsById={recordsById}
                   />
                 )

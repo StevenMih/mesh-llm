@@ -17,7 +17,7 @@
 import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { LedgerPageContent } from '@/features/capsules/pages/LedgerPage'
 import { CHAIN_BAR_INFO, INTEGRITY_TILE_INFO } from '@/features/capsules/lib/integrity-view'
 
@@ -73,6 +73,33 @@ function makeWrapper() {
 // ---------------------------------------------------------------------------
 
 describe('LedgerPageContent', () => {
+  // `mockResolvedValue` (not `...Once`) on one test persists past that
+  // test's end -- `clearAllMocks` (below) clears call history, not
+  // implementations. Re-establishing the same defaults the top-level
+  // `vi.mock` factory set keeps every test's starting state independent of
+  // whatever a previous test last configured, without touching the
+  // per-test overrides that rely on `mockResolvedValue`'s persistence
+  // *within* their own test (see the "Exchanges header shows two counts"
+  // test's own comment on that).
+  beforeEach(async () => {
+    const { fetchPaneA, fetchPaneB, fetchPaneCList } = await import('@/features/capsules/api/sidecarClient')
+    vi.mocked(fetchPaneA).mockResolvedValue({
+      rows: [],
+      operator: null,
+      witness_checkpoint_supplied: false,
+      card: null
+    })
+    vi.mocked(fetchPaneB).mockResolvedValue({ rows: [], peer_count: 0 })
+    vi.mocked(fetchPaneCList).mockResolvedValue({
+      rows: [],
+      row_count: 0,
+      default_sort: '',
+      filters: [],
+      next_after_seq: null,
+      archived_segments: []
+    })
+  })
+
   afterEach(() => {
     vi.clearAllMocks()
   })
@@ -178,6 +205,22 @@ describe('LedgerPageContent', () => {
     await user.click(screen.getByRole('tab', { name: /peers/i }))
 
     expect(await screen.findByText('peer-1')).toBeInTheDocument()
+
+    // [mesh-evidence-ui-headlines-and-empty-states] §3E -- the role-aware
+    // headline. `useStatusQuery` is globally mocked to `{ data: undefined }`
+    // in this file (no mesh-status peers), so "advertised" is honestly 0
+    // even though one peer was dealt with on the record.
+    expect(screen.getByText('0 peers advertised · 1 you have dealt with on the record.')).toBeInTheDocument()
+  })
+
+  it('[mesh-evidence-ui-headlines-and-empty-states] Peers empty state is an invitation, never a bare "No peer exchanges recorded yet."', async () => {
+    const user = userEvent.setup()
+    render(<LedgerPageContent />, { wrapper: makeWrapper() })
+    await user.click(screen.getByRole('tab', { name: /peers/i }))
+
+    expect(await screen.findByText('No peers recorded yet')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Open Chat to start one' })).toBeInTheDocument()
+    expect(screen.queryByText('No peer exchanges recorded yet.')).not.toBeInTheDocument()
   })
 
   it('[ledger-T2-counterparty-not-recorded] Peers: no card for an unattributed row — its exchanges roll into one headline count, never "unknown peer"', async () => {
@@ -330,7 +373,141 @@ describe('LedgerPageContent', () => {
     expect(bodyText).not.toMatch(/33%/)
   })
 
+  it('[mesh-evidence-ui-headlines-and-empty-states] Exchanges headline states registration and never collides with the exceptions-first line below it', async () => {
+    const { fetchPaneCList } = await import('@/features/capsules/api/sidecarClient')
+    vi.mocked(fetchPaneCList).mockResolvedValue({
+      rows: [
+        {
+          exchange_key: 'exc-1',
+          role_tag: 'initiator',
+          header_state: 'ok',
+          properties: null,
+          has_issue: false,
+          mine: { state: 'present', capsule_id: null },
+          theirs: { state: 'absent', capsule_id: null },
+          unilateral: true,
+          timestamp: null
+        }
+      ],
+      row_count: 1,
+      default_sort: '',
+      filters: [],
+      next_after_seq: null,
+      archived_segments: []
+    })
+
+    const user = userEvent.setup()
+    render(<LedgerPageContent />, { wrapper: makeWrapper() })
+    await user.click(screen.getByRole('tab', { name: /exchanges/i }))
+
+    const headerEl = await screen.findByText(/confirmed by the other side/i)
+    expect(headerEl.textContent).toBe('You sealed 1 exchange · 0 confirmed by the other side · not registered.')
+
+    // R4 negative: the headline says "You sealed", never the exceptions-
+    // first line's own "N sealed by you" phrase -- a regression that
+    // reintroduced that substring here would make `findByText` below throw
+    // on multiple matches instead of failing this specific assertion, so
+    // the check is a direct substring guard, not just a query.
+    expect(headerEl.textContent).not.toMatch(/sealed by you/)
+    expect(await screen.findByText(/^\d+ sealed by you/)).toBeInTheDocument()
+  })
+
+  it('[mesh-evidence-ui-headlines-and-empty-states] "Get the other side’s half" and "Register a checkpoint" beside the Exchanges headline both open Integrity — the one place either setup step exists today', async () => {
+    const { fetchPaneCList } = await import('@/features/capsules/api/sidecarClient')
+    vi.mocked(fetchPaneCList).mockResolvedValue({
+      rows: [
+        {
+          exchange_key: 'exc-1',
+          role_tag: 'initiator',
+          header_state: 'ok',
+          properties: null,
+          has_issue: false,
+          mine: { state: 'present', capsule_id: null },
+          theirs: { state: 'absent', capsule_id: null },
+          unilateral: true,
+          timestamp: null
+        }
+      ],
+      row_count: 1,
+      default_sort: '',
+      filters: [],
+      next_after_seq: null,
+      archived_segments: []
+    })
+
+    const user = userEvent.setup()
+    render(<LedgerPageContent />, { wrapper: makeWrapper() })
+    await user.click(screen.getByRole('tab', { name: /exchanges/i }))
+    await screen.findByText(/confirmed by the other side/i)
+
+    await user.click(screen.getByRole('button', { name: 'Get the other side’s half' }))
+    expect(await screen.findByText('Chain integrity')).toBeInTheDocument()
+
+    await user.click(screen.getByRole('tab', { name: /exchanges/i }))
+    await screen.findByText(/confirmed by the other side/i)
+    await user.click(screen.getByRole('button', { name: 'Register a checkpoint' }))
+    expect(await screen.findByText('Chain integrity')).toBeInTheDocument()
+  })
+
+  it('[mesh-evidence-ui-headlines-and-empty-states] Exchanges empty state is an invitation, never a bare table header over nothing', async () => {
+    // `mockResolvedValue` (not `...Once`) on a prior test in this describe
+    // block persists across tests -- `clearAllMocks` in `afterEach` clears
+    // call history, not implementations -- so this test restores the
+    // empty-pane-c default explicitly rather than depending on ordering.
+    const { fetchPaneCList } = await import('@/features/capsules/api/sidecarClient')
+    vi.mocked(fetchPaneCList).mockResolvedValue({
+      rows: [],
+      row_count: 0,
+      default_sort: '',
+      filters: [],
+      next_after_seq: null,
+      archived_segments: []
+    })
+
+    const user = userEvent.setup()
+    render(<LedgerPageContent />, { wrapper: makeWrapper() })
+    await user.click(screen.getByRole('tab', { name: /exchanges/i }))
+
+    expect(await screen.findByText('No exchanges yet')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Open Chat to start one' })).toBeInTheDocument()
+    expect(screen.queryByText('No exchanges recorded yet.')).not.toBeInTheDocument()
+  })
+
+  // Both tests below need at least one exchange row -- at true zero rows
+  // [mesh-evidence-ui-headlines-and-empty-states] now renders the L3.7
+  // invitation card instead of the headline/exceptions-first line, so a
+  // populated fixture is what actually exercises the code these tests
+  // describe (previously this relied on an EARLIER test's persistent
+  // `mockResolvedValue` leaking a 3-row payload forward -- an
+  // order-dependent coincidence the `beforeEach` default-reset above no
+  // longer allows).
+  function oneCleanExchangeRow() {
+    return {
+      rows: [
+        {
+          exchange_key: 'exc-only',
+          role_tag: 'initiator',
+          header_state: 'ok',
+          properties: null,
+          has_issue: false,
+          mine: { state: 'present', capsule_id: null },
+          theirs: { state: 'absent', capsule_id: null },
+          unilateral: true,
+          timestamp: null
+        }
+      ],
+      row_count: 1,
+      default_sort: '',
+      filters: [],
+      next_after_seq: null,
+      archived_segments: []
+    }
+  }
+
   it('Exchanges hides the balance header strip entirely on a null card — never a "no data" line above real rows', async () => {
+    const { fetchPaneCList } = await import('@/features/capsules/api/sidecarClient')
+    vi.mocked(fetchPaneCList).mockResolvedValue(oneCleanExchangeRow())
+
     const user = userEvent.setup()
     render(<LedgerPageContent />, { wrapper: makeWrapper() })
     await user.click(screen.getByRole('tab', { name: /exchanges/i }))
@@ -357,8 +534,10 @@ describe('LedgerPageContent', () => {
     // [mesh-console-evidence-tab-honesty-defects] finding 7: the calm-state
     // line no longer claims "Nothing needs your attention... all recomputed
     // clean" -- it states the role-aware truth (sealed / confirmed by
-    // anyone else / registered), true of the default empty-pane-c mock (0
-    // rows, 0 confirmed, no witnesses).
+    // anyone else / registered).
+    const { fetchPaneCList } = await import('@/features/capsules/api/sidecarClient')
+    vi.mocked(fetchPaneCList).mockResolvedValue(oneCleanExchangeRow())
+
     const user = userEvent.setup()
     render(<LedgerPageContent />, { wrapper: makeWrapper() })
     await user.click(screen.getByRole('tab', { name: /exchanges/i }))
