@@ -121,6 +121,49 @@ pub(super) fn read_capsule_records(ledger_dir: &Path) -> Vec<Value> {
         .collect()
 }
 
+/// Reads `<ledger_dir>/checkpoints.jsonl` (co-located with `capsules.jsonl`,
+/// written by the plugin's checkpoint cadence via `cll::store` -- one JSON
+/// object per line, the same on-disk shape `accountability_pane_routes.py`
+/// reads for its own card face) and builds Pane A's `card`.
+///
+/// The count is the number of real checkpoint lines on disk: 0 when the file
+/// is absent or empty -- which `integrity-view.ts` renders as "no checkpoint
+/// yet", the honest empty state, never a fabricated registration. When at
+/// least one checkpoint exists, the latest one's `timestamp` becomes
+/// `registered_no_later_than` and its `witnesses` (the external receipts, or
+/// an honest `[]` for a self-checkpointed node) are surfaced -- exactly the
+/// fields the Integrity view reads off `card`. `build_pane_a` hardcoded
+/// `card: null` before this, so a real on-disk checkpoint never showed.
+fn read_checkpoint_card(ledger_dir: &Path) -> Value {
+    let path = ledger_dir.join("checkpoints.jsonl");
+    let checkpoints: Vec<Value> = match std::fs::read_to_string(&path) {
+        Ok(text) => text
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .collect(),
+        Err(_) => Vec::new(),
+    };
+    let mut card = json!({ "checkpoint_count": checkpoints.len() });
+    if let Some(latest) = checkpoints.last() {
+        if let Some(ts) = latest.get("timestamp").and_then(Value::as_str) {
+            card["registered_no_later_than"] = json!(ts);
+        }
+        card["witnesses"] = latest
+            .get("witnesses")
+            .cloned()
+            .unwrap_or_else(|| json!([]));
+        if let Some(root) = latest.get("root").and_then(Value::as_str) {
+            card["latest_root"] = json!(root);
+        }
+        if let Some(size) = latest.get("mmr_size") {
+            card["latest_mmr_size"] = size.clone();
+        }
+    }
+    card
+}
+
 fn request_digest(record: &Value) -> Option<&str> {
     record
         .pointer("/effect/request_digest")
@@ -261,7 +304,7 @@ fn role_tag(record: &Value) -> &'static str {
 
 /// Pane A ("This node") -- `capsule_accountability_tab.build_tab_payload`,
 /// restricted to the fields this cut computes for real (see module docs).
-pub(super) fn build_pane_a(records: &[Value]) -> Value {
+pub(super) fn build_pane_a(records: &[Value], card: Value) -> Value {
     let operator = records
         .iter()
         .rev()
@@ -306,7 +349,7 @@ pub(super) fn build_pane_a(records: &[Value]) -> Value {
         "operator": operator,
         "witness_checkpoint_supplied": false,
         "rows": rows,
-        "card": Value::Null,
+        "card": card,
     })
 }
 
@@ -516,7 +559,7 @@ pub(super) fn build_pane_json(
 ) -> Option<Value> {
     let records = read_capsule_records(ledger_dir);
     match pane {
-        "pane-a" => Some(build_pane_a(&records)),
+        "pane-a" => Some(build_pane_a(&records, read_checkpoint_card(ledger_dir))),
         "pane-b" => Some(build_pane_b(&records)),
         "pane-c" => Some(match exchange_id {
             Some(id) if !id.is_empty() => build_pane_c_drilldown(&records, id),
@@ -580,7 +623,7 @@ mod tests {
             "req-1",
             None,
         )];
-        let pane = build_pane_a(&records);
+        let pane = build_pane_a(&records, json!({ "checkpoint_count": 0 }));
         assert_eq!(pane["witness_checkpoint_supplied"], json!(false));
         assert_eq!(pane["operator"], json!("capsule-emit-mesh-poc-demo"));
         let row = &pane["rows"][0];
@@ -934,7 +977,43 @@ mod tests {
             "req-1",
             None,
         )];
-        assert_no_retired_vocabulary(&build_pane_a(&records), "$");
+        assert_no_retired_vocabulary(&build_pane_a(&records, json!({ "checkpoint_count": 0 })), "$");
+    }
+
+    /// [mesh-closed-on-frozen-base] Integrity checkpoint wiring: `build_pane_a`
+    /// hardcoded `card: null`, so a real on-disk checkpoint never reached the
+    /// Integrity view (which reads `card.checkpoint_count`). The card must now
+    /// report the honest count from `<ledger_dir>/checkpoints.jsonl` -- 0 when
+    /// absent (rendered "no checkpoint yet", never fabricated), the real count
+    /// + latest registration time when present.
+    #[test]
+    fn pane_a_card_reports_real_checkpoints_and_honest_zero_when_absent() {
+        // Absent file -> honest zero, no registration timestamp.
+        let empty = tempfile::tempdir().unwrap();
+        let zero = read_checkpoint_card(empty.path());
+        assert_eq!(zero["checkpoint_count"], json!(0));
+        assert!(zero.get("registered_no_later_than").is_none());
+        // The pane threads the honest zero through, so the UI reads "no
+        // checkpoint yet" -- a real mutant catch: reverting to `card: null`
+        // would make `pane["card"]["checkpoint_count"]` null, not 0.
+        assert_eq!(build_pane_a(&[], zero)["card"]["checkpoint_count"], json!(0));
+
+        // Two real checkpoint lines -> count 2 + the LATEST timestamp + its
+        // witnesses (the on-disk shape written by the cadence).
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("checkpoints.jsonl"),
+            "{\"kind\":\"mmr_checkpoint\",\"mmr_size\":3,\"root\":\"aa\",\"timestamp\":\"2026-09-03T07:23:31Z\",\"witnesses\":[]}\n\
+             {\"kind\":\"mmr_checkpoint\",\"mmr_size\":7,\"root\":\"bb\",\"timestamp\":\"2026-09-03T07:28:00Z\",\"witnesses\":[{\"ts_url\":\"https://witness.example\"}]}\n",
+        )
+        .unwrap();
+        let card = read_checkpoint_card(dir.path());
+        assert_eq!(card["checkpoint_count"], json!(2));
+        assert_eq!(card["registered_no_later_than"], json!("2026-09-03T07:28:00Z"));
+        assert_eq!(card["latest_root"], json!("bb"));
+        assert_eq!(card["latest_mmr_size"], json!(7));
+        assert_eq!(card["witnesses"].as_array().unwrap().len(), 1);
+        assert_eq!(build_pane_a(&[], card)["card"]["checkpoint_count"], json!(2));
     }
 
     #[test]
