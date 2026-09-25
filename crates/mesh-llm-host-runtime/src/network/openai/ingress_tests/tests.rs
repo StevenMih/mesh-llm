@@ -1500,15 +1500,13 @@ async fn route_missing_local_model_enters_remote_mesh_branch_when_peer_serves_mo
     );
 }
 
-/// [mesh-console-evidence-tab-honesty-defects] finding 4: `terminal_remote_mesh`
-/// used to hard-code `request_digest: None` on the reasoning that a routing
-/// node "never resolves [usage/serving-provenance] for itself" -- true of
-/// those two, but this node HOLDS the exact body it is forwarding to the
-/// peer, so it can (and must) digest it the same way the host-served branch
-/// already did. Without the fix, a downstream capsule sealed every
-/// `RemoteMesh` exchange's `agent_input_digest` as the non-digest sentinel
-/// `unknown-request:<model>` instead of a real digest, even though the real
-/// bytes were on hand the whole time.
+/// `terminal_remote_mesh` used to hard-code `request_digest: None` on the
+/// reasoning that a routing node "never resolves [usage/serving-provenance]
+/// for itself" -- true of those two, but this node HOLDS the exact body it
+/// is forwarding to the peer, so it can (and must) digest it the same way
+/// the host-served branch already did. Without the fix, every `RemoteMesh`
+/// exchange's terminal event carried `request_digest: None`, even though
+/// the real bytes were on hand the whole time.
 ///
 /// MUTANT: reverting `route_missing_local_model`'s `.with_request_digest(...)`
 /// call makes this fail -- `events[1].request_digest` would read `None`.

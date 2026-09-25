@@ -1070,25 +1070,9 @@ async fn route_missing_local_model(
                 // is true of the PEER's serving provenance (unknowable here)
                 // but not of the request body: this node parsed and is
                 // relaying that exact body, so it can digest it the same way
-                // the host-served branch above does
-                // ([mesh-console-evidence-tab-honesty-defects] finding 4 --
-                // without this, every routed exchange sealed
-                // `unknown-request:<model>`, a non-digest sentinel, instead of
-                // the real JCS digest). `ensure_body_json` is idempotent and
-                // only paid here, inside the `channel.is_some()` branch.
-                // The canonical digest of the REAL request body this node is
-                // forwarding to the peer -- `terminal_remote_mesh` used to
-                // hard-code this absent with the reasoning "a routing node
-                // forwarding to a peer never resolves them for itself," which
-                // is true of the PEER's serving provenance (unknowable here)
-                // but not of the request body: this node parsed and is
-                // relaying that exact body, so it can digest it the same way
-                // the host-served branch above does
-                // ([mesh-console-evidence-tab-honesty-defects] finding 4 --
-                // without this, every routed exchange sealed
-                // `unknown-request:<model>`, a non-digest sentinel, instead of
-                // the real JCS digest). `ensure_body_json` is idempotent and
-                // only paid here, inside the `channel.is_some()` branch.
+                // the host-served branch above does. `ensure_body_json` is
+                // idempotent and only paid here, inside the `channel.is_some()`
+                // branch.
                 request.ensure_body_json();
                 if let Some(digest) = request
                     .body_json
@@ -1319,8 +1303,7 @@ fn spawn_ambient_twin_dispatch(args: AmbientTwinDispatchArgs) {
             )
             .with_twin_bracket_id(bracket_id);
             // Same real digest of the forwarded request body as the primary
-            // dispatch's terminal event -- see the comment on that call site
-            // ([mesh-console-evidence-tab-honesty-defects] finding 4).
+            // dispatch's terminal event -- see the comment on that call site.
             request.ensure_body_json();
             if let Some(digest) = request
                 .body_json
