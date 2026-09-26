@@ -219,6 +219,21 @@ describe('confirmedByOtherSide — routed through the ONE gate, the same predica
     expect(confirmedByOtherSideText(summary)).toBe('3 / 3')
   })
 
+  it('[record-vs-exchange] denominator is the DISTINCT-exchange count, so 3 confirmed exchanges read "3 / 3", never "3 / 6"', () => {
+    // The host now sends exchange_count as the distinct-exchange count
+    // (`distinct_exchange_count` in capsule_panes_native.rs), NOT the record
+    // count -- 3 exchanges, whose 6 halves would have read "3 / 6" off a
+    // record count. The peer-row view reads that field verbatim for both the
+    // Exchanges cell and the Confirmed denominator, so both track the fix.
+    const row = baseRow({
+      exchange_count: 3,
+      confirmed_siblings: [confirmedSibling(), confirmedSibling(), confirmedSibling()]
+    })
+    expect(confirmedByOtherSideText(confirmedByOtherSide(row))).toBe('3 / 3')
+    expect(dealtWithRowView(row).exchangeCount).toBe(3)
+    expect(dealtWithRowView(row).confirmedByOtherSide).toBe('3 / 3')
+  })
+
   it('never closes a sibling the gate does not close (no signature, or no digest match)', () => {
     const row = baseRow({
       exchange_count: 2,

@@ -518,6 +518,32 @@ fn exchange_key_for(record: &Value) -> Option<String> {
         .map(str::to_string)
 }
 
+/// The number of DISTINCT exchanges a set of records represents -- grouped by
+/// the ONE correlator (`exchange_key_for`, digest-first), NOT `records.len()`.
+///
+/// A single cross-node exchange has TWO halves that both land in a peer's
+/// working set (this node's own half from `capsules.jsonl` PLUS the peer's
+/// pushed half re-entered from the held-artifact store), and both carry the same
+/// `request_digest`, so they share one `exchange_key_for` key. Counting records
+/// therefore double-counts: 3 real exchanges x 2 halves reads "6 exchanges" and
+/// makes confirmed show "3 / 6" when the truth is 3 of 3. Counting distinct keys
+/// collapses the two halves back to one exchange. A record with NO correlator
+/// (`None`) cannot be joined to any other, so it counts as its own exchange --
+/// never silently merged into a single bucket.
+fn distinct_exchange_count(records: &[Value]) -> usize {
+    let mut keys: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut uncorrelated = 0usize;
+    for record in records {
+        match exchange_key_for(record) {
+            Some(key) => {
+                keys.insert(key);
+            }
+            None => uncorrelated += 1,
+        }
+    }
+    keys.len() + uncorrelated
+}
+
 /// [ledger-T11b-twin-bracket] the id shared by BOTH halves of an ambient
 /// twin comparison, forwarded verbatim by the capsule-producer plugin off
 /// the terminal envelope's own `twin_bracket_id` -- rides alongside
@@ -819,7 +845,11 @@ fn dealt_with_row(
     identity: Option<&PeerIdentity>,
 ) -> Value {
     let (first_seen, last_seen) = seen_range(records);
-    let total = records.len();
+    // The count of DISTINCT exchanges (by the ONE correlator), NOT records.len():
+    // the two halves of one cross-node exchange (this node's own + the peer's
+    // pushed half) share a correlation key and must count once, so confirmed
+    // reads "3 / 3", never "3 / 6". See `distinct_exchange_count`.
+    let total = distinct_exchange_count(records);
     let confirmed_siblings =
         confirmed_siblings_for(records, siblings_by_key, received_provenance);
     let served_count = records.iter().filter(|r| label_role(r) == "served").count();
@@ -903,7 +933,9 @@ fn unattributed_row(
         .iter()
         .filter(|r| label_role(r) == "requested")
         .count();
-    let total = records.len();
+    // Distinct exchanges by the ONE correlator, NOT records.len() -- same
+    // record-vs-exchange discipline as the dealt-with rows (`distinct_exchange_count`).
+    let total = distinct_exchange_count(records);
     let (role, role_text) = if requested_count > 0 && served_count > 0 {
         (
             "both",
@@ -1898,6 +1930,64 @@ mod tests {
         );
     }
 
+    /// `distinct_exchange_count` collapses the two halves of one cross-node
+    /// exchange (same request_digest) to ONE, counts an uncorrelated record
+    /// (no request_digest, no exchange_id) as its own exchange, and never
+    /// double-counts. This is the record-vs-exchange fix: 6 halves of 3
+    /// exchanges count as 3, not 6.
+    #[test]
+    fn distinct_exchange_count_counts_exchanges_not_records() {
+        // 3 exchanges, each with two halves sharing a request_digest.
+        let mut records = Vec::new();
+        for i in 0..3 {
+            let d = format!("{i}").repeat(64);
+            records.push(mesh_half(&format!("mine-{i}"), "requested", &d, "resp", &format!("m4-{i}")));
+            records.push(mesh_half(&format!("theirs-{i}"), "served", &d, "resp", &format!("m3-{i}")));
+        }
+        assert_eq!(records.len(), 6);
+        assert_eq!(distinct_exchange_count(&records), 3, "6 halves -> 3 exchanges, never 6");
+
+        // A record with neither a request_digest nor an exchange_id cannot be
+        // correlated, so it counts as its own exchange -- never merged away.
+        let mut uncorrelated = json!({ "capsule_id": "x", "timestamp": "t" });
+        assert!(exchange_key_for(&uncorrelated).is_none());
+        uncorrelated["effect"] = json!({});
+        records.push(uncorrelated);
+        assert_eq!(distinct_exchange_count(&records), 4);
+    }
+
+    /// The peer-row "N exchanges" figure counts DISTINCT exchanges, so a peer
+    /// with 3 exchanges whose 3 served halves all arrived by push and closed
+    /// reads confirmed "3 / 3" -- never "3 / 6" off a record count. This is
+    /// the [record-vs-exchange] double-count fix end to end.
+    #[test]
+    fn pane_b_exchange_count_and_confirmed_denominator_count_exchanges_not_records() {
+        let mut records = Vec::new();
+        let mut provenance: HashMap<String, ReceivedProvenance> = HashMap::new();
+        for i in 0..3 {
+            let d = format!("{i}").repeat(64);
+            // This node asked; its own requester half.
+            records.push(mesh_half(&format!("mine-{i}"), "requested", &d, "resp", &format!("m4-{i}")));
+            // The peer's served half arrived by push (verified) and correlates
+            // by digest -- re-entered into the working set like the real reader.
+            let theirs_id = format!("theirs-{i}");
+            records.push(mesh_half(&theirs_id, "served", &d, "resp", &format!("m3-{i}")));
+            provenance.extend([provenance_for(&theirs_id, "m3")]);
+        }
+
+        let pane = build_pane_b(&records, &provenance);
+        let row = pane["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["peer_id"] == json!("node:m3"))
+            .expect("the served peer is attributed");
+        // Three exchanges, six halves.
+        assert_eq!(row["exchange_count"], json!(3), "distinct exchanges, not the 6 records");
+        // Three pushed served halves closed through the ONE gate.
+        assert_eq!(row["confirmed_siblings"].as_array().unwrap().len(), 3);
+    }
+
     /// A peer with only this node's own half (no pushed sibling, no
     /// provenance) supplies an EMPTY `confirmed_siblings` -- the gate reads
     /// that as "not confirmed", and the row stays "their half not held". No
@@ -2168,8 +2258,12 @@ mod tests {
         assert_eq!(row["identity"]["signing_key_id"], json!(peer_key));
         assert_eq!(row["identity"]["endpoint_id"], json!("e5ba9d1001"));
         assert_eq!(row["identity"]["node_id"], json!(their_node));
-        // Both the served exchange's halves AND the asked half land here.
-        assert_eq!(row["exchange_count"], json!(3));
+        // exchange_count is DISTINCT exchanges by the ONE correlator, not the
+        // record count: the served exchange's two halves (local_served +
+        // pushed_requester) share request_digest d..d -> ONE exchange, and the
+        // asked half (digest f..f) is a second. Three records, TWO exchanges.
+        // (The record count would read 3 -- the double-count Item 3 fixes.)
+        assert_eq!(row["exchange_count"], json!(2));
     }
 
     /// [mesh-citing-record-shots-four-defects] D4(a): a requester-side OPEN
