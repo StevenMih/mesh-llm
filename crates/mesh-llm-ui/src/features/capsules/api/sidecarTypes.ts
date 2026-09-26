@@ -225,8 +225,30 @@ export type PaneCRow = {
      *  fetchable join key, same "never fabricate" discipline as every other
      *  optional field in this file. */
     peer_id?: string | null
+    /** [mesh-closed-on-frozen-base] The record-push door's provenance triple
+     *  for a locally-held, identity-verified counterparty half
+     *  (`capsule_panes_native.rs::theirs_sibling_cell`, sourced from
+     *  `received-provenance.jsonl`). `signature_ok` is the door's recorded
+     *  verdict of the peer-key signature check -- the ONLY fact the CLOSED
+     *  gate trusts to close a local sibling WITHOUT a live browser fetch (the
+     *  push-primary path). Absent on every row with no received-provenance
+     *  line; a self-sealed / provenance-less sibling never carries it, so it
+     *  never closes. */
+    signature_ok?: boolean
+    received_from?: string
+    via?: string
+    received_at?: string
   }
   unilateral: boolean
+  /** [mesh-closed-on-frozen-base] The STRUCTURAL digest reconciliation of a
+   *  correlated pair (`capsule_panes_native.rs::digest_match_state`) -- both
+   *  halves' `effect.request_digest`/`effect.response_digest` compared
+   *  field-by-field. This is the `digestsCiteOurHalf` INPUT the CLOSED gate
+   *  reads on the push-primary path (`exchange-row-state.ts`), never a second
+   *  predicate: `verified` (with `theirs.signature_ok`) closes the row,
+   *  `failed` contradicts it. Absent on a unilateral row (nothing to
+   *  reconcile). */
+  digest_match?: { state: 'verified' | 'failed' | 'absent' | 'present-unverified' }
   timestamp: string | null
   /** The conversation this exchange belongs to, when this node was the
    *  requester (v3 §2 L-O: a served row structurally has none -- this node

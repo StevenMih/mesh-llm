@@ -73,6 +73,7 @@
 //!    diverges the day a tampered record lands.
 
 use serde_json::{Value, json};
+use std::collections::HashMap;
 use std::path::Path;
 
 /// Sentinel for "this mechanism exists but isn't wired for a plugin-ledger
@@ -83,6 +84,17 @@ const NOT_CHECKED: &str = "NOT_CHECKED";
 /// about its contents) and are safe to compute without any crypto port.
 const STATE_PRESENT_UNVERIFIED: &str = "present-unverified";
 const STATE_ABSENT: &str = "absent";
+/// `capsule_exchange_tab.STATE_VERIFIED` / `STATE_FAILED` -- the two
+/// terminal outcomes of the structural `digest_match_grade`: both digest
+/// fields present and byte-equal (`VERIFIED`), or one field disagrees
+/// (`FAILED`). Both are STRUCTURAL (string equality of two fields both
+/// halves already carry), not a crypto claim -- the same discipline that
+/// already lets this reader compute `present-unverified`/`absent`. The
+/// crypto CLOSED predicate (signature-ok + capsule_id recompute) still
+/// lives in the ONE gate (`exchange-row-state.ts::deriveRightCellState`);
+/// this reader only supplies the digests-equal INPUT that gate reads.
+const STATE_VERIFIED: &str = "verified";
+const STATE_FAILED: &str = "failed";
 /// `peer_accountability_tab.CELL_PRESENT`.
 const CELL_PRESENT: &str = "present";
 /// Five-state property map (`PaneCRow.properties`'s wire vocabulary,
@@ -168,6 +180,126 @@ fn request_digest(record: &Value) -> Option<&str> {
     record
         .pointer("/effect/request_digest")
         .and_then(Value::as_str)
+}
+
+fn response_digest(record: &Value) -> Option<&str> {
+    record
+        .pointer("/effect/response_digest")
+        .and_then(Value::as_str)
+}
+
+/// `record_push.RECEIVED_PROVENANCE_FILENAME` -- the co-located sibling of
+/// `capsules.jsonl` (same convention as `checkpoints.jsonl`) the record-push
+/// door appends ONE line to per successfully identity-verified received push
+/// (`record_push._append_provenance`): `{capsule_id, received_from, via,
+/// received_at, signature_ok}`. Per `record_push`'s own module doc this file
+/// is *"the ONLY fact the pane's local-sibling CLOSED gate
+/// (`exchange-row-state.ts`) trusts to treat a locally-held capsule as a
+/// verified counterparty half"* -- so this reader NEVER treats a ledger
+/// record as a counterparty half unless its `capsule_id` has a line here
+/// carrying the provenance triple and `signature_ok: true`.
+const RECEIVED_PROVENANCE_FILENAME: &str = "received-provenance.jsonl";
+
+/// The provenance triple (+ `signature_ok`) the door recorded for one
+/// received foreign sibling. The door already verified the signature against
+/// the announced peer key BEFORE writing this line (`record_push`'s door:
+/// `key_id` matches `announced_key_for(sender_peer_id)` AND
+/// `verify_capsule_signature` passes, else the push is refused and NO line is
+/// written) -- so `signature_ok` here is the door's recorded verdict, read,
+/// never a second signature check in this route (which the module docstring's
+/// gap 2 deliberately does not port).
+pub(super) struct ReceivedProvenance {
+    received_from: String,
+    via: String,
+    received_at: String,
+    signature_ok: bool,
+}
+
+/// Reads `<ledger_dir>/received-provenance.jsonl` into a
+/// `capsule_id -> ReceivedProvenance` map. A missing file yields an empty map
+/// (the overwhelmingly common case: this node has received no push yet, so no
+/// row can close on a local sibling -- honest, never fabricated). Only lines
+/// carrying a non-empty `received_from` AND `signature_ok: true` are kept: the
+/// provenance rule (a self-sealed capsule, or one without `received_from`,
+/// never closes) is enforced HERE, at the door of what counts as a
+/// counterparty half, exactly as `record_push` writes it.
+fn read_received_provenance(ledger_dir: &Path) -> HashMap<String, ReceivedProvenance> {
+    let path = ledger_dir.join(RECEIVED_PROVENANCE_FILENAME);
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return HashMap::new();
+    };
+    let mut map = HashMap::new();
+    for line in text.lines().map(str::trim).filter(|l| !l.is_empty()) {
+        let Ok(entry) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        let Some(capsule_id) = entry.get("capsule_id").and_then(Value::as_str) else {
+            continue;
+        };
+        let received_from = entry
+            .get("received_from")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty());
+        // The provenance rule: no `received_from`, or `signature_ok` not
+        // literally true, means the door never treated this as a verified
+        // received half -- so neither does this reader.
+        let (Some(received_from), Some(true)) =
+            (received_from, entry.get("signature_ok").and_then(Value::as_bool))
+        else {
+            continue;
+        };
+        map.insert(
+            capsule_id.to_string(),
+            ReceivedProvenance {
+                received_from: received_from.to_string(),
+                via: entry
+                    .get("via")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                received_at: entry
+                    .get("received_at")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                signature_ok: true,
+            },
+        );
+    }
+    map
+}
+
+/// `capsule_exchange_tab.digest_match_grade`, the STRUCTURAL half of it: the
+/// two halves' `effect.request_digest`/`effect.response_digest` compared
+/// field-by-field. `verified` only when BOTH fields are present on BOTH halves
+/// and every field agrees; `failed` the instant one field disagrees (one
+/// broken field makes the pair untrustworthy -- never averaged away, matching
+/// the Python's `any_failed` rule); `present-unverified` when a field is
+/// missing but none disagree. This is pure byte-equality of fields both
+/// halves already carry -- the `digestsCiteOurHalf` INPUT the ONE gate reads,
+/// not a second copy of the CLOSED predicate. A `failed` here is exactly what
+/// the gate renders CONTRADICTED; a `verified` here (with the door's
+/// `signature_ok`) is what it renders CLOSED.
+fn digest_match_state(mine: &Value, theirs: &Value) -> &'static str {
+    let mut any_failed = false;
+    let mut any_absent = false;
+    for (a, b) in [
+        (request_digest(mine), request_digest(theirs)),
+        (response_digest(mine), response_digest(theirs)),
+    ] {
+        match (a, b) {
+            (Some(a), Some(b)) if a == b => {}
+            (Some(_), Some(_)) => any_failed = true,
+            _ => any_absent = true,
+        }
+    }
+    if any_failed {
+        STATE_FAILED
+    } else if any_absent {
+        STATE_PRESENT_UNVERIFIED
+    } else {
+        STATE_VERIFIED
+    }
 }
 
 /// `x-mesh-poc-v1` block, `capsule_mesh_view._poc_block`.
@@ -616,47 +748,157 @@ pub(super) fn build_pane_b(records: &[Value]) -> Value {
     })
 }
 
+/// The `theirs` cell when a real, provenance-carrying foreign SIBLING is held
+/// locally -- `build_exchange_row._side`'s present branch
+/// (`{state: present-unverified, capsule_id, role}`), plus the door's
+/// provenance triple (`received_from`/`via`/`received_at`/`signature_ok`) so
+/// the ONE gate (`exchange-row-state.ts::deriveRightCellState`) has the
+/// `signatureOk` input it reads to close a locally-held counterparty half.
+/// `state` is `present-unverified` (a real record, not yet crypto-checked in
+/// THIS route -- gap 2), exactly `mine`'s own state; the CLOSED/CONTRADICTED
+/// DECISION is the gate's, from this cell's provenance + the row's
+/// `digest_match`, never a second predicate here.
+fn theirs_sibling_cell(sibling: &Value, provenance: &ReceivedProvenance) -> Value {
+    json!({
+        "state": STATE_PRESENT_UNVERIFIED,
+        "capsule_id": sibling.get("capsule_id").cloned().unwrap_or(Value::Null),
+        "role": label_role(sibling),
+        "received_from": provenance.received_from,
+        "via": provenance.via,
+        "received_at": provenance.received_at,
+        "signature_ok": provenance.signature_ok,
+    })
+}
+
 /// Pane C ("This exchange") list mode -- `capsule_exchange_tab.
-/// build_exchange_list_payload`. `default_sort`/`filters` are the exact
-/// literal constants from capsule-emit-mesh main (`capsule_exchange_tab.py
-/// :549-552,764`), not guessed.
-pub(super) fn build_pane_c_list(records: &[Value]) -> Value {
-    let mut rows = Vec::new();
+/// build_exchange_list_payload` + `group_exchanges` + `build_exchange_row`.
+/// `default_sort`/`filters` are the exact literal constants from
+/// capsule-emit-mesh main (`capsule_exchange_tab.py:549-552,764`), not guessed.
+///
+/// **[mesh-closed-on-frozen-base] Route through the ONE gate; drop the
+/// `unilateral: true` hardcode.** This used to emit one row PER record with a
+/// hardcoded `unilateral: true`, gating CLOSED on a later browser peer-fetch
+/// -- a SECOND CLOSED predicate the one-gate rule forbids. It now mirrors
+/// Python `group_exchanges`: group every record sharing an `exchange_key_for`
+/// (the ONE correlator, digest-first) into ONE row, split into `mine` (this
+/// node's own capsules) and `theirs` (a foreign SIBLING held locally, proven
+/// by a `received-provenance.jsonl` line -- the provenance rule). `unilateral`
+/// is the STRUCTURAL fact `theirs is None`, never a crypto claim. When a
+/// provenance-carrying sibling IS correlated, its cell + the row's structural
+/// `digest_match` are SUPPLIED to the ONE gate (`deriveRightCellState`), which
+/// alone decides CLOSED (`signatureOk && digestsCiteOurHalf`) vs CONTRADICTED
+/// (digests differ) -- this route adds no second predicate and no exchange_id
+/// grouping. A sibling with no provenance line (self-sealed, or refused at the
+/// door) never fills `theirs`, so its row stays unilateral/OPEN: correlation
+/// feeds the gate, it never bypasses it.
+pub(super) fn build_pane_c_list(
+    records: &[Value],
+    received_provenance: &HashMap<String, ReceivedProvenance>,
+) -> Value {
+    // One pass, ledger order preserved: the first record of each exchange_key
+    // seeds a row in encounter order; later halves of the same exchange fold
+    // into that same row (never a second row -- the "6 rows not 3 pairs" bug).
+    let mut order: Vec<String> = Vec::new();
+    let mut groups: HashMap<String, Vec<&Value>> = HashMap::new();
     for record in records {
         let Some(exchange_key) = exchange_key_for(record) else {
             continue;
         };
-        rows.push(json!({
-            "exchange_key": exchange_key,
-            "role_tag": role_tag(record),
-            // `header_state`/`properties`/`has_issue` need the assurance
-            // map (`capsule_exchange_tab.build_assurance_map`), which is
-            // cryptographic re-verification -- out of this cut, see module
-            // docs. Real Python, given the same record, would NOT report
-            // "absent" here (content_binding/producer_signature/continuity
-            // are computable offline); this is the one deliberate,
-            // documented non-parity gap in this cut.
-            "header_state": STATE_ABSENT,
-            "properties": Value::Null,
-            "has_issue": false,
-            "mine": {
+        if !groups.contains_key(&exchange_key) {
+            order.push(exchange_key.clone());
+        }
+        groups.entry(exchange_key).or_default().push(record);
+    }
+
+    let is_received_sibling =
+        |record: &Value| -> bool {
+            record
+                .get("capsule_id")
+                .and_then(Value::as_str)
+                .is_some_and(|id| received_provenance.contains_key(id))
+        };
+
+    let mut rows = Vec::new();
+    for exchange_key in order {
+        let group = &groups[&exchange_key];
+        // A sibling this node RECEIVED (has a provenance line) is `theirs`;
+        // everything else in the group is `mine` (self-sealed here). This is
+        // the native-ledger equivalent of Python's `my_ids` split -- a single
+        // `capsules.jsonl` instead of two lists, so provenance is the honest
+        // discriminator of which half came from a counterparty.
+        let mine = group.iter().copied().find(|r| !is_received_sibling(r));
+        let theirs_sibling = group.iter().copied().find(|r| is_received_sibling(r));
+        // The row anchors on the local half when there is one; a received
+        // sibling with no local half of its own still renders (its own column
+        // filled), matching `build_exchange_row`'s `anchor = mine or theirs`.
+        let anchor = mine.or(theirs_sibling).unwrap_or(group[0]);
+
+        let mine_cell = match mine {
+            Some(record) => json!({
                 "state": STATE_PRESENT_UNVERIFIED,
                 "capsule_id": record.get("capsule_id").cloned().unwrap_or(Value::Null),
                 "role": label_role(record),
-            },
-            "theirs": theirs_cell(record),
-            // Whether a real peer join key exists does not yet change
-            // `unilateral` -- that flag (and the `confirmed`/tone semantics
-            // it feeds, `exchange-ledger.ts`) is earned only once the
-            // browser has actually fetched and recomputed the peer half,
-            // which is not this route's job; NOT_CHECKED is the honest
-            // "known but unverified" middle state.
-            "unilateral": true,
-            "timestamp": record.get("timestamp").cloned().unwrap_or(Value::Null),
+            }),
+            // `build_exchange_row._side`'s mine-absent branch.
+            None => json!({
+                "state": STATE_ABSENT,
+                "text": "none — received without a commitment",
+                "capsule_id": Value::Null,
+            }),
+        };
+
+        // `theirs`: a provenance-carrying local sibling fills it (the
+        // push-primary CLOSED path). With no such sibling, fall back to the
+        // record's own peer-asserted join key (`theirs_cell`, the DEFERRED
+        // browser-fetch path) -- out of THIS path's CLOSED scope, unchanged.
+        let (theirs_cell_value, unilateral) = match theirs_sibling {
+            Some(sibling) => {
+                let provenance = &received_provenance[sibling
+                    .get("capsule_id")
+                    .and_then(Value::as_str)
+                    .expect("received sibling always carries a capsule_id")];
+                (theirs_sibling_cell(sibling, provenance), false)
+            }
+            None => (theirs_cell(anchor), true),
+        };
+
+        // `digest_match`: the STRUCTURAL `digestsCiteOurHalf` INPUT the ONE
+        // gate reads -- `verified` only reachable when BOTH halves are present
+        // (a correlated pair). A lone half is `absent` (nothing to reconcile),
+        // never a fabricated match. A `failed` here is what the gate renders
+        // CONTRADICTED.
+        let digest_match = match (mine, theirs_sibling) {
+            (Some(mine), Some(theirs)) => json!({ "state": digest_match_state(mine, theirs) }),
+            _ => json!({ "state": STATE_ABSENT }),
+        };
+
+        rows.push(json!({
+            "exchange_key": exchange_key,
+            "role_tag": role_tag(anchor),
+            // `header_state`/`properties`/`has_issue` need the nine-key
+            // assurance map (`build_assurance_map`), which is cryptographic
+            // re-verification -- out of this cut (module docs gap 2). The
+            // structural `digest_match` below is supplied separately as the
+            // gate's `digestsCiteOurHalf` input; it is NOT the crypto header.
+            "header_state": STATE_ABSENT,
+            "properties": Value::Null,
+            "has_issue": false,
+            "mine": mine_cell,
+            "theirs": theirs_cell_value,
+            // The STRUCTURAL double-entry fact: a provenance-carrying foreign
+            // sibling is correlated into this exchange (`theirs is None`
+            // otherwise) -- never a crypto claim, never a hardcode.
+            "unilateral": unilateral,
+            // Supplied to the ONE gate (`deriveRightCellState`) as the
+            // `digestsCiteOurHalf` input; the gate, not this route, turns
+            // `verified` + `signature_ok` into CLOSED and `failed` into
+            // CONTRADICTED.
+            "digest_match": digest_match,
+            "timestamp": anchor.get("timestamp").cloned().unwrap_or(Value::Null),
             // [ledger-T11b-twin-bracket] -- absent (never null) on every
             // untwinned row; the UI's `twinBracketId` derivation already
             // treats a missing key the same as an explicit `null`.
-            "twin_bracket_id": twin_bracket_id(record),
+            "twin_bracket_id": twin_bracket_id(anchor),
         }));
     }
     json!({
@@ -705,7 +947,7 @@ pub(super) fn build_pane_json(
         "pane-b" => Some(build_pane_b(&records)),
         "pane-c" => Some(match exchange_id {
             Some(id) if !id.is_empty() => build_pane_c_drilldown(&records, id),
-            _ => build_pane_c_list(&records),
+            _ => build_pane_c_list(&records, &read_received_provenance(ledger_dir)),
         }),
         _ => None,
     }
@@ -741,6 +983,57 @@ mod tests {
         for record in records {
             writeln!(file, "{}", serde_json::to_string(record).unwrap()).unwrap();
         }
+    }
+
+    /// The empty received-provenance map -- this node has received no push, so
+    /// no local sibling can close a row. The overwhelmingly common case, and
+    /// the one every pre-existing Pane C test asserts against (a plugin-written
+    /// ledger with only this node's own halves).
+    fn no_provenance() -> HashMap<String, ReceivedProvenance> {
+        HashMap::new()
+    }
+
+    /// One `received-provenance.jsonl` line's worth of state, `signature_ok`
+    /// true (the door only ever writes a line after signature verification --
+    /// `record_push._append_provenance`).
+    fn provenance_for(
+        capsule_id: &str,
+        received_from: &str,
+    ) -> (String, ReceivedProvenance) {
+        (
+            capsule_id.to_string(),
+            ReceivedProvenance {
+                received_from: received_from.to_string(),
+                via: "push".to_string(),
+                received_at: "2026-09-25T00:00:01Z".to_string(),
+                signature_ok: true,
+            },
+        )
+    }
+
+    /// A cross-node mesh half -- same shape as capsule-emit-mesh's
+    /// `test_pane_fires_on_pushed_sibling._mesh_half`: an explicit role +
+    /// request/response digests + its OWN host-minted `exchange_id` under
+    /// `x-mesh-poc-v1.serving_provenance`. Two halves of one exchange share the
+    /// digests but carry DIFFERENT `exchange_id`s (the cross-node reality that
+    /// broke exchange_id grouping).
+    fn mesh_half(
+        capsule_id: &str,
+        role: &str,
+        request_digest: &str,
+        response_digest: &str,
+        exchange_id: &str,
+    ) -> Value {
+        json!({
+            "capsule_id": capsule_id,
+            "timestamp": "2026-09-25T00:00:00Z",
+            "operator": "op",
+            "effect": { "request_digest": request_digest, "response_digest": response_digest },
+            "model_attestation": { "compute_attestation": { "x-mesh-poc-v1": {
+                "role": role,
+                "serving_provenance": { "exchange_id": exchange_id, "served_by_node_id": "m3", "requesting_party": "m4" },
+            } } },
+        })
     }
 
     #[test]
@@ -911,7 +1204,7 @@ mod tests {
             fixture_record("cap-1", "2026-09-01T00:00:00Z", "req-1", None),
             fixture_record("cap-2", "2026-09-02T00:00:00Z", "req-2", Some("cap-1")),
         ];
-        let pane = build_pane_c_list(&records);
+        let pane = build_pane_c_list(&records, &no_provenance());
         assert_eq!(pane["row_count"], json!(2));
         assert_eq!(pane["default_sort"], json!("timestamp"));
         assert_eq!(pane["rows"][0]["exchange_key"], json!("digest:req-1"));
@@ -943,7 +1236,7 @@ mod tests {
         record["model_attestation"]["compute_attestation"]["x-mesh-poc-v1"] = json!({
             "serving_provenance": { "exchange_id": "exch-real", "twin_bracket_id": "twin-abc123" }
         });
-        let pane = build_pane_c_list(&[record]);
+        let pane = build_pane_c_list(&[record], &no_provenance());
         assert_eq!(pane["rows"][0]["twin_bracket_id"], json!("twin-abc123"));
     }
 
@@ -963,7 +1256,7 @@ mod tests {
                 "served_by_node_id": "peer-node-3",
             }
         });
-        let pane = build_pane_c_list(&[record]);
+        let pane = build_pane_c_list(&[record], &no_provenance());
         let theirs = &pane["rows"][0]["theirs"];
         assert_eq!(theirs["state"], json!(NOT_CHECKED));
         assert_eq!(theirs["capsule_id"], json!("peer-cap-987"));
@@ -984,7 +1277,7 @@ mod tests {
                 "served_by_node_id": "peer-node-3",
             }
         });
-        let pane = build_pane_c_list(&[record]);
+        let pane = build_pane_c_list(&[record], &no_provenance());
         assert_eq!(pane["rows"][0]["theirs"]["state"], json!(STATE_ABSENT));
         assert_eq!(pane["rows"][0]["theirs"]["capsule_id"], Value::Null);
     }
@@ -1002,8 +1295,162 @@ mod tests {
                 "served_by_node_id": "unknown",
             }
         });
-        let pane = build_pane_c_list(&[record]);
+        let pane = build_pane_c_list(&[record], &no_provenance());
         assert_eq!(pane["rows"][0]["theirs"]["state"], json!(STATE_ABSENT));
+    }
+
+    // -----------------------------------------------------------------
+    // [mesh-closed-on-frozen-base] Route through the ONE gate: the pane
+    // fires CLOSED on a locally-held, provenance-carrying, digest-matching
+    // foreign sibling -- mirroring capsule-emit-mesh's
+    // `tests/test_pane_fires_on_pushed_sibling.py`. The CLOSED/CONTRADICTED
+    // DECISION is the ONE gate's (`exchange-row-state.ts::deriveRightCellState`,
+    // `signatureOk && digestsCiteOurHalf`); these tests prove `build_pane_c_list`
+    // SUPPLIES that gate its two inputs honestly -- the correlated sibling
+    // (dropping the `unilateral: true` hardcode) and the structural
+    // `digest_match` -- and that the provenance rule holds (no provenance ->
+    // no counterparty half -> the gate cannot close).
+    // -----------------------------------------------------------------
+
+    /// A locally-held foreign sibling (a DIFFERENT host-minted exchange_id, the
+    /// SAME request_digest, a `received-provenance.jsonl` line with
+    /// `signature_ok: true`) is CORRELATED into this node's own asked half:
+    /// ONE row, both columns filled, `unilateral: false`, and the structural
+    /// `digest_match` is `verified` -- exactly the two inputs the ONE gate
+    /// reads to render CLOSED. MUTANT: revert `build_pane_c_list` to the
+    /// per-record `unilateral: true` hardcode and `unilateral`/`digest_match`
+    /// both go red.
+    #[test]
+    fn pane_c_closes_a_correlated_provenance_carrying_signature_verifying_sibling() {
+        let local = mesh_half("a".repeat(64).as_str(), "requested", "d".repeat(64).as_str(), "e".repeat(64).as_str(), "m4-914b61c1");
+        let foreign = mesh_half("b".repeat(64).as_str(), "served", "d".repeat(64).as_str(), "e".repeat(64).as_str(), "m3-82777e20");
+        // The door verified & recorded the foreign half; the two host-minted
+        // exchange_ids differ, so ONLY the digest correlator groups them.
+        let provenance: HashMap<String, ReceivedProvenance> =
+            [provenance_for("b".repeat(64).as_str(), "m3")].into_iter().collect();
+
+        let pane = build_pane_c_list(&[local.clone(), foreign.clone()], &provenance);
+
+        assert_eq!(pane["row_count"], json!(1)); // ONE row, not two OPEN halves.
+        let row = &pane["rows"][0];
+        assert_eq!(row["exchange_key"], json!(format!("digest:{}", "d".repeat(64))));
+        assert_eq!(row["mine"]["capsule_id"], json!("a".repeat(64)));
+        assert_eq!(row["theirs"]["capsule_id"], json!("b".repeat(64))); // the sibling filled `theirs`.
+        assert_eq!(row["unilateral"], json!(false)); // NOT the old hardcode.
+        // The gate's `digestsCiteOurHalf` input: both digests agree -> verified.
+        assert_eq!(row["digest_match"]["state"], json!(STATE_VERIFIED));
+        // The gate's `signatureOk` input: the door's recorded provenance triple.
+        assert_eq!(row["theirs"]["signature_ok"], json!(true));
+        assert_eq!(row["theirs"]["received_from"], json!("m3"));
+        assert_eq!(row["theirs"]["via"], json!("push"));
+        assert_eq!(row["theirs"]["state"], json!(STATE_PRESENT_UNVERIFIED));
+    }
+
+    /// Only the local half present (no sibling, no provenance): unilateral/OPEN,
+    /// `theirs` absent, `digest_match` absent (nothing to reconcile). The
+    /// deferred browser-fetch fallback still surfaces the record's own
+    /// peer-asserted join key when one exists, but the row is NOT closed here.
+    #[test]
+    fn pane_c_row_with_only_the_local_half_is_unilateral_open() {
+        let local = mesh_half("a".repeat(64).as_str(), "requested", "d".repeat(64).as_str(), "e".repeat(64).as_str(), "m4-914b61c1");
+        let pane = build_pane_c_list(&[local], &no_provenance());
+        assert_eq!(pane["row_count"], json!(1));
+        let row = &pane["rows"][0];
+        assert_eq!(row["unilateral"], json!(true));
+        assert_eq!(row["theirs"]["state"], json!(STATE_ABSENT));
+        assert_eq!(row["digest_match"]["state"], json!(STATE_ABSENT));
+    }
+
+    /// The provenance rule: a self-sealed sibling (this node minted BOTH
+    /// halves; NEITHER capsule_id has a `received-provenance.jsonl` line) never
+    /// closes, even with a matching request_digest -- the two halves fold into
+    /// one row (both are `mine`), `theirs` stays absent, `unilateral: true`.
+    /// Correlation feeds the gate; it never bypasses it.
+    #[test]
+    fn pane_c_self_sealed_sibling_never_closes_even_when_digests_match() {
+        let half_a = mesh_half("a".repeat(64).as_str(), "requested", "d".repeat(64).as_str(), "e".repeat(64).as_str(), "m4-914b61c1");
+        let half_b = mesh_half("b".repeat(64).as_str(), "served", "d".repeat(64).as_str(), "e".repeat(64).as_str(), "m4-82777e20");
+        // No provenance for EITHER capsule_id -> neither is a counterparty half.
+        let pane = build_pane_c_list(&[half_a, half_b], &no_provenance());
+        assert_eq!(pane["row_count"], json!(1)); // correlated into one row...
+        let row = &pane["rows"][0];
+        assert_eq!(row["unilateral"], json!(true)); // ...but never closed: no `theirs`.
+        assert_eq!(row["theirs"]["state"], json!(STATE_ABSENT));
+    }
+
+    /// The provenance rule, no-provenance variant: a genuine cross-node sibling
+    /// whose capsule_id carries NO provenance line (self-declared present in the
+    /// ledger but never granted the triple at the door) is treated as `mine`,
+    /// so the row stays unilateral/OPEN -- the gate has nothing to close on.
+    #[test]
+    fn pane_c_sibling_without_a_provenance_line_never_fills_theirs() {
+        let local = mesh_half("a".repeat(64).as_str(), "requested", "d".repeat(64).as_str(), "e".repeat(64).as_str(), "m4-914b61c1");
+        let foreign = mesh_half("b".repeat(64).as_str(), "served", "d".repeat(64).as_str(), "e".repeat(64).as_str(), "m3-82777e20");
+        // Provenance map is empty -> `foreign` is not a received counterparty
+        // half, even though it is a real cross-node served half.
+        let pane = build_pane_c_list(&[local, foreign], &no_provenance());
+        assert_eq!(pane["row_count"], json!(1));
+        let row = &pane["rows"][0];
+        assert_eq!(row["unilateral"], json!(true));
+        assert_eq!(row["theirs"]["state"], json!(STATE_ABSENT));
+    }
+
+    /// A correlated pair whose digests DIFFER renders CONTRADICTED: the
+    /// structural `digest_match` is `failed` (one byte off on the
+    /// response_digest), which the ONE gate turns into CONTRADICTED. The pair
+    /// is still ONE row with `theirs` filled (`unilateral: false`) -- a real
+    /// disagreement between two present halves, never a missing-half OPEN.
+    /// MUTANT: soften `digest_match_state`'s `any_failed` rule (average a
+    /// mismatch into `verified`) and this goes red.
+    #[test]
+    fn pane_c_correlated_pair_with_differing_digests_is_contradicted() {
+        let local = mesh_half("a".repeat(64).as_str(), "requested", "d".repeat(64).as_str(), "e".repeat(64).as_str(), "m4-914b61c1");
+        // Same request_digest (correlates), DIFFERENT response_digest.
+        let foreign = mesh_half("b".repeat(64).as_str(), "served", "d".repeat(64).as_str(), "f".repeat(64).as_str(), "m3-82777e20");
+        let provenance: HashMap<String, ReceivedProvenance> =
+            [provenance_for("b".repeat(64).as_str(), "m3")].into_iter().collect();
+
+        let pane = build_pane_c_list(&[local, foreign], &provenance);
+
+        assert_eq!(pane["row_count"], json!(1));
+        let row = &pane["rows"][0];
+        assert_eq!(row["unilateral"], json!(false)); // both halves present...
+        assert_eq!(row["digest_match"]["state"], json!(STATE_FAILED)); // ...but they disagree.
+    }
+
+    /// `read_received_provenance` enforces the provenance rule at the file
+    /// boundary: only a line carrying a non-empty `received_from` AND
+    /// `signature_ok: true` is kept. A line missing `received_from`, or one
+    /// with `signature_ok: false`, is dropped -- never a fabricated
+    /// counterparty half. Matches `record_push`: a failed verify goes to
+    /// `rejected-record-pushes.jsonl`, NEVER `received-provenance.jsonl`, so a
+    /// false `signature_ok` should never appear -- but if it did, this reader
+    /// refuses it.
+    #[test]
+    fn read_received_provenance_keeps_only_signature_ok_lines_carrying_received_from() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("received-provenance.jsonl"),
+            "{\"capsule_id\":\"good\",\"received_from\":\"m3\",\"via\":\"push\",\"received_at\":\"2026-09-25T00:00:01Z\",\"signature_ok\":true}\n\
+             {\"capsule_id\":\"no-from\",\"via\":\"push\",\"signature_ok\":true}\n\
+             {\"capsule_id\":\"sig-false\",\"received_from\":\"m3\",\"signature_ok\":false}\n",
+        )
+        .unwrap();
+        let map = read_received_provenance(dir.path());
+        assert!(map.contains_key("good"));
+        assert!(!map.contains_key("no-from"));
+        assert!(!map.contains_key("sig-false"));
+        assert_eq!(map["good"].received_from, "m3");
+        assert!(map["good"].signature_ok);
+    }
+
+    /// A missing `received-provenance.jsonl` is the common case (this node has
+    /// received no push): an empty map, no panic -- so no row can close on a
+    /// local sibling, the honest default.
+    #[test]
+    fn read_received_provenance_absent_file_is_empty_not_a_panic() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(read_received_provenance(dir.path()).is_empty());
     }
 
     #[test]

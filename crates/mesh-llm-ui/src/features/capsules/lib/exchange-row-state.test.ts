@@ -162,6 +162,64 @@ describe('deriveRightCellState — finding 1 (2026-09-23 assessment): CLOSED req
   })
 })
 
+describe('deriveRightCellState — push-primary (mesh-closed-on-frozen-base): a door-verified local sibling closes through the ONE gate, no browser fetch', () => {
+  /** A push-primary row as the Rust pane now supplies it: a
+   *  provenance-carrying foreign sibling correlated into `theirs`
+   *  (`signature_ok` = the door's recorded verdict, `state` present-unverified,
+   *  a real capsule_id) + the row-level structural `digest_match`, and
+   *  `unilateral: false`. No `theirsRecompute` -- the sibling is already held. */
+  function pushPrimaryRow(digestMatch: 'verified' | 'failed', overrides: Partial<PaneCRow> = {}): PaneCRow {
+    return paneCRow({
+      unilateral: false,
+      theirs: { state: 'present-unverified', capsule_id: 'b'.repeat(64), signature_ok: true, received_from: 'm3', via: 'push' },
+      digest_match: { state: digestMatch },
+      ...overrides
+    })
+  }
+
+  it('a door-verified sibling (signature_ok) whose digests reconcile VERIFIED -> CLOSED, with NO browser fetch', () => {
+    expect(deriveRightCellState(pushPrimaryRow('verified')).kind).toBe('closed')
+  })
+
+  it('the SAME gate on the LIST path (deriveRightCellState with no recompute/localRecord) closes -- this is what the console table reads', () => {
+    // buildExchangeLedgerRows calls deriveRightCellState(row) with no extra
+    // args; the push-primary branch reads the supplied row itself.
+    expect(deriveRightCellState(pushPrimaryRow('verified'), undefined, undefined).kind).toBe('closed')
+  })
+
+  it('a door-verified sibling whose digests DIFFER (digest_match failed) -> CONTRADICTED, never CLOSED', () => {
+    expect(deriveRightCellState(pushPrimaryRow('failed')).kind).toBe('contradicted')
+  })
+
+  it('PROVENANCE RULE: a correlated sibling with a matching digest_match but NO signature_ok (never door-verified) does NOT close -- falls through to the honest fetch/pending state', () => {
+    const row = paneCRow({
+      unilateral: false,
+      theirs: { state: 'NOT_CHECKED', capsule_id: 'b'.repeat(64), peer_id: 'm3' }, // no signature_ok
+      digest_match: { state: 'verified' }
+    })
+    const state = deriveRightCellState(row)
+    expect(state.kind).not.toBe('closed')
+    expect(state.kind).not.toBe('contradicted')
+  })
+
+  it('a supplied digest_match that is neither verified nor failed (absent/present-unverified) is not a close/contradict signal', () => {
+    expect(deriveRightCellState(pushPrimaryRow('verified', { digest_match: { state: 'absent' } })).kind).not.toBe('closed')
+    expect(deriveRightCellState(pushPrimaryRow('verified', { digest_match: { state: 'present-unverified' } })).kind).not.toBe(
+      'closed'
+    )
+  })
+
+  it('LOAD-BEARING: the push-primary branch fires BEFORE the browser-fetch branch, but a live fetch row (no signature_ok) is untouched -- both paths reach the same predicate, neither shadows the other', () => {
+    // A door-verified sibling closes without any recompute...
+    expect(deriveRightCellState(pushPrimaryRow('verified')).kind).toBe('closed')
+    // ...and the fetch path (no signature_ok on theirs) still governs a fetched row.
+    const fetchRow = paneCRow()
+    expect(
+      deriveRightCellState(fetchRow, fetched({ idMatch: true, signatureOk: true, peerRecord: citingPeerRecord() }), localRecordWithDigests()).kind
+    ).toBe('closed')
+  })
+})
+
 describe('deriveRightCellState — bilateral-retention-decay-property (agent-action-capsule @7f8a78d8, Steven-ratified 2026-09-23): one-half-unavailable MUST NOT collapse into both-present-disagreeing', () => {
   it('a peer fetch that legitimately comes back not_found (their retention decayed the record away, or they never held it) renders OPEN — never CONTRADICTED, never CLOSED/"attested by both"', () => {
     const row = paneCRow()

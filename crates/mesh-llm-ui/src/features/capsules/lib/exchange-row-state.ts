@@ -158,6 +158,22 @@ export function deriveRightCellState(
     return { kind: 'open_not_asked', date: null }
   }
 
+  // Push-primary CLOSED (the local-sibling path): a provenance-carrying
+  // foreign sibling is ALREADY held locally -- the `record_push` door verified
+  // its signature against the announced peer key and recorded `signature_ok`,
+  // and the Rust pane (`capsule_panes_native.rs::build_pane_c_list`) correlated
+  // it into `theirs` and supplied the structural `digest_match`. This is the
+  // SAME predicate as the fetch branch below -- `signatureOk === true` AND both
+  // request/response digests cite our half -- read from the door's recorded
+  // verdict + the structural digest comparison, NOT a second predicate. The
+  // fetch branch stays the authority when a LIVE fetch has run (that path never
+  // carries `theirs.signature_ok`, so it never enters here); this fires only
+  // for a door-verified sibling the browser never had to fetch.
+  if (row.theirs.signature_ok === true && row.digest_match) {
+    if (row.digest_match.state === 'verified') return { kind: 'closed', date: null }
+    if (row.digest_match.state === 'failed') return { kind: 'contradicted', date: null }
+  }
+
   if (theirsRecompute?.status === 'found' && theirsRecompute.idMatch !== null) {
     if (!theirsRecompute.idMatch) return { kind: 'contradicted', date: null }
     const closed = theirsRecompute.signatureOk === true && digestsCiteOurHalf(localRecord, theirsRecompute.peerRecord)
