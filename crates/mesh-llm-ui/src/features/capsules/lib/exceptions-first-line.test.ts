@@ -65,7 +65,7 @@ describe('exceptionsFirstTally', () => {
   it('a peer-asserted-but-unfetched row is pending fetch, not mismatched -- never contradicted without evidence', () => {
     const [row] = buildExchangeLedgerRows([PEER_ASSERTED_UNFETCHED_ROW], new Map())
     expect(row.hasIssue).toBe(false)
-    expect(row.rightCellState.kind).toBe('open_pending_fetch')
+    expect(row.rightCellState.kind).toBe('open_not_held')
     const tally = exceptionsFirstTally([row])
     expect(tally).toEqual({
       total: 1,
@@ -118,7 +118,7 @@ describe('exceptionsFirstTally', () => {
 
   it('a row this browser fetched and confirmed counts toward confirmedByAnyoneElse, never needingAttention', () => {
     const [row] = buildExchangeLedgerRows([CONFIRMED_ROW], new Map())
-    expect(row.rightCellState.kind).toBe('open_pending_fetch') // no live fetch state threaded through the ledger row build
+    expect(row.rightCellState.kind).toBe('open_not_held') // no live fetch state threaded through the ledger row build
     // exceptionsFirstTally counts off `row.rightCellState`, which is the
     // ledger's at-rest state (no fetch happened) -- `confirmedByAnyoneElse`
     // only ever increments once a row's precomputed state is truly `closed`.

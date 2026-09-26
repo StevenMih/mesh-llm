@@ -36,18 +36,25 @@ import { saveTextFile } from '@/features/capsules/lib/exchange-export'
 import type { PaneBRow } from '@/features/capsules/api/sidecarTypes'
 import {
   ALL_PEER_TABLE_COLUMNS,
+  peersWindowText,
   type PeerTableColumnKey,
   type PeerTableRowView
 } from '@/features/capsules/lib/peer-row-view'
 import type { Peer } from '@/features/app-tabs/types'
 
+// The period column's header is the actual date window (computed per render
+// from the rows on screen), not the word "Period". The Columns toggle can't
+// render a window as a menu item, so it falls back to the one permitted word,
+// "When" -- never "Period"/"Window" (both bookkeeping vocabulary we keep off
+// screen). `COLUMN_LABELS` therefore drives the Columns dropdown; the table
+// header for `period` is rendered from `peersWindowText` instead.
 const COLUMN_LABELS: Record<PeerTableColumnKey, string> = {
   exchanges: 'Exchanges',
   confirmed: 'Confirmed by the other side',
   match: 'Match',
   adjudication: 'Adjudication',
   witness: 'Witness',
-  period: 'Period'
+  period: 'When'
 }
 const ALL_COLUMNS: PeerTableColumnKey[] = [...ALL_PEER_TABLE_COLUMNS]
 
@@ -268,7 +275,10 @@ export function LedgerPeersTable({
             {ALL_COLUMNS.map((column) =>
               visibleColumns.has(column) ? (
                 <TableHead className="type-label h-9 px-3 text-fg-faint" key={column}>
-                  {COLUMN_LABELS[column]}
+                  {/* The period column's header is the real date window across
+                     the visible rows (e.g. `22–26 Sep`), never the word
+                     "Period"; every other column keeps its plain label. */}
+                  {column === 'period' ? peersWindowText(visibleRows) : COLUMN_LABELS[column]}
                 </TableHead>
               ) : null
             )}

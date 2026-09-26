@@ -150,7 +150,7 @@ describe("theirContentText — v3 §3's exact three sub-states + not-visible-hol
     expect(theirContentText(theirState('recorded_absence', '4 Sep'))).toBe(
       'They state they hold no payload for this exchange — signed 4 Sep.'
     )
-    expect(theirContentText(theirState('not_asked'))).toBe('Not asked. They would be expected to hold none.')
+    expect(theirContentText(theirState('not_asked'))).toBe('Not compared. They would be expected to hold none.')
     expect(theirContentText(theirState('unanswered', '3 Sep'))).toBe('Asked 3 Sep. No reply yet.')
   })
 

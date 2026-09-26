@@ -1,6 +1,6 @@
 // The two-sided Ledger row's right-cell state ([mesh-ledger-b2-two-sided-
 // row]). Seven states -- v3 §2's table enumerates six ("closed"/
-// "contradicted"/refused/absent/asked/not-asked), plus `open_pending_fetch`
+// "contradicted"/refused/absent/asked/not-asked), plus `open_not_held`
 // added by [mesh-console-evidence-tab-honesty-defects] finding 1: a
 // peer-asserted capsule id with no bytes fetched yet is its own honest
 // state, not a fast path into `closed`.
@@ -15,7 +15,7 @@ export type RightCellStateKind =
   | 'open_refused' // signed_refusal
   | 'open_absent' // recorded_absence
   | 'open_asked' // unanswered
-  | 'open_pending_fetch' // peer id known (digest-shaped, fetchable), bytes not fetched
+  | 'open_not_held' // peer id known (digest-shaped, fetchable), bytes not fetched
   | 'open_not_given' // peer asserted only a non-digest correlation marker: nothing fetchable
   | 'open_not_asked' // not asked
 
@@ -63,7 +63,7 @@ const EVIDENCE_OUTCOME_TO_KIND: Record<string, RightCellStateKind> = {
  *     used to read CLOSED) -> not CLOSED. An id match with no verified
  *     signature over the fetched bytes proves nothing was tampered with in
  *     transit -- it is still an unauthenticated artifact, so it falls
- *     through to `open_pending_fetch` below, same as a fetch that hasn't
+ *     through to `open_not_held` below, same as a fetch that hasn't
  *     resolved yet.
  *   - `status === 'found'`, `idMatch === true`, `signatureOk === true`, AND
  *     the peer's own fetched record actually cites `mine`'s
@@ -76,7 +76,7 @@ const EVIDENCE_OUTCOME_TO_KIND: Record<string, RightCellStateKind> = {
  *     own side, both read as "does not cite" -- never a fabricated match).
  *   - anything else (not fetched, fetching, not_found, error, a fetch whose
  *     id recompute itself couldn't run, or a verified-and-matching fetch
- *     that doesn't cite our digests) leaves the row at `open_pending_fetch`
+ *     that doesn't cite our digests) leaves the row at `open_not_held`
  *     below -- a fetch that hasn't resolved to full corroboration is not
  *     evidence of either CLOSED or CONTRADICTED.
  *
@@ -84,7 +84,7 @@ const EVIDENCE_OUTCOME_TO_KIND: Record<string, RightCellStateKind> = {
  * distinguishes only two real facts -- **L-C: the right cell never renders
  * a state we inferred.**
  *   - `NOT_CHECKED`: a peer-asserted id is known and fetchable but nothing
- *     has confirmed it yet -> `open_pending_fetch`.
+ *     has confirmed it yet -> `open_not_held`.
  *   - `absent`: no counterparty is recorded for this row at all -> the only
  *     claim this supports is `open_not_asked` ("you haven't asked for
  *     their half") -- `open_asked`/`open_refused`/`open_absent` would all
@@ -177,7 +177,7 @@ export function deriveRightCellState(
   if (theirsRecompute?.status === 'found' && theirsRecompute.idMatch !== null) {
     if (!theirsRecompute.idMatch) return { kind: 'contradicted', date: null }
     const closed = theirsRecompute.signatureOk === true && digestsCiteOurHalf(localRecord, theirsRecompute.peerRecord)
-    return { kind: closed ? 'closed' : 'open_pending_fetch', date: null }
+    return { kind: closed ? 'closed' : 'open_not_held', date: null }
   }
 
   // No confirmed fetch yet. A peer id is "known but not fetched" (fetchable)
@@ -188,7 +188,7 @@ export function deriveRightCellState(
     return { kind: 'open_not_given', date: null }
   }
 
-  return { kind: 'open_pending_fetch', date: null }
+  return { kind: 'open_not_held', date: null }
 }
 
 function dateOrFallback(date: string | null): string {
@@ -210,7 +210,7 @@ export function rightCellText(state: RightCellState): string {
       return `They say they have no record of this — ${dateOrFallback(state.date)}`
     case 'open_asked':
       return `Asked ${dateOrFallback(state.date)}. No reply yet.`
-    case 'open_pending_fetch':
+    case 'open_not_held':
       return 'A peer capsule is known but their half is not held — expand checks to fetch it.'
     case 'open_not_given':
       return 'Their capsule id: not given — their half is not held.'
@@ -235,7 +235,7 @@ export function rightCellStatusLabel(state: RightCellState): string {
       return 'OPEN · absent'
     case 'open_asked':
       return 'OPEN · asked'
-    case 'open_pending_fetch':
+    case 'open_not_held':
       return 'OPEN · not held'
     case 'open_not_given':
       return 'OPEN'
@@ -250,7 +250,7 @@ export function rightCellStatusLabel(state: RightCellState): string {
 
 /** The action control that lives inside the cell, or `null` for `closed`
  *  (nothing to do once a row agrees and cites your half) and
- *  `open_pending_fetch` (the real action -- `fetch peer capsule &
+ *  `open_not_held` (the real action -- `fetch peer capsule &
  *  recompute here` -- lives inside the `▸ checks` panel, next to the
  *  identity it fetches for, not as a second copy of the same button at the
  *  row summary level). */
@@ -266,7 +266,7 @@ export function rightCellAction(state: RightCellState): string | null {
       return 'View statement'
     case 'open_asked':
       return 'Ask again'
-    case 'open_pending_fetch':
+    case 'open_not_held':
       return null
     case 'open_not_given':
       return null
@@ -326,7 +326,7 @@ export function ledgerStateFilterValue(state: RightCellState): LedgerStateFilter
       return 'asked_no_reply'
     case 'open_refused':
     case 'open_absent':
-    case 'open_pending_fetch':
+    case 'open_not_held':
     case 'open_not_given':
     case 'open_not_asked':
       return 'open'

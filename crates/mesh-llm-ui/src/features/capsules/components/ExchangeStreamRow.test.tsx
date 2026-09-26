@@ -95,7 +95,7 @@ function fixturesFor(kind: RightCellStateKind): { theirs: PaneCRow['theirs']; re
         theirs: { state: 'absent', capsule_id: null, evidence_outcome: 'unanswered', evidence_outcome_date: '4 Sep' },
         recompute: NOT_FETCHED
       }
-    case 'open_pending_fetch':
+    case 'open_not_held':
       return {
         theirs: { state: 'NOT_CHECKED', capsule_id: 'a'.repeat(64), peer_id: 'peer-1' },
         recompute: NOT_FETCHED
@@ -250,7 +250,7 @@ describe('ExchangeStreamRow — six states render distinct text/status/action', 
 
 describe('ExchangeStreamRow — bilateral-retention-decay-property (agent-action-capsule @7f8a78d8, Steven-ratified 2026-09-23): one-half-unavailable renders the honest OPEN sub-state, never CONTRADICTED, never CLOSED/"attested by both"', () => {
   it('not_found (peer legitimately holds nothing -- retention decay or never held) renders OPEN · not held', () => {
-    const row = makeRow('open_pending_fetch')
+    const row = makeRow('open_not_held')
     vi.mocked(usePeerLedgerRecompute).mockReturnValue({
       status: 'not_found',
       idMatch: null,
@@ -265,7 +265,7 @@ describe('ExchangeStreamRow — bilateral-retention-decay-property (agent-action
   })
 
   it('error (transport/verification failure -- not a disagreement) renders OPEN · not held, never CONTRADICTED', () => {
-    const row = makeRow('open_pending_fetch')
+    const row = makeRow('open_not_held')
     vi.mocked(usePeerLedgerRecompute).mockReturnValue({
       status: 'error',
       idMatch: null,
@@ -280,7 +280,7 @@ describe('ExchangeStreamRow — bilateral-retention-decay-property (agent-action
   })
 
   it('MUTANT: the only shape this row ever renders CONTRADICTED for is a completed fetch whose recomputed id demonstrably disagrees -- every other unavailable shape must go red if it starts reading CONTRADICTED', () => {
-    const row = makeRow('open_pending_fetch')
+    const row = makeRow('open_not_held')
     const unavailableShapes: PeerRecomputeState[] = [
       { status: 'not_fetched', idMatch: null, signatureOk: null, peerRecord: null, fetch: vi.fn() },
       { status: 'fetching', idMatch: null, signatureOk: null, peerRecord: null, fetch: vi.fn() },
@@ -320,7 +320,7 @@ describe('ExchangeStreamRow — [ledger-T2-counterparty-not-recorded] counterpar
 })
 
 describe('ExchangeStreamRow — [ledger-T1-ask-half-action] counterparty gating (unaffected by the modal removal)', () => {
-  it('no recorded counterparty on an open_not_asked row: gated text, no ask button', () => {
+  it('ASKED row, no recorded counterparty: "Other side: not known" gated text, no ask button', () => {
     render(
       <ExchangeStreamRow
         onAction={vi.fn()}
@@ -329,12 +329,30 @@ describe('ExchangeStreamRow — [ledger-T1-ask-half-action] counterparty gating 
         row={makeRow('open_not_asked', { counterparty: null })}
       />
     )
-    expect(screen.getByText('Counterparty not recorded — nothing to ask yet.')).toBeInTheDocument()
+    // A remote exchange whose peer is unknown/unrecorded -- there IS an other
+    // side, we just don't know it. Never the old "nothing to ask yet".
+    expect(screen.getByText('Other side: not known')).toBeInTheDocument()
+    expect(screen.queryByText('nothing to ask yet')).not.toBeInTheDocument()
     expect(screen.queryByText("You haven't asked for their half.")).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Ask them for their half' })).not.toBeInTheDocument()
     // The two disclosure toggles still render -- only the ask action is gated.
     expect(screen.getByRole('button', { name: '▸ content' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '▸ checks' })).toBeInTheDocument()
+  })
+
+  it('SERVED row, no recorded counterparty: "Local — no other side" gated text (a distinct truth from the ASKED case)', () => {
+    render(
+      <ExchangeStreamRow
+        onAction={vi.fn()}
+        {...toggleProps()}
+        rail={NO_RAIL}
+        row={makeRow('open_not_asked', { counterparty: null, roleTag: 'SERVED' })}
+      />
+    )
+    // Served locally: no remote counterparty exists on the other side at all.
+    expect(screen.getByText('Local — no other side')).toBeInTheDocument()
+    expect(screen.queryByText('Other side: not known')).not.toBeInTheDocument()
+    expect(screen.queryByText('nothing to ask yet')).not.toBeInTheDocument()
   })
 
   it('no recorded counterparty on an open_asked row: gated text, no "Ask again" button', () => {
@@ -346,7 +364,7 @@ describe('ExchangeStreamRow — [ledger-T1-ask-half-action] counterparty gating 
         row={makeRow('open_asked', { counterparty: null })}
       />
     )
-    expect(screen.getByText('Counterparty not recorded — nothing to ask yet.')).toBeInTheDocument()
+    expect(screen.getByText('Other side: not known')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Ask again' })).not.toBeInTheDocument()
   })
 
@@ -593,7 +611,7 @@ describe('ExchangeStreamRow — [mesh-ledger-b4-toggle-content] toggle ① conte
       },
       {
         contentToggleState: { your: { kind: 'populated', date: null }, their: { kind: 'not_asked', date: null } },
-        text: 'Not asked. They would be expected to hold none.'
+        text: 'Not compared. They would be expected to hold none.'
       },
       {
         contentToggleState: { your: { kind: 'populated', date: null }, their: { kind: 'unanswered', date: '3 Sep' } },

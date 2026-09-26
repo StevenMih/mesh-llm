@@ -417,8 +417,10 @@ describe('LedgerPageContent — Part 3: Exchanges two-sided stream + row inspect
     // [ledger-T1-ask-half-action]: neither row carries a counterparty (the
     // default fetchPaneB mock returns no rows), so the OPEN row's ask
     // action is gated -- a fact, never a fabricated "not yet asked" ask
-    // button pointed at nobody.
-    expect(screen.getByText('Counterparty not recorded — nothing to ask yet.')).toBeInTheDocument()
+    // button pointed at nobody. Both fixture rows are ASKED (a remote
+    // exchange whose peer is unrecorded), so the gated text names that truth.
+    expect(screen.getByText('Other side: not known')).toBeInTheDocument()
+    expect(screen.queryByText('nothing to ask yet')).not.toBeInTheDocument()
     expect(screen.queryByText("You haven't asked for their half.")).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Ask them for their half' })).not.toBeInTheDocument()
 
@@ -1031,9 +1033,9 @@ describe('LedgerPageContent — Part B3: windowed paging + sticky header', () =>
     // these fixture rows carry no evidence_outcome, so the their-content side
     // honestly degrades to the never-asked sub-state (L-C).
     await user.keyboard('o')
-    expect(await screen.findByText('Not asked. They would be expected to hold none.')).toBeInTheDocument()
+    expect(await screen.findByText('Not compared. They would be expected to hold none.')).toBeInTheDocument()
     await user.keyboard('o')
-    expect(screen.queryByText('Not asked. They would be expected to hold none.')).not.toBeInTheDocument()
+    expect(screen.queryByText('Not compared. They would be expected to hold none.')).not.toBeInTheDocument()
 
     await user.keyboard('c')
     expect(await screen.findByRole('region', { name: /Security checks for exch-0/ })).toBeInTheDocument()
@@ -1054,9 +1056,9 @@ describe('LedgerPageContent — Part B3: windowed paging + sticky header', () =>
     expect(screen.queryByRole('region', { name: /Security checks/ })).not.toBeInTheDocument()
 
     await user.keyboard('o')
-    expect(await screen.findByText('Not asked. They would be expected to hold none.')).toBeInTheDocument()
+    expect(await screen.findByText('Not compared. They would be expected to hold none.')).toBeInTheDocument()
     await user.keyboard('{Escape}')
-    expect(screen.queryByText('Not asked. They would be expected to hold none.')).not.toBeInTheDocument()
+    expect(screen.queryByText('Not compared. They would be expected to hold none.')).not.toBeInTheDocument()
 
     // Escape with nothing expanded is a no-op -- doesn't error, doesn't
     // swallow the event (nothing else to assert here beyond "it didn't throw").

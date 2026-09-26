@@ -124,6 +124,27 @@ describe('LedgerPeersTable — toolbar', () => {
     expect(screen.getByRole('columnheader', { name: 'Match' })).toBeInTheDocument()
   })
 
+  it('the period column HEADER is the real date window across the rows, never the word "Period" or "Window"', () => {
+    const props = buildFixtureProps()
+    render(<LedgerPeersTable {...props} />)
+
+    // The two dealt-with fixture rows span 2026-08-20 -> 2026-09-08.
+    expect(screen.getByRole('columnheader', { name: '20 Aug – 8 Sep' })).toBeInTheDocument()
+    expect(screen.queryByRole('columnheader', { name: 'Period' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('columnheader', { name: 'Window' })).not.toBeInTheDocument()
+  })
+
+  it('the Columns toggle names the period column "When" (the one permitted word), never "Period"/"Window"', async () => {
+    const user = userEvent.setup()
+    const props = buildFixtureProps()
+    render(<LedgerPeersTable {...props} />)
+
+    await user.click(screen.getByRole('button', { name: /columns/i }))
+    expect(screen.getByRole('menuitemcheckbox', { name: 'When' })).toBeInTheDocument()
+    expect(screen.queryByRole('menuitemcheckbox', { name: 'Period' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('menuitemcheckbox', { name: 'Window' })).not.toBeInTheDocument()
+  })
+
   it('Reset view is disabled when the view is already at its default', () => {
     const props = buildFixtureProps()
     render(<LedgerPeersTable {...props} />)

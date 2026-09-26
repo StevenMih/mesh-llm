@@ -32,11 +32,17 @@ import type { RailSegment } from '@/features/capsules/lib/exchange-stream'
 import { useRecomputedIdentity, usePeerLedgerRecompute } from '@/features/capsules/lib/recompute-identity'
 
 /** The gated cell text ([ledger-T1-ask-half-action] Do (2)) when an ask
- *  action's row carries no recorded counterparty -- today: all of them, a
- *  limit `exchange-ledger.ts`'s own comment documents (no counterparty
- *  identity field exists yet; the join comes from Pane B, per-peer). Never
- *  invented as "not yet" -- it is a fact, not a deficit. */
-const NO_COUNTERPARTY_TEXT = 'Counterparty not recorded — nothing to ask yet.'
+ *  action's row carries no recorded counterparty. This splits by which of two
+ *  distinct truths holds -- the old single "nothing to ask yet" implied a
+ *  future action the reader can't take and hid which situation they were in:
+ *   - a SERVED row: this node served locally, there is no remote counterparty
+ *     on the other side to ask at all -> `Local — no other side`;
+ *   - an ASKED row: a remote exchange happened but the peer is unknown/
+ *     unrecorded (no counterparty identity field exists on the record yet; the
+ *     join comes from Pane B, per-peer) -> `Other side: not known`.
+ *  Each is a stated fact, never a deficit or a "not yet". */
+const NO_OTHER_SIDE_TEXT = 'Local — no other side'
+const OTHER_SIDE_NOT_KNOWN_TEXT = 'Other side: not known'
 
 function formatExchangeTimestamp(timestamp: string | null): string {
   if (!timestamp) return 'timestamp unavailable'
@@ -106,9 +112,13 @@ export function ExchangeStreamRow({
   const state = deriveRightCellState(row.raw, theirsRecompute, localRecord)
   const alarm = isAlarmState(state)
   // [ledger-T1-ask-half-action] Do (2): an ask action with no recorded
-  // counterparty renders no button at all -- there is nothing to ask yet.
+  // counterparty renders no button at all, with the text branching on WHICH
+  // truth holds -- a SERVED row has no remote other side to ask; an ASKED row
+  // has one, but it's unknown/unrecorded. Never a single "nothing to ask yet"
+  // that hides the difference.
   const gatedByCounterparty = isAskAction(state.kind) && !row.counterparty
-  const cellText = gatedByCounterparty ? NO_COUNTERPARTY_TEXT : rightCellText(state)
+  const gatedText = row.roleTag === 'SERVED' ? NO_OTHER_SIDE_TEXT : OTHER_SIDE_NOT_KNOWN_TEXT
+  const cellText = gatedByCounterparty ? gatedText : rightCellText(state)
   const action = gatedByCounterparty ? null : rightCellAction(state)
   // Only recompute while the security view is actually open -- the hook
   // itself must always be called (rules of hooks), but its effect no-ops on

@@ -25,6 +25,7 @@ import {
   meshMetaLine,
   peerDisplayId,
   periodRangeText,
+  peersWindowText,
   peerSortKey,
   SELF_REPORTED_NOTE,
   sortPeerRows,
@@ -252,6 +253,29 @@ describe('periodRangeText', () => {
 
   it('spells out both years when the range crosses a year boundary', () => {
     expect(periodRangeText('2025-12-30T00:00:00Z', '2026-01-02T00:00:00Z')).toBe('30 Dec 2025 – 2 Jan 2026')
+  })
+})
+
+describe('peersWindowText — the Peers "When" column HEADER is the real window across rows, not the word "Period"', () => {
+  it('spans the earliest first_seen to the latest last_seen across the rows', () => {
+    const rows = [
+      dealtWithRowView(baseRow({ first_seen: '2026-09-23T00:00:00Z', last_seen: '2026-09-24T00:00:00Z' })),
+      dealtWithRowView(baseRow({ first_seen: '2026-09-22T00:00:00Z', last_seen: '2026-09-26T00:00:00Z' }))
+    ]
+    expect(peersWindowText(rows)).toBe('22–26 Sep')
+  })
+
+  it('is "—" when no row carries any exchange history (advertised-only)', () => {
+    expect(peersWindowText([advertisedOnlyRowView('node:unused')])).toBe('—')
+    expect(peersWindowText([])).toBe('—')
+  })
+
+  it('ignores advertised-only rows (null first/last_seen) when bounding the window', () => {
+    const rows = [
+      advertisedOnlyRowView('node:unused'),
+      dealtWithRowView(baseRow({ first_seen: '2026-09-22T00:00:00Z', last_seen: '2026-09-26T00:00:00Z' }))
+    ]
+    expect(peersWindowText(rows)).toBe('22–26 Sep')
   })
 })
 

@@ -15,7 +15,7 @@ const CSV_COLUMNS = [
   'Match',
   'Adjudication',
   'Witness',
-  'Period'
+  'When'
 ] as const
 
 function csvCell(value: string): string {

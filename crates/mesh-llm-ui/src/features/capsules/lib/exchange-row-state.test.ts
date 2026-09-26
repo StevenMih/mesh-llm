@@ -65,7 +65,7 @@ const ALL_KINDS: RightCellStateKind[] = [
   'open_refused',
   'open_absent',
   'open_asked',
-  'open_pending_fetch',
+  'open_not_held',
   'open_not_given',
   'open_not_asked'
 ]
@@ -74,7 +74,7 @@ describe('deriveRightCellState — finding 1 (2026-09-23 assessment): CLOSED req
   it('MUTANT: a peer-asserted id alone (theirs.state !== absent, no fetch) is never CLOSED', () => {
     const row = paneCRow({ theirs: { state: 'NOT_CHECKED', capsule_id: 'a'.repeat(64), peer_id: 'peer-1' } })
     expect(deriveRightCellState(row).kind).not.toBe('closed')
-    expect(deriveRightCellState(row).kind).toBe('open_pending_fetch')
+    expect(deriveRightCellState(row).kind).toBe('open_not_held')
   })
 
   it('a real fetch that matches, is signed, AND cites our half by digest -> CLOSED', () => {
@@ -100,7 +100,7 @@ describe('deriveRightCellState — finding 1 (2026-09-23 assessment): CLOSED req
       localRecordWithDigests()
     )
     expect(state.kind).not.toBe('closed')
-    expect(state.kind).toBe('open_pending_fetch')
+    expect(state.kind).toBe('open_not_held')
   })
 
   it('idMatch true, signature verified, but the peer record does not cite our request/response digests (§6.2/L-G) -- NOT CLOSED', () => {
@@ -111,7 +111,7 @@ describe('deriveRightCellState — finding 1 (2026-09-23 assessment): CLOSED req
       localRecordWithDigests()
     )
     expect(state.kind).not.toBe('closed')
-    expect(state.kind).toBe('open_pending_fetch')
+    expect(state.kind).toBe('open_not_held')
   })
 
   it('idMatch true, signature verified, digests cite, but with no localRecord passed at all -- NOT CLOSED (never a fabricated match against nothing)', () => {
@@ -121,13 +121,13 @@ describe('deriveRightCellState — finding 1 (2026-09-23 assessment): CLOSED req
       fetched({ idMatch: true, signatureOk: true, peerRecord: citingPeerRecord() })
     )
     expect(state.kind).not.toBe('closed')
-    expect(state.kind).toBe('open_pending_fetch')
+    expect(state.kind).toBe('open_not_held')
   })
 
-  it('a fetch still in flight is not evidence of anything -> stays open_pending_fetch', () => {
+  it('a fetch still in flight is not evidence of anything -> stays open_not_held', () => {
     const row = paneCRow()
     const state = deriveRightCellState(row, fetched({ status: 'fetching', idMatch: null, peerRecord: null }))
-    expect(state.kind).toBe('open_pending_fetch')
+    expect(state.kind).toBe('open_not_held')
   })
 
   it('a non-digest self-minted peer marker (capsule-chatcmpl-…) is not fetchable -> open_not_given, never pending fetch', () => {
@@ -137,23 +137,23 @@ describe('deriveRightCellState — finding 1 (2026-09-23 assessment): CLOSED req
     expect(deriveRightCellState(row).kind).toBe('open_not_given')
   })
 
-  it('a digest-shaped peer id with no confirmed fetch -> open_pending_fetch (fetchable)', () => {
+  it('a digest-shaped peer id with no confirmed fetch -> open_not_held (fetchable)', () => {
     const row = paneCRow({
       theirs: { state: 'NOT_CHECKED', capsule_id: 'a'.repeat(64), peer_id: 'peer-1' }
     })
-    expect(deriveRightCellState(row).kind).toBe('open_pending_fetch')
+    expect(deriveRightCellState(row).kind).toBe('open_not_held')
   })
 
-  it('a fetch that came back not_found is not evidence of a match -> stays open_pending_fetch, never CLOSED', () => {
+  it('a fetch that came back not_found is not evidence of a match -> stays open_not_held, never CLOSED', () => {
     const row = paneCRow()
     const state = deriveRightCellState(row, fetched({ status: 'not_found', idMatch: null, peerRecord: null }))
-    expect(state.kind).toBe('open_pending_fetch')
+    expect(state.kind).toBe('open_not_held')
   })
 
   it('a fetch whose id-recompute could not run (idMatch null) is inconclusive, never CLOSED', () => {
     const row = paneCRow()
     const state = deriveRightCellState(row, fetched({ status: 'found', idMatch: null, peerRecord: { x: 1 } }))
-    expect(state.kind).toBe('open_pending_fetch')
+    expect(state.kind).toBe('open_not_held')
   })
 
   it('theirs.state === absent is open_not_asked regardless of any fetch state (no join key exists to fetch from)', () => {
@@ -229,7 +229,7 @@ describe('deriveRightCellState — bilateral-retention-decay-property (agent-act
     )
     expect(state.kind).not.toBe('contradicted')
     expect(state.kind).not.toBe('closed')
-    expect(state.kind).toBe('open_pending_fetch')
+    expect(state.kind).toBe('open_not_held')
   })
 
   it('an errored peer fetch (transport/verification failure, not a disagreement) renders OPEN — never CONTRADICTED', () => {
@@ -239,7 +239,7 @@ describe('deriveRightCellState — bilateral-retention-decay-property (agent-act
       fetched({ status: 'error', idMatch: null, signatureOk: null, peerRecord: null })
     )
     expect(state.kind).not.toBe('contradicted')
-    expect(state.kind).toBe('open_pending_fetch')
+    expect(state.kind).toBe('open_not_held')
   })
 
   it('MUTANT: only an ACTUAL fetched-and-compared idMatch===false is CONTRADICTED — every other "half unavailable" shape (not_fetched, fetching, not_found, error, or a fetch whose own id-recompute could not run) must go red if it starts reading as CONTRADICTED', () => {
@@ -356,7 +356,7 @@ describe('rightCellText — the load-bearing distinction', () => {
   })
 
   it('LOAD-BEARING: pending-fetch never renders the same string as not-asked or CLOSED', () => {
-    const pendingFetch = rightCellText(stateOf('open_pending_fetch'))
+    const pendingFetch = rightCellText(stateOf('open_not_held'))
     expect(pendingFetch).not.toBe(rightCellText(stateOf('open_not_asked')))
     expect(pendingFetch).not.toBe(rightCellText(stateOf('closed')))
   })
@@ -393,12 +393,12 @@ describe('rightCellStatusLabel', () => {
 })
 
 describe('rightCellAction', () => {
-  it('closed, open_pending_fetch, and open_not_given have no row-level action; every other state has one', () => {
+  it('closed, open_not_held, and open_not_given have no row-level action; every other state has one', () => {
     expect(rightCellAction(stateOf('closed'))).toBeNull()
-    expect(rightCellAction(stateOf('open_pending_fetch'))).toBeNull()
+    expect(rightCellAction(stateOf('open_not_held'))).toBeNull()
     expect(rightCellAction(stateOf('open_not_given'))).toBeNull()
     for (const kind of ALL_KINDS.filter(
-      (k) => k !== 'closed' && k !== 'open_pending_fetch' && k !== 'open_not_given'
+      (k) => k !== 'closed' && k !== 'open_not_held' && k !== 'open_not_given'
     )) {
       expect(rightCellAction(stateOf(kind))).not.toBeNull()
     }
@@ -426,10 +426,10 @@ describe('isAlarmState — L-A/L-B enforcement', () => {
 })
 
 describe('isAskAction — [ledger-T1-ask-half-action] counterparty-gating predicate', () => {
-  it('only open_not_asked and open_asked are ask actions -- open_pending_fetch is a FETCH action, not an ask', () => {
+  it('only open_not_asked and open_asked are ask actions -- open_not_held is a FETCH action, not an ask', () => {
     expect(isAskAction('open_not_asked')).toBe(true)
     expect(isAskAction('open_asked')).toBe(true)
-    expect(isAskAction('open_pending_fetch')).toBe(false)
+    expect(isAskAction('open_not_held')).toBe(false)
     for (const kind of ALL_KINDS.filter((k) => k !== 'open_not_asked' && k !== 'open_asked')) {
       expect(isAskAction(kind)).toBe(false)
     }
@@ -449,7 +449,7 @@ describe('ledgerStateFilterValue — v3 §2a toolbar buckets', () => {
   it('the four no-reply/no-fetch states collapse into the broader open bucket', () => {
     expect(ledgerStateFilterValue(stateOf('open_refused'))).toBe('open')
     expect(ledgerStateFilterValue(stateOf('open_absent'))).toBe('open')
-    expect(ledgerStateFilterValue(stateOf('open_pending_fetch'))).toBe('open')
+    expect(ledgerStateFilterValue(stateOf('open_not_held'))).toBe('open')
     expect(ledgerStateFilterValue(stateOf('open_not_asked'))).toBe('open')
   })
 })

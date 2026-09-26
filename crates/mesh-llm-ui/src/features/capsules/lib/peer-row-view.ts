@@ -319,8 +319,10 @@ export const SELF_REPORTED_NOTE = 'self-reported — not independently attested'
 export const WITNESS_COVERAGE_COMPACT_TEXT = 'not available'
 
 // ---------------------------------------------------------------------------
-// Period -- the first/last exchange dates this row spans. `—` when there is
-// no exchange history to bound (the "advertised but unused" group).
+// When -- the first/last exchange dates a row (or a set of rows) spans. `—`
+// when there is no exchange history to bound (the "advertised but unused"
+// group). The Peers table renders the aggregate window as the column HEADER
+// (`peersWindowText`); each row's own span is `periodRangeText`.
 // ---------------------------------------------------------------------------
 
 function periodDateParts(iso: string): { day: number; month: string; year: number } {
@@ -330,6 +332,24 @@ function periodDateParts(iso: string): { day: number; month: string; year: numbe
     month: parsed.toLocaleString('en-US', { month: 'short', timeZone: 'UTC' }),
     year: parsed.getUTCFullYear()
   }
+}
+
+/** The real date window spanned by a set of rows' exchange timestamps -- the
+ *  earliest `first_seen` to the latest `last_seen` across them, rendered by
+ *  `periodRangeText` (e.g. `22–26 Sep`). This is what the Peers table shows as
+ *  the "When" column's HEADER value, not the bookkeeping word "Period": the
+ *  header is the actual window, computed from the rows on screen. `—` when no
+ *  row carries any exchange history (the advertised-but-unused-only case). */
+export function peersWindowText(rows: readonly PeerTableRowView[]): string {
+  let earliest: string | null = null
+  let latest: string | null = null
+  for (const { row } of rows) {
+    const first = row?.first_seen ?? null
+    const last = row?.last_seen ?? null
+    if (first && (earliest === null || first < earliest)) earliest = first
+    if (last && (latest === null || last > latest)) latest = last
+  }
+  return periodRangeText(earliest, latest)
 }
 
 export function periodRangeText(firstSeen: string | null, lastSeen: string | null): string {

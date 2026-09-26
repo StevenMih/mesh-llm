@@ -97,7 +97,10 @@ export function theirContentText(state: TheirContentState): string {
     case 'recorded_absence':
       return `They state they hold no payload for this exchange — signed ${dateOrFallback(state.date)}.`
     case 'not_asked':
-      return 'Not asked. They would be expected to hold none.'
+      // With push the default, "not asked" is no longer why the comparison
+      // didn't happen -- nothing arrived or we didn't fetch. "Not compared"
+      // is true under both; the row state (OPEN · not held) already says why.
+      return 'Not compared. They would be expected to hold none.'
     case 'unanswered':
       return `Asked ${dateOrFallback(state.date)}. No reply yet.`
     case 'signed_refusal':
