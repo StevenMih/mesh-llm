@@ -188,17 +188,25 @@ fn response_digest(record: &Value) -> Option<&str> {
         .and_then(Value::as_str)
 }
 
-/// `record_push.RECEIVED_PROVENANCE_FILENAME` -- the co-located sibling of
-/// `capsules.jsonl` (same convention as `checkpoints.jsonl`) the record-push
-/// door appends ONE line to per successfully identity-verified received push
-/// (`record_push._append_provenance`): `{capsule_id, received_from, via,
-/// received_at, signature_ok}`. Per `record_push`'s own module doc this file
-/// is *"the ONLY fact the pane's local-sibling CLOSED gate
-/// (`exchange-row-state.ts`) trusts to treat a locally-held capsule as a
-/// verified counterparty half"* -- so this reader NEVER treats a ledger
-/// record as a counterparty half unless its `capsule_id` has a line here
-/// carrying the provenance triple and `signature_ok: true`.
-const RECEIVED_PROVENANCE_FILENAME: &str = "received-provenance.jsonl";
+// [mesh-received-half-is-a-citing-record] NOTE ON `received-provenance.jsonl`:
+// the record-push door still writes it (one line per verified received push:
+// `{capsule_id, received_from, via, received_at, signature_ok}`), but this
+// reader no longer reads it. The SAME facts now ride on OUR chained CITING
+// record (`compute_attestation.received_half`), whose integrity the chain +
+// checkpoint actually protect -- so this reader trusts the citing record (the
+// cleaner of the two sources named in the ruling), never the co-located
+// provenance sibling. See `received_half_provenance`.
+
+/// [mesh-received-half-is-a-citing-record] `record_push.RECEIVED_CAPSULES_FILENAME`
+/// -- the HELD-ARTIFACT store the record-push door now writes received foreign
+/// capsule BODIES to, by `capsule_id`. A peer's pushed capsule is evidence we
+/// HOLD, not a record we MADE: it lives HERE, never in `capsules.jsonl` (our
+/// chain). The chained record for a received half is a LOCAL CITING record in
+/// `capsules.jsonl` (`chain.relation == "cites"`, `citation_purpose ==
+/// "counterparty_half"`) that references the foreign body by digest; this
+/// reader resolves the cited body from this store for the digest recompute the
+/// CLOSED gate reads. This store is NOT a ledger -- nothing chains it.
+const RECEIVED_CAPSULES_FILENAME: &str = "received-capsules.jsonl";
 
 /// The provenance triple (+ `signature_ok`) the door recorded for one
 /// received foreign sibling. The door already verified the signature against
@@ -215,58 +223,157 @@ pub(super) struct ReceivedProvenance {
     signature_ok: bool,
 }
 
-/// Reads `<ledger_dir>/received-provenance.jsonl` into a
-/// `capsule_id -> ReceivedProvenance` map. A missing file yields an empty map
-/// (the overwhelmingly common case: this node has received no push yet, so no
-/// row can close on a local sibling -- honest, never fabricated). Only lines
-/// carrying a non-empty `received_from` AND `signature_ok: true` are kept: the
-/// provenance rule (a self-sealed capsule, or one without `received_from`,
-/// never closes) is enforced HERE, at the door of what counts as a
-/// counterparty half, exactly as `record_push` writes it.
-fn read_received_provenance(ledger_dir: &Path) -> HashMap<String, ReceivedProvenance> {
-    let path = ledger_dir.join(RECEIVED_PROVENANCE_FILENAME);
+/// [mesh-received-half-is-a-citing-record] Reads the held-artifact store
+/// `<ledger_dir>/received-capsules.jsonl` into a `foreign capsule_id -> body`
+/// map. A missing file yields an empty map (this node has received no push yet).
+/// These are the FOREIGN bodies the citing records cite -- resolved here so the
+/// digest recompute the CLOSED gate reads has the real counterparty half to
+/// compare against. They are NOT ledger records of ours.
+fn read_received_capsules(ledger_dir: &Path) -> HashMap<String, Value> {
+    let path = ledger_dir.join(RECEIVED_CAPSULES_FILENAME);
     let Ok(text) = std::fs::read_to_string(&path) else {
         return HashMap::new();
     };
     let mut map = HashMap::new();
     for line in text.lines().map(str::trim).filter(|l| !l.is_empty()) {
-        let Ok(entry) = serde_json::from_str::<Value>(line) else {
+        let Ok(body) = serde_json::from_str::<Value>(line) else {
             continue;
         };
-        let Some(capsule_id) = entry.get("capsule_id").and_then(Value::as_str) else {
-            continue;
-        };
-        let received_from = entry
-            .get("received_from")
-            .and_then(Value::as_str)
-            .filter(|s| !s.is_empty());
-        // The provenance rule: no `received_from`, or `signature_ok` not
-        // literally true, means the door never treated this as a verified
-        // received half -- so neither does this reader.
-        let (Some(received_from), Some(true)) =
-            (received_from, entry.get("signature_ok").and_then(Value::as_bool))
-        else {
-            continue;
-        };
-        map.insert(
-            capsule_id.to_string(),
-            ReceivedProvenance {
-                received_from: received_from.to_string(),
-                via: entry
-                    .get("via")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_string(),
-                received_at: entry
-                    .get("received_at")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_string(),
-                signature_ok: true,
-            },
-        );
+        if let Some(id) = body.get("capsule_id").and_then(Value::as_str) {
+            map.insert(id.to_string(), body);
+        }
     }
     map
+}
+
+/// True when `record` is a LOCAL CITING record for a received counterparty half
+/// ([mesh-received-half-is-a-citing-record]): `chain.relation == "cites"` AND a
+/// `references[]` entry with `citation_purpose == "counterparty_half"`. These
+/// are OUR OWN chained log entries (not served actions, not foreign bodies) --
+/// they are what makes the received half a checkpoint-covered record of ours.
+fn is_citing_record(record: &Value) -> bool {
+    let is_cite = record.pointer("/chain/relation").and_then(Value::as_str) == Some("cites");
+    is_cite && cited_counterparty_capsule_id(record).is_some()
+}
+
+/// The foreign `capsule_id` a citing record cites -- its `references[]` entry
+/// whose `citation_purpose == "counterparty_half"` (`references[].digest`, the
+/// CPB typed digest, which for a capsule IS its `capsule_id`). `None` when the
+/// record is not a counterparty-half citation.
+fn cited_counterparty_capsule_id(record: &Value) -> Option<&str> {
+    record
+        .get("references")
+        .and_then(Value::as_array)?
+        .iter()
+        .find(|r| r.get("citation_purpose").and_then(Value::as_str) == Some("counterparty_half"))
+        .and_then(|r| r.get("digest"))
+        .and_then(Value::as_str)
+}
+
+/// The receiving-event facts a citing record carries in
+/// `compute_attestation.received_half` -- `received_from`/`via`/`received_at`/
+/// `signature_ok`. `None` (and the half never counts as verified) unless
+/// `received_from` is non-empty AND `signature_ok` is literally `true`: the
+/// provenance rule, now read off OUR OWN citing record instead of a co-located
+/// provenance sibling. (`received-provenance.jsonl` is still written by the
+/// door, but the citing record is the chained, checkpoint-covered carrier of
+/// the same facts, so this reader trusts the citing record -- the record whose
+/// integrity the chain + checkpoint actually protect.)
+fn received_half_provenance(citing: &Value) -> Option<ReceivedProvenance> {
+    let rh = citing.pointer("/model_attestation/compute_attestation/received_half")?;
+    let received_from = rh
+        .get("received_from")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())?;
+    if rh.get("signature_ok").and_then(Value::as_bool) != Some(true) {
+        return None;
+    }
+    Some(ReceivedProvenance {
+        received_from: received_from.to_string(),
+        via: rh.get("via").and_then(Value::as_str).unwrap_or_default().to_string(),
+        received_at: rh
+            .get("received_at")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        signature_ok: true,
+    })
+}
+
+/// [mesh-received-half-is-a-citing-record] The reader's working set, assembled
+/// from the three on-disk sources so the pane logic downstream is unchanged:
+///
+///   - `records`: this node's OWN capsules from `capsules.jsonl` MINUS the
+///     citing records (which are our log entries, not served exchanges), PLUS
+///     each cited FOREIGN body resolved from the held-artifact store. A foreign
+///     body re-enters the working set as the "theirs" half -- exactly the shape
+///     the pane's `mine`/`theirs` correlation, `digest_match`, and sibling
+///     attribution already expect -- but sourced from the artifact store, never
+///     from `capsules.jsonl`.
+///   - `received_provenance`: `foreign capsule_id -> ReceivedProvenance`, built
+///     from OUR citing records (the chained carrier of the door's verdict), so
+///     `received_siblings_by_key` / `is_received_sibling` treat exactly the
+///     cited foreign bodies as counterparty halves -- the provenance rule,
+///     unchanged, now keyed off the citing record.
+///   - `citing_records`: the citing records themselves, kept for Pane A (they
+///     are legitimately OUR log entries) but excluded from `records` so Pane
+///     B/C never mistake one for a served action or a counterparty half.
+struct EffectiveLedger {
+    /// This node's own served/requester capsules from `capsules.jsonl` PLUS the
+    /// resolved foreign counterparty bodies (the "theirs" halves) -- the set
+    /// Pane B/C correlate `mine` against `theirs` over. EXCLUDES citing records
+    /// (our log entries, not served exchanges).
+    pane_bc_records: Vec<Value>,
+    /// Pane A's set: this node's own served/requester capsules PLUS our citing
+    /// records -- all legitimately OUR chained log entries. EXCLUDES the
+    /// foreign bodies (evidence we hold, not records we made).
+    our_records: Vec<Value>,
+    /// `foreign capsule_id -> ReceivedProvenance`, built from our citing records.
+    received_provenance: HashMap<String, ReceivedProvenance>,
+}
+
+fn effective_ledger(ledger_dir: &Path) -> EffectiveLedger {
+    let raw = read_capsule_records(ledger_dir);
+    let artifacts = read_received_capsules(ledger_dir);
+
+    let mut local_records: Vec<Value> = Vec::new();
+    let mut citing_records: Vec<Value> = Vec::new();
+    let mut received_provenance: HashMap<String, ReceivedProvenance> = HashMap::new();
+    let mut resolved_foreign: HashMap<String, Value> = HashMap::new();
+
+    for record in raw {
+        if is_citing_record(&record) {
+            // A citing record: resolve the foreign half it cites from the
+            // held-artifact store, and record the door's verdict (off the
+            // citing record) keyed by the FOREIGN body's own capsule_id -- so
+            // the resolved foreign body becomes a counterparty "theirs" half
+            // exactly as an inline foreign body used to.
+            if let (Some(cited_id), Some(prov)) =
+                (cited_counterparty_capsule_id(&record), received_half_provenance(&record))
+            {
+                if let Some(body) = artifacts.get(cited_id) {
+                    received_provenance.insert(cited_id.to_string(), prov);
+                    resolved_foreign
+                        .entry(cited_id.to_string())
+                        .or_insert_with(|| body.clone());
+                }
+            }
+            citing_records.push(record);
+        } else {
+            // One of this node's own served/requester capsules.
+            local_records.push(record);
+        }
+    }
+
+    // Pane B/C: our own halves + the resolved foreign counterparty halves.
+    let mut pane_bc_records = local_records.clone();
+    pane_bc_records.extend(resolved_foreign.into_values());
+
+    // Pane A: our own halves + our citing records (all ours), never foreign.
+    let mut our_records = local_records;
+    our_records.extend(citing_records);
+
+    EffectiveLedger { pane_bc_records, our_records, received_provenance }
 }
 
 /// `capsule_exchange_tab.digest_match_grade`, the STRUCTURAL half of it: the
@@ -460,6 +567,46 @@ pub(super) fn build_pane_a(records: &[Value], card: Value) -> Value {
     let rows: Vec<Value> = records
         .iter()
         .map(|record| {
+            // [mesh-received-half-is-a-citing-record]: a citing record IS one
+            // of our chained log entries (it belongs in Pane A), but it is NOT
+            // a served action -- it records that we RECEIVED a counterparty
+            // half. Label it honestly so a reader never mistakes it for a
+            // model this node served. Its `cross_party` cell is PRESENT (it
+            // cites a counterparty by digest), never the "no counterparty
+            // evidence" default a served-only record carries.
+            if is_citing_record(record) {
+                let received_from = record
+                    .pointer("/model_attestation/compute_attestation/received_half/received_from")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown");
+                return json!({
+                    "capsule_id": record.get("capsule_id").cloned().unwrap_or(Value::Null),
+                    "timestamp": record.get("timestamp").cloned().unwrap_or(Value::Null),
+                    "kind": "counterparty_half_citation",
+                    // NOT a served model -- an honest marker, never "local model".
+                    "model_claimed": Value::Null,
+                    "hardware_claimed": Value::Null,
+                    "verify_ok": Value::Null,
+                    "rungs": {
+                        "freshness": { "state": STATE_ABSENT, "client_nonce_source": Value::Null },
+                        // This record DOES carry counterparty evidence: it
+                        // cites a received half by digest (the honest PRESENT,
+                        // not the served-only NOT_PRESENT).
+                        "cross_party": {
+                            "state": CELL_PRESENT,
+                            "text": format!("cites a counterparty half received from {received_from}"),
+                        },
+                        "runtime_binding": { "state": STATE_ABSENT },
+                        "tee_citation": { "state": STATE_ABSENT },
+                        "hardware_inventory": { "state": STATE_ABSENT },
+                        "log_integrity": {
+                            "state": STATE_PRESENT_UNVERIFIED,
+                            "witness_checkpoint_supplied": false,
+                        },
+                    },
+                    "record": record,
+                });
+            }
             json!({
                 "capsule_id": record.get("capsule_id").cloned().unwrap_or(Value::Null),
                 "timestamp": record.get("timestamp").cloned().unwrap_or(Value::Null),
@@ -1165,13 +1312,21 @@ pub(super) fn build_pane_json(
     ledger_dir: &Path,
     exchange_id: Option<&str>,
 ) -> Option<Value> {
-    let records = read_capsule_records(ledger_dir);
+    // [mesh-received-half-is-a-citing-record]: assemble the working set from
+    // capsules.jsonl (local + citing records) + the held-artifact store, so
+    // `records` carries our served halves + the resolved foreign counterparty
+    // halves, and the provenance map is built off our own citing records.
+    let EffectiveLedger { pane_bc_records, our_records, received_provenance } =
+        effective_ledger(ledger_dir);
     match pane {
-        "pane-a" => Some(build_pane_a(&records, read_checkpoint_card(ledger_dir))),
-        "pane-b" => Some(build_pane_b(&records, &read_received_provenance(ledger_dir))),
+        // Pane A ("This node") shows our own records: our served/requester
+        // halves AND our citing records (they ARE our chained log entries) --
+        // never the foreign bodies (those are evidence we hold, not ours).
+        "pane-a" => Some(build_pane_a(&our_records, read_checkpoint_card(ledger_dir))),
+        "pane-b" => Some(build_pane_b(&pane_bc_records, &received_provenance)),
         "pane-c" => Some(match exchange_id {
-            Some(id) if !id.is_empty() => build_pane_c_drilldown(&records, id),
-            _ => build_pane_c_list(&records, &read_received_provenance(ledger_dir)),
+            Some(id) if !id.is_empty() => build_pane_c_drilldown(&pane_bc_records, id),
+            _ => build_pane_c_list(&pane_bc_records, &received_provenance),
         }),
         _ => None,
     }
@@ -1874,39 +2029,142 @@ mod tests {
         assert_eq!(row["digest_match"]["state"], json!(STATE_FAILED)); // ...but they disagree.
     }
 
-    /// `read_received_provenance` enforces the provenance rule at the file
-    /// boundary: only a line carrying a non-empty `received_from` AND
-    /// `signature_ok: true` is kept. A line missing `received_from`, or one
-    /// with `signature_ok: false`, is dropped -- never a fabricated
-    /// counterparty half. Matches `record_push`: a failed verify goes to
-    /// `rejected-record-pushes.jsonl`, NEVER `received-provenance.jsonl`, so a
-    /// false `signature_ok` should never appear -- but if it did, this reader
-    /// refuses it.
-    #[test]
-    fn read_received_provenance_keeps_only_signature_ok_lines_carrying_received_from() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("received-provenance.jsonl"),
-            "{\"capsule_id\":\"good\",\"received_from\":\"m3\",\"via\":\"push\",\"received_at\":\"2026-09-25T00:00:01Z\",\"signature_ok\":true}\n\
-             {\"capsule_id\":\"no-from\",\"via\":\"push\",\"signature_ok\":true}\n\
-             {\"capsule_id\":\"sig-false\",\"received_from\":\"m3\",\"signature_ok\":false}\n",
-        )
-        .unwrap();
-        let map = read_received_provenance(dir.path());
-        assert!(map.contains_key("good"));
-        assert!(!map.contains_key("no-from"));
-        assert!(!map.contains_key("sig-false"));
-        assert_eq!(map["good"].received_from, "m3");
-        assert!(map["good"].signature_ok);
+    /// A minimal CITING record ([mesh-received-half-is-a-citing-record]): our
+    /// own chained record, `chain.relation == "cites"`, citing `cited` by CPB
+    /// typed digest with `citation_purpose == "counterparty_half"`, carrying
+    /// the receiving facts in `compute_attestation.received_half`.
+    fn citing_fixture(cited: &str, received_from: &str, signature_ok: bool) -> Value {
+        json!({
+            "capsule_id": format!("cite-of-{cited}"),
+            "timestamp": "2026-09-25T00:00:02Z",
+            "chain": { "parent_capsule_id": "head", "relation": "cites" },
+            "references": [{
+                "type": "capsule", "digest_alg": "SHA-256", "digest": cited,
+                "citation_purpose": "counterparty_half",
+            }],
+            "model_attestation": { "compute_attestation": { "received_half": {
+                "cited_capsule_id": cited,
+                "received_from": received_from,
+                "via": "push",
+                "received_at": "2026-09-25T00:00:01Z",
+                "signature_ok": signature_ok,
+            }}},
+        })
     }
 
-    /// A missing `received-provenance.jsonl` is the common case (this node has
-    /// received no push): an empty map, no panic -- so no row can close on a
-    /// local sibling, the honest default.
+    /// `received_half_provenance` enforces the provenance rule off OUR OWN
+    /// citing record: only a `received_half` with a non-empty `received_from`
+    /// AND `signature_ok: true` yields a verified counterparty half. A
+    /// `signature_ok: false`, or an empty/absent `received_from`, is refused --
+    /// never a fabricated counterparty half.
     #[test]
-    fn read_received_provenance_absent_file_is_empty_not_a_panic() {
+    fn received_half_provenance_keeps_only_signature_ok_citing_records() {
+        let good = citing_fixture("good", "m3", true);
+        let prov = received_half_provenance(&good).expect("verified half");
+        assert_eq!(prov.received_from, "m3");
+        assert!(prov.signature_ok);
+        assert_eq!(prov.via, "push");
+
+        assert!(received_half_provenance(&citing_fixture("bad", "m3", false)).is_none());
+        assert!(received_half_provenance(&citing_fixture("empty", "", true)).is_none());
+        // A plain served record (no received_half) is never a counterparty half.
+        let served = fixture_record("cap-1", "2026-09-01T00:00:00Z", "req-1", None);
+        assert!(received_half_provenance(&served).is_none());
+    }
+
+    /// `is_citing_record` recognizes exactly a `chain.relation == "cites"` +
+    /// `counterparty_half` reference; a served record and a plain `follows`
+    /// record are not citing records.
+    #[test]
+    fn is_citing_record_recognizes_the_counterparty_half_citation() {
+        assert!(is_citing_record(&citing_fixture("x", "m3", true)));
+        let served = fixture_record("cap-1", "2026-09-01T00:00:00Z", "req-1", None);
+        assert!(!is_citing_record(&served));
+    }
+
+    /// The held-artifact store reader: reads `received-capsules.jsonl` by
+    /// `capsule_id`; a missing file is an empty map, no panic.
+    #[test]
+    fn read_received_capsules_reads_bodies_by_capsule_id_and_missing_is_empty() {
         let dir = tempfile::tempdir().unwrap();
-        assert!(read_received_provenance(dir.path()).is_empty());
+        assert!(read_received_capsules(dir.path()).is_empty());
+
+        std::fs::write(
+            dir.path().join("received-capsules.jsonl"),
+            "{\"capsule_id\":\"foreign-1\",\"effect\":{\"request_digest\":\"aa\"}}\n\
+             {\"capsule_id\":\"foreign-2\"}\n",
+        )
+        .unwrap();
+        let map = read_received_capsules(dir.path());
+        assert_eq!(map.len(), 2);
+        assert_eq!(map["foreign-1"]["effect"]["request_digest"], json!("aa"));
+        assert!(map.contains_key("foreign-2"));
+    }
+
+    /// [mesh-received-half-is-a-citing-record] End-to-end assembly:
+    /// `effective_ledger` reads capsules.jsonl (a local served half + a citing
+    /// record) + received-capsules.jsonl (the foreign body), and produces:
+    /// pane_bc_records = local + foreign (NOT the citing record); our_records =
+    /// local + citing (NOT the foreign body); received_provenance keyed by the
+    /// FOREIGN capsule_id.
+    #[test]
+    fn effective_ledger_splits_local_citing_and_foreign_from_the_three_sources() {
+        let dir = tempfile::tempdir().unwrap();
+        // capsules.jsonl: one local served half + one citing record.
+        let local = fixture_record("local-1", "2026-09-01T00:00:00Z", "req-1", None);
+        let citing = citing_fixture("foreign-1", "m4", true);
+        std::fs::write(
+            dir.path().join("capsules.jsonl"),
+            format!(
+                "{}\n{}\n",
+                serde_json::to_string(&local).unwrap(),
+                serde_json::to_string(&citing).unwrap()
+            ),
+        )
+        .unwrap();
+        // The foreign body lives ONLY in the held-artifact store.
+        let foreign = fixture_record("foreign-1", "2026-09-01T00:00:05Z", "req-1", None);
+        std::fs::write(
+            dir.path().join("received-capsules.jsonl"),
+            format!("{}\n", serde_json::to_string(&foreign).unwrap()),
+        )
+        .unwrap();
+
+        let el = effective_ledger(dir.path());
+        let ids = |v: &[Value]| -> Vec<String> {
+            v.iter().map(|r| r["capsule_id"].as_str().unwrap().to_string()).collect()
+        };
+        let bc = ids(&el.pane_bc_records);
+        assert!(bc.contains(&"local-1".to_string()));
+        assert!(bc.contains(&"foreign-1".to_string()));
+        assert!(!bc.iter().any(|id| id.starts_with("cite-of-")), "no citing record in pane B/C set");
+
+        let ours = ids(&el.our_records);
+        assert!(ours.contains(&"local-1".to_string()));
+        assert!(ours.iter().any(|id| id == "cite-of-foreign-1"), "citing record is ours");
+        assert!(!ours.contains(&"foreign-1".to_string()), "foreign body is NOT ours");
+
+        // Provenance keyed by the FOREIGN capsule_id, off the citing record.
+        assert!(el.received_provenance.contains_key("foreign-1"));
+        assert_eq!(el.received_provenance["foreign-1"].received_from, "m4");
+    }
+
+    /// A missing artifact store means a citing record cannot resolve its
+    /// foreign body: the row stays honest (no counterparty half re-enters the
+    /// working set), never a fabricated one.
+    #[test]
+    fn citing_record_with_no_resolvable_artifact_adds_no_counterparty_half() {
+        let dir = tempfile::tempdir().unwrap();
+        let citing = citing_fixture("foreign-gone", "m4", true);
+        std::fs::write(
+            dir.path().join("capsules.jsonl"),
+            format!("{}\n", serde_json::to_string(&citing).unwrap()),
+        )
+        .unwrap();
+        // No received-capsules.jsonl at all.
+        let el = effective_ledger(dir.path());
+        assert!(el.received_provenance.is_empty(), "no artifact -> no counterparty half");
+        assert!(el.pane_bc_records.is_empty(), "no local half, no resolved foreign body");
     }
 
     #[test]
@@ -2032,6 +2290,96 @@ mod tests {
         assert_eq!(pane_c["found"], json!(true));
 
         assert!(build_pane_json("pane-z", &dir, None).is_none());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// [mesh-received-half-is-a-citing-record] THE NEW-SHAPE END-TO-END:
+    /// `capsules.jsonl` holds this node's own requester half + a CITING record
+    /// (never the foreign body); `received-capsules.jsonl` holds the foreign
+    /// SERVED body the citing record references. Driving `build_pane_json`:
+    ///   (a) Pane C shows ONE CLOSED-capable row -- `theirs` filled from the
+    ///       resolved foreign body, `signature_ok: true` (off the citing
+    ///       record), `digest_match: verified` (mine vs the resolved foreign
+    ///       half). The ONE gate (`deriveRightCellState`) renders CLOSED.
+    ///   (b) Pane B attributes the confirmed sibling to the PEER row -- the
+    ///       peer identity now comes from the citing record's `received_from`
+    ///       (cc8ff9967's intent preserved), never the null group.
+    ///   (c) Pane A lists our own records including the citing record, marked
+    ///       `kind: counterparty_half_citation` (not a served action), and NOT
+    ///       the foreign body.
+    #[test]
+    fn new_shape_closes_via_citing_record_and_held_artifact() {
+        let dir = std::env::temp_dir().join(format!("mesh-cite-e2e-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let req_digest = "d".repeat(64);
+        let resp_digest = "e".repeat(64);
+        // Our own requester half (this node asked a peer).
+        let local = mesh_half(
+            &"a".repeat(64), "requested", &req_digest, &resp_digest, "m4-914b61c1",
+        );
+        // The foreign SERVED body -- lives ONLY in the held-artifact store.
+        let foreign = mesh_half(
+            &"b".repeat(64), "served", &req_digest, &resp_digest, "m3-82777e20",
+        );
+        // Our CITING record of receiving the foreign half (relation cites,
+        // counterparty_half, received_from the pushing peer m3).
+        let citing = citing_fixture(&"b".repeat(64), "m3", true);
+
+        std::fs::write(
+            dir.join("capsules.jsonl"),
+            format!(
+                "{}\n{}\n",
+                serde_json::to_string(&local).unwrap(),
+                serde_json::to_string(&citing).unwrap()
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("received-capsules.jsonl"),
+            format!("{}\n", serde_json::to_string(&foreign).unwrap()),
+        )
+        .unwrap();
+
+        // (a) Pane C: one row, theirs filled from the resolved foreign body,
+        //     signature_ok + digest_match verified -> CLOSED-capable.
+        let pane_c = build_pane_json("pane-c", &dir, None).unwrap();
+        assert_eq!(pane_c["row_count"], json!(1), "one reconciled row, not two OPEN halves");
+        let row = &pane_c["rows"][0];
+        assert_eq!(row["mine"]["capsule_id"], json!("a".repeat(64)));
+        assert_eq!(row["theirs"]["capsule_id"], json!("b".repeat(64)));
+        assert_eq!(row["unilateral"], json!(false));
+        assert_eq!(row["digest_match"]["state"], json!(STATE_VERIFIED));
+        assert_eq!(row["theirs"]["signature_ok"], json!(true));
+        assert_eq!(row["theirs"]["received_from"], json!("m3"));
+
+        // (b) Pane B: the confirmed sibling attributes to the peer row via the
+        //     citing record's received_from (m3), never the null group.
+        let pane_b = build_pane_json("pane-b", &dir, None).unwrap();
+        let rows = pane_b["rows"].as_array().unwrap();
+        let peer_row = rows
+            .iter()
+            .find(|r| r["confirmed_siblings"].as_array().map(|s| !s.is_empty()).unwrap_or(false))
+            .expect("a peer row carries the confirmed sibling");
+        assert_eq!(peer_row["peer_id"], json!("node:m3"), "attributed to the pushing peer m3");
+        let confirmed = peer_row["confirmed_siblings"][0].clone();
+        assert_eq!(confirmed["theirs"]["signature_ok"], json!(true));
+        assert_eq!(confirmed["digest_match"]["state"], json!(STATE_VERIFIED));
+
+        // (c) Pane A: our own records incl. the citing record (marked, not a
+        //     served action), never the foreign body.
+        let pane_a = build_pane_json("pane-a", &dir, None).unwrap();
+        let a_rows = pane_a["rows"].as_array().unwrap();
+        let a_ids: Vec<&str> = a_rows.iter().map(|r| r["capsule_id"].as_str().unwrap()).collect();
+        assert!(a_ids.contains(&"a".repeat(64).as_str()), "our own requester half is ours");
+        assert!(a_ids.iter().any(|id| id.starts_with("cite-of-")), "the citing record is ours");
+        assert!(!a_ids.contains(&"b".repeat(64).as_str()), "the foreign body is NOT one of our records");
+        let cite_row = a_rows.iter().find(|r| r["capsule_id"].as_str().unwrap().starts_with("cite-of-")).unwrap();
+        assert_eq!(cite_row["kind"], json!("counterparty_half_citation"));
+        assert_eq!(cite_row["model_claimed"], Value::Null, "a citing record is never a served model");
+        assert_eq!(cite_row["rungs"]["cross_party"]["state"], json!(CELL_PRESENT));
+
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
