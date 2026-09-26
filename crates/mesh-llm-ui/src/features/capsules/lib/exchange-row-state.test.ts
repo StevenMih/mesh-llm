@@ -5,6 +5,7 @@ import {
   isAskAction,
   ledgerStateFilterValue,
   rightCellAction,
+  rightCellDetail,
   rightCellStatusLabel,
   rightCellText,
   type RightCellState,
@@ -372,6 +373,31 @@ describe('rightCellText — the load-bearing distinction', () => {
 
   it('never invents a date when none is carried', () => {
     expect(rightCellText(stateOf('open_refused'))).toContain('date unavailable')
+  })
+})
+
+describe('rightCellDetail — Item 4: the fuller story behind each state, moved behind the (i)', () => {
+  it('gives every state a distinct honest sentence', () => {
+    const details = ALL_KINDS.map((kind) => rightCellDetail(stateOf(kind)))
+    expect(new Set(details).size).toBe(ALL_KINDS.length)
+    for (const detail of details) expect(detail.length).toBeGreaterThan(0)
+  })
+
+  it('CLOSED names the digest evidence and refuses the score reading', () => {
+    const closed = rightCellDetail(stateOf('closed'))
+    expect(closed).toContain('recomputes to cite your half')
+    expect(closed).toContain('not a reputation signal')
+  })
+
+  it('the not-held states name that their half is not held, never a fabricated recompute', () => {
+    expect(rightCellDetail(stateOf('open_not_held'))).toContain('their half is not held here')
+    expect(rightCellDetail(stateOf('open_not_given'))).toContain('their half is not held')
+  })
+
+  it('never uses a score/rating/proven word', () => {
+    for (const kind of ALL_KINDS) {
+      expect(rightCellDetail(stateOf(kind))).not.toMatch(/\b(score|rating|proven)\b/i)
+    }
   })
 })
 

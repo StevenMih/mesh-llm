@@ -19,6 +19,7 @@ import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { LedgerPageContent } from '@/features/capsules/pages/LedgerPage'
+import { CHAIN_BAR_INFO, INTEGRITY_TILE_INFO } from '@/features/capsules/lib/integrity-view'
 
 // ---------------------------------------------------------------------------
 // Mock all network fetchers — tests must never hit the real network.
@@ -93,6 +94,28 @@ describe('LedgerPageContent', () => {
     expect(
       screen.getByText('Everything here is recomputed from sealed records. Nothing is a score.')
     ).toBeInTheDocument()
+  })
+
+  it('Item 4: the honesty banner STAYS visible while the chip (i)s carry their detail (hovers explain, never hide, the banner)', () => {
+    render(<LedgerPageContent />, { wrapper: makeWrapper() })
+
+    // The load-bearing banner is still on the face -- hovers do not replace it.
+    expect(
+      screen.getByText('Everything here is recomputed from sealed records. Nothing is a score.')
+    ).toBeInTheDocument()
+
+    // The Live/Local + "This node's copy" chips each carry an (i) whose
+    // aria-describedby holds the moved honest sentence.
+    const copyGlyph = screen.getByRole('button', { name: "About the This node's copy chip" })
+    const copyDesc = document.getElementById(copyGlyph.getAttribute('aria-describedby') as string)
+    expect(copyDesc).toHaveTextContent('Their halves appear here as they give them to you.')
+
+    // The connectivity chip's (i) is present too (Live or Local depending on
+    // the harness's sidecar-connected state).
+    const liveGlyph =
+      screen.queryByRole('button', { name: 'About the Live chip' }) ??
+      screen.getByRole('button', { name: 'About the Local chip' })
+    expect(liveGlyph).toBeInTheDocument()
   })
 
   it('shows no leaked IDs in empty state', () => {
@@ -344,11 +367,16 @@ describe('LedgerPageContent', () => {
     expect(screen.queryByText(/Nothing needs your attention/)).not.toBeInTheDocument()
   })
 
-  it('Ledger badge reads "This node\'s copy" with the two-sided-provenance subtext, never the retired "Local only"', () => {
+  it('Ledger badge reads "This node\'s copy" with the two-sided-provenance subtext behind its (i), never the retired "Local only"', () => {
     render(<LedgerPageContent />, { wrapper: makeWrapper() })
 
     expect(screen.getByText("This node's copy")).toBeInTheDocument()
-    expect(screen.getByText('Their halves appear here as they give them to you.')).toBeInTheDocument()
+    // The two-sided-provenance sentence moved off the face and behind the
+    // chip's (i) glyph -- carried by the glyph's aria-describedby copy, still
+    // present in the DOM, never deleted.
+    expect(
+      screen.getByText(/Their halves appear here as they give them to you\./)
+    ).toBeInTheDocument()
     expect(screen.queryByText('Local only')).not.toBeInTheDocument()
   })
 })
@@ -638,6 +666,26 @@ describe('LedgerPageContent — Part B1: Integrity chain strip', () => {
     const bodyText = document.body.textContent ?? ''
     expect(bodyText).not.toMatch(/history is intact and registered with/i)
     expect(bodyText).not.toMatch(/no integrity fields available/i)
+
+    // Item 4: each Integrity tile + the chain bar carries an (i) whose
+    // aria-describedby holds the moved explanation.
+    const sealedGlyph = screen.getByRole('button', { name: 'About Sealed' })
+    expect(document.getElementById(sealedGlyph.getAttribute('aria-describedby') as string)).toHaveTextContent(
+      INTEGRITY_TILE_INFO.sealed
+    )
+    const closedGlyph = screen.getByRole('button', { name: 'About Closed by the other side' })
+    expect(document.getElementById(closedGlyph.getAttribute('aria-describedby') as string)).toHaveTextContent(
+      INTEGRITY_TILE_INFO.closedByOtherSide
+    )
+    for (const label of ['Sealed', 'Registered', 'Closed by the other side', 'Contradicted']) {
+      expect(screen.getByRole('button', { name: `About ${label}` })).toBeInTheDocument()
+    }
+    const chainGlyph = screen.getByRole('button', { name: 'About the chain coverage bar' })
+    expect(document.getElementById(chainGlyph.getAttribute('aria-describedby') as string)).toHaveTextContent(
+      CHAIN_BAR_INFO
+    )
+    // The terse caption stays on the face -- the (i) explains, never replaces.
+    expect(screen.getByText(/all sealed/)).toBeInTheDocument()
   })
 
   it('renders the chain strip + stat cards even with no data, never the old "no integrity fields" fallback', async () => {

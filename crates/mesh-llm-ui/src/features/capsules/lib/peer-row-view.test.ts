@@ -28,6 +28,8 @@ import {
   periodRangeText,
   peersWindowText,
   peerSortKey,
+  PEER_COLUMN_INFO,
+  SELF_REPORTED_DETAIL,
   SELF_REPORTED_NOTE,
   sortPeerRows,
   theirChainSummary,
@@ -519,5 +521,27 @@ describe('dealtWithRowView / advertisedOnlyRowView — one shape, honest degrada
         expect(text).not.toContain('%')
       }
     }
+  })
+})
+
+describe('Item 4 — Peers column (i) copy + self-reported detail: evidence, never a score', () => {
+  it('Confirmed carries the blessed evidence sentence verbatim', () => {
+    expect(PEER_COLUMN_INFO.confirmed).toBe(
+      'their signed half of this exchange, held here and recomputed — not a reputation signal'
+    )
+  })
+
+  it('every column line names what it means / what backs it and refuses the score reading', () => {
+    for (const key of ['exchanges', 'confirmed', 'match', 'adjudication', 'witness', 'period'] as const) {
+      const info = PEER_COLUMN_INFO[key]
+      expect(info.length).toBeGreaterThan(0)
+      expect(info).not.toMatch(/\b(score|rating|proven)\b/i)
+    }
+  })
+
+  it('the self-reported detail states the identity is self-reported and not independently attested', () => {
+    expect(SELF_REPORTED_DETAIL).toMatch(/self-reported/i)
+    expect(SELF_REPORTED_DETAIL).toMatch(/independently attests/i)
+    expect(SELF_REPORTED_DETAIL).not.toMatch(/\b(score|rating|proven)\b/i)
   })
 })

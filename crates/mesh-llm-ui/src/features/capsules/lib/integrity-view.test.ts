@@ -3,11 +3,13 @@ import {
   buildRegistrationCopy,
   buildSetupSteps,
   CAPTURE_BOUNDARY_FACT,
+  CHAIN_BAR_INFO,
   chainStripCaption,
   CHECKPOINTED_NOT_REGISTERED_STATUS,
   checkpointRegistration,
   CONTINUITY_NOT_ESTABLISHED,
   identityFact,
+  INTEGRITY_TILE_INFO,
   RETENTION_FACT
 } from '@/features/capsules/lib/integrity-view'
 
@@ -190,6 +192,25 @@ describe('chainStripCaption — leaf pluralization + the three absence states', 
   it('keeps the three-state absence handling: null card is "not reported", never a false "no checkpoint yet"', () => {
     expect(chainStripCaption(2, null, null)).toBe('2 entries, all sealed · checkpoint status not reported')
     expect(chainStripCaption(1, 0, null)).toBe('1 entry, all sealed · no checkpoint yet · nothing here is registered')
+  })
+})
+
+describe('Item 4 — Integrity tile + chain-bar (i) copy: evidence, never a score', () => {
+  it('names an evidence source in every tile line and refuses the score reading', () => {
+    for (const info of Object.values(INTEGRITY_TILE_INFO)) {
+      expect(info.length).toBeGreaterThan(0)
+      // The forbidden words themselves -- "not a reputation signal" is an
+      // honest refusal, not an overclaim, so only score/rating/proven are banned.
+      expect(info).not.toMatch(/\b(score|rating|proven)\b/i)
+    }
+    // The two witness-bearing tiles state the registration/witness distinction.
+    expect(INTEGRITY_TILE_INFO.registered).toMatch(/witness/i)
+    expect(INTEGRITY_TILE_INFO.closedByOtherSide).toMatch(/held here|recompute/i)
+  })
+
+  it('the chain-bar (i) carries the checkpoint-coverage explanation (moved off the caption)', () => {
+    expect(CHAIN_BAR_INFO).toMatch(/leaves a checkpoint covers/i)
+    expect(CHAIN_BAR_INFO).toMatch(/witness this node does not run/i)
   })
 })
 

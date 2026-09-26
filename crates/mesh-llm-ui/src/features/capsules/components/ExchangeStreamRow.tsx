@@ -28,10 +28,12 @@ import {
   isAlarmState,
   isAskAction,
   rightCellAction,
+  rightCellDetail,
   rightCellStatusLabel,
   rightCellText,
   rowStateMarker
 } from '@/features/capsules/lib/exchange-row-state'
+import { InfoHover } from '@/features/capsules/components/InfoHover'
 import type { RailSegment } from '@/features/capsules/lib/exchange-stream'
 import { useRecomputedIdentity, usePeerLedgerRecompute } from '@/features/capsules/lib/recompute-identity'
 
@@ -168,12 +170,16 @@ export function ExchangeStreamRow({
           ) : (
             <span>counterparty not recorded</span>
           )}
-          <span className="ml-auto">
+          <span className="ml-auto inline-flex items-center gap-1">
             {/* L-A/L-B: only CONTRADICTED gets alarm styling; every OPEN
                state renders the same neutral 'muted' tone as CLOSED. */}
             <StatusBadge dot={alarm} size="caption" tone={alarm ? 'bad' : 'muted'}>
               {rightCellStatusLabel(state)}
             </StatusBadge>
+            {/* Terse state on the face; the fuller story (their half not held,
+               ✓ cites your half by digest, the CLOSED property cells) behind
+               the (i). */}
+            <InfoHover describes={`the ${rightCellStatusLabel(state)} state`} label={rightCellDetail(state)} side="left" />
           </span>
         </div>
         <div className="grid grid-cols-2 gap-0 rounded border border-border-soft">

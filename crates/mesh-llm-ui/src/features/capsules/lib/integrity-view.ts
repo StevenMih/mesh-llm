@@ -241,6 +241,27 @@ export function chainStripCaption(
 }
 
 // ---------------------------------------------------------------------------
+// Integrity tile + chain-bar (i) hover copy -- what each tile counts and what
+// evidence backs it, moved off the tile face and behind the glyph. Each names
+// the evidence and refuses the score reading (three-sharer-answers framing).
+// The chain-bar line is the checkpoint-coverage explanation, moved to the
+// hover so the caption on the face can stay terse.
+// ---------------------------------------------------------------------------
+
+export const INTEGRITY_TILE_INFO = {
+  sealed: 'Records this node has sealed into its own chain — recomputed from those records, not a claim about their contents.',
+  registered:
+    'Checkpoints a witness this node does not run holds. A local-only checkpoint is not registration — only a witness holding it counts here.',
+  closedByOtherSide:
+    'Exchanges where the other side’s signed half is held here and recomputes to cite your half by digest — through the one gate, not a reputation signal.',
+  contradicted:
+    'Exchanges where a held half disagrees with yours by digest — a recomputed disagreement, surfaced, never a silent zero.'
+} as const
+
+export const CHAIN_BAR_INFO =
+  'The shaded range is the leaves a checkpoint covers; everything after the last checkpoint is unshaded. Registration means a witness this node does not run holds that checkpoint.'
+
+// ---------------------------------------------------------------------------
 // Once-per-node facts -- retention, capture boundary + rule, identity.
 // Never repeated per exchange row (rows link back instead --
 // `security-checks-view.ts`'s `local_inclusion` NOT_PRESENT detail).

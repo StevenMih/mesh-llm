@@ -17,7 +17,12 @@ import {
   PEER_TAB_HARNESS_MESH_PEERS
 } from '@/features/capsules/lib/peer-fixtures'
 import { deriveMeshStatus } from '@/features/capsules/lib/peer-mesh-status'
-import { advertisedOnlyRowView, dealtWithRowView, SELF_REPORTED_NOTE } from '@/features/capsules/lib/peer-row-view'
+import {
+  advertisedOnlyRowView,
+  dealtWithRowView,
+  SELF_REPORTED_DETAIL,
+  SELF_REPORTED_NOTE
+} from '@/features/capsules/lib/peer-row-view'
 
 const [CLEAN_ROW, ALARMED_ROW] = HARNESS_PANE_B_PAYLOAD.rows
 
@@ -45,6 +50,19 @@ describe('PeerTableRow — dealt-with peers', () => {
     expect(screen.queryByText(/⚠/)).not.toBeInTheDocument()
     expect(screen.queryByText(/online/)).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Route here' })).not.toBeInTheDocument()
+  })
+
+  it('Item 4: the self-reported note carries an (i) whose aria-describedby holds the fuller honest sentence', () => {
+    const view = dealtWithRowView(CLEAN_ROW)
+    renderInTable(<PeerTableRow meshStatus={null} view={view} />)
+
+    // Terse chip on the face...
+    expect(screen.getByText(SELF_REPORTED_NOTE)).toBeInTheDocument()
+    // ...the (i) glyph, present and named for what it describes...
+    const glyph = screen.getByRole('button', { name: 'About the self-reported note' })
+    // ...wired by aria-describedby to the moved full sentence.
+    const description = document.getElementById(glyph.getAttribute('aria-describedby') as string)
+    expect(description).toHaveTextContent(SELF_REPORTED_DETAIL)
   })
 
   it('shows a visible alarm chip for an alarmed peer, and honestly reports the contradiction through the gate', () => {

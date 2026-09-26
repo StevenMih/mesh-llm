@@ -14,7 +14,7 @@ import {
   PEER_TAB_HARNESS_MESH_PEERS
 } from '@/features/capsules/lib/peer-fixtures'
 import { advertisedOnlyPeers, deriveMeshStatus } from '@/features/capsules/lib/peer-mesh-status'
-import { advertisedOnlyRowView, dealtWithRowView } from '@/features/capsules/lib/peer-row-view'
+import { advertisedOnlyRowView, dealtWithRowView, PEER_COLUMN_INFO } from '@/features/capsules/lib/peer-row-view'
 
 const [CLEAN_ROW, ALARMED_ROW] = HARNESS_PANE_B_PAYLOAD.rows
 
@@ -110,28 +110,48 @@ describe('LedgerPeersTable — toolbar', () => {
     const props = buildFixtureProps()
     render(<LedgerPeersTable {...props} />)
 
-    expect(screen.getByRole('columnheader', { name: 'Match' })).toBeInTheDocument()
+    // Each header now carries an (i) info glyph, so its accessible name is the
+    // label plus the glyph's description -- match on the label substring.
+    expect(screen.getByRole('columnheader', { name: /^Match/ })).toBeInTheDocument()
     // RULED VOCAB copy-pin: "confirmed by THE other side" (never "by other
     // side") -- consistent with LedgerPage's own count line and the Integrity
     // rung status.
-    expect(screen.getByRole('columnheader', { name: 'Confirmed by the other side' })).toBeInTheDocument()
+    expect(screen.getByRole('columnheader', { name: /^Confirmed by the other side/ })).toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: /columns/i }))
     await user.click(screen.getByRole('menuitemcheckbox', { name: 'Match' }))
-    expect(screen.queryByRole('columnheader', { name: 'Match' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('columnheader', { name: /^Match/ })).not.toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: /reset view/i }))
-    expect(screen.getByRole('columnheader', { name: 'Match' })).toBeInTheDocument()
+    expect(screen.getByRole('columnheader', { name: /^Match/ })).toBeInTheDocument()
   })
 
   it('the period column HEADER is the real date window across the rows, never the word "Period" or "Window"', () => {
     const props = buildFixtureProps()
     render(<LedgerPeersTable {...props} />)
 
-    // The two dealt-with fixture rows span 2026-08-20 -> 2026-09-08.
-    expect(screen.getByRole('columnheader', { name: '20 Aug – 8 Sep' })).toBeInTheDocument()
-    expect(screen.queryByRole('columnheader', { name: 'Period' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('columnheader', { name: 'Window' })).not.toBeInTheDocument()
+    // The two dealt-with fixture rows span 2026-08-20 -> 2026-09-08. The
+    // header also carries the (i) glyph's description, so match on the window
+    // substring rather than the exact accessible name.
+    expect(screen.getByRole('columnheader', { name: /20 Aug – 8 Sep/ })).toBeInTheDocument()
+    expect(screen.queryByRole('columnheader', { name: /^Period/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('columnheader', { name: /^Window/ })).not.toBeInTheDocument()
+  })
+
+  it('Item 4: each column header carries an (i) whose aria-describedby holds the moved column explanation', () => {
+    const props = buildFixtureProps()
+    render(<LedgerPeersTable {...props} />)
+
+    // The Confirmed header's (i) carries the blessed evidence sentence verbatim.
+    const confirmedGlyph = screen.getByRole('button', { name: 'About Confirmed by the other side' })
+    const confirmedDesc = document.getElementById(confirmedGlyph.getAttribute('aria-describedby') as string)
+    expect(confirmedDesc).toHaveTextContent(PEER_COLUMN_INFO.confirmed)
+    expect(PEER_COLUMN_INFO.confirmed).toContain('not a reputation signal')
+
+    // Every visible accountability column header has its own (i) glyph.
+    for (const label of ['Exchanges', 'Confirmed by the other side', 'Match', 'Adjudication', 'Witness']) {
+      expect(screen.getByRole('button', { name: `About ${label}` })).toBeInTheDocument()
+    }
   })
 
   it('the Columns toggle names the period column "When" (the one permitted word), never "Period"/"Window"', async () => {

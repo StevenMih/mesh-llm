@@ -23,6 +23,7 @@ import type { CapsuleRecord, JsonRecord } from '@/features/capsules/api/types'
 import { PaneFetchError, fetchPaneA, fetchPaneB, fetchPaneCList } from '@/features/capsules/api/sidecarClient'
 import { balanceCoverage } from '@/features/capsules/lib/balance-view'
 import { LedgerPeersTable } from '@/features/capsules/components/LedgerPeersTable'
+import { InfoHover } from '@/features/capsules/components/InfoHover'
 import { ExchangeStreamRow } from '@/features/capsules/components/ExchangeStreamRow'
 import { TwinBracket } from '@/features/capsules/components/TwinBracket'
 import {
@@ -61,10 +62,12 @@ import {
   buildRegistrationCopy,
   buildSetupSteps,
   CAPTURE_BOUNDARY_FACT,
+  CHAIN_BAR_INFO,
   chainStripCaption,
   checkpointRegistration,
   CONTINUITY_NOT_ESTABLISHED,
   identityFact,
+  INTEGRITY_TILE_INFO,
   RETENTION_FACT,
   type SetupStep
 } from '@/features/capsules/lib/integrity-view'
@@ -870,7 +873,12 @@ function ChainStrip({
 
   return (
     <div className="flex flex-col gap-1">
-      <p className="type-caption font-mono text-fg-faint">Your chain</p>
+      <p className="type-caption inline-flex items-center gap-1 font-mono text-fg-faint">
+        Your chain
+        {/* The full checkpoint-coverage explanation moves behind the (i); the
+           caption below stays terse. */}
+        <InfoHover describes="the chain coverage bar" label={CHAIN_BAR_INFO} />
+      </p>
       <div className="flex items-center gap-2">
         <span className="font-mono text-xs text-fg-faint">1</span>
         <div
@@ -899,15 +907,21 @@ type IntegrityStatCardProps = {
   readonly label: string
   readonly value: number
   readonly tone?: 'default' | 'bad'
+  /** The honest explanation of what this tile counts and what evidence backs
+   *  it -- moved off the tile face and behind the (i) glyph. */
+  readonly info: string
 }
 
 /** One first-person stat card. A zero renders in the exact same size/weight
  *  as any other value -- never muted, never apologetic (Accept criterion). */
-function IntegrityStatCard({ label, value, tone = 'default' }: IntegrityStatCardProps) {
+function IntegrityStatCard({ label, value, tone = 'default', info }: IntegrityStatCardProps) {
   const valueColor = tone === 'bad' && value > 0 ? 'var(--color-bad)' : 'var(--color-foreground)'
   return (
     <div className="panel-shell min-w-0 rounded-[var(--radius-lg)] border border-border bg-panel px-[var(--panel-x)] py-[var(--panel-y)]">
-      <span className="type-label truncate text-fg-faint">{label}</span>
+      <span className="type-label inline-flex min-w-0 items-center gap-1 text-fg-faint">
+        <span className="truncate">{label}</span>
+        <InfoHover describes={label} label={info} />
+      </span>
       <div
         className="mt-[var(--panel-y,12px)] font-mono text-[length:var(--density-type-headline)] font-semibold leading-none tracking-tight"
         style={{ color: valueColor }}
@@ -1034,10 +1048,14 @@ function IntegritySection() {
       <CardContent className="flex flex-col gap-4 pt-0 text-sm text-fg-dim">
         <ChainStrip checkpointCount={checkpointCount} coveredLeafCount={coveredLeafCount} sealedCount={sealedCount} />
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-          <IntegrityStatCard label="Sealed" value={sealedCount} />
-          <IntegrityStatCard label="Registered" value={witnessCount} />
-          <IntegrityStatCard label="Closed by the other side" value={closedByOtherSideCount} />
-          <IntegrityStatCard label="Contradicted" tone="bad" value={contradictedCount} />
+          <IntegrityStatCard info={INTEGRITY_TILE_INFO.sealed} label="Sealed" value={sealedCount} />
+          <IntegrityStatCard info={INTEGRITY_TILE_INFO.registered} label="Registered" value={witnessCount} />
+          <IntegrityStatCard
+            info={INTEGRITY_TILE_INFO.closedByOtherSide}
+            label="Closed by the other side"
+            value={closedByOtherSideCount}
+          />
+          <IntegrityStatCard info={INTEGRITY_TILE_INFO.contradicted} label="Contradicted" tone="bad" value={contradictedCount} />
         </div>
 
         <SetupChecklist steps={setupSteps} />
@@ -1122,16 +1140,31 @@ export function LedgerPageContent({ focusExchangeKey }: { focusExchangeKey?: str
           description="Everything here is recomputed from sealed records. Nothing is a score."
           leadingIcon={<ShieldCheck aria-hidden="true" className="size-4" />}
           status={
-            <div className="flex flex-col gap-1">
-              <div className="flex flex-wrap items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="inline-flex items-center gap-1">
                 <StatusBadge dot size="caption" tone={sidecarConnected ? 'good' : 'muted'}>
                   {sidecarConnected ? 'Live' : 'Local'}
                 </StatusBadge>
+                <InfoHover
+                  describes={sidecarConnected ? 'the Live chip' : 'the Local chip'}
+                  label={
+                    sidecarConnected
+                      ? 'Reading this node’s ledger over its running local API — the records update as this node seals them.'
+                      : 'Reading a static local copy — this node’s API is not connected, so the ledger is not updating live.'
+                  }
+                />
+              </span>
+              <span className="inline-flex items-center gap-1">
                 <StatusBadge tone="muted" size="caption">
                   This node's copy
                 </StatusBadge>
-              </div>
-              <p className="type-caption text-fg-faint">Their halves appear here as they give them to you.</p>
+                {/* The full sentence ("Their halves appear here as they give
+                   them to you.") moves behind the chip's (i). */}
+                <InfoHover
+                  describes="the This node's copy chip"
+                  label="This is this node’s own copy of the records. Their halves appear here as they give them to you."
+                />
+              </span>
             </div>
           }
           title="Evidence"

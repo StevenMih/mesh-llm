@@ -18,9 +18,12 @@ import { buildTimelinePoints, type PeerExchangeSource } from '@/features/capsule
 import type { PeerMeshStatus } from '@/features/capsules/lib/peer-mesh-status'
 import {
   ALL_PEER_TABLE_COLUMNS,
+  SELF_REPORTED_DETAIL,
+  SELF_REPORTED_NOTE,
   type PeerTableColumnKey,
   type PeerTableRowView
 } from '@/features/capsules/lib/peer-row-view'
+import { InfoHover } from '@/features/capsules/components/InfoHover'
 
 export type PeerTableRowProps = {
   view: PeerTableRowView
@@ -78,7 +81,15 @@ export function PeerTableRow({
                id spaces render as ALIASES on this one row -- signing key ·
                node · endpoint -- never as extra peer rows. */}
             {view.aliasLine ? <span className="font-mono text-fg-faint text-xs">{view.aliasLine}</span> : null}
-            <span className="text-fg-faint text-xs">{view.identityNote}</span>
+            <span className="inline-flex items-center gap-1 text-fg-faint text-xs">
+              {view.identityNote}
+              {/* The terse "self-reported — not independently attested" chip
+                 stays on the face; the fuller honest sentence moves behind the
+                 (i). Only the self-reported note carries the detail hover. */}
+              {view.identityNote === SELF_REPORTED_NOTE ? (
+                <InfoHover describes="the self-reported note" label={SELF_REPORTED_DETAIL} />
+              ) : null}
+            </span>
             {/* Always rendered, whether or not the inspector is open --
                chooser-v2 §3-F: "⚠ alarm chip visible while collapsed". The
                modal enumerates every alarm in full; this chip is the ONLY

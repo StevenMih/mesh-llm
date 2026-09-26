@@ -36,10 +36,12 @@ import { saveTextFile } from '@/features/capsules/lib/exchange-export'
 import type { PaneBRow } from '@/features/capsules/api/sidecarTypes'
 import {
   ALL_PEER_TABLE_COLUMNS,
+  PEER_COLUMN_INFO,
   peersWindowText,
   type PeerTableColumnKey,
   type PeerTableRowView
 } from '@/features/capsules/lib/peer-row-view'
+import { InfoHover } from '@/features/capsules/components/InfoHover'
 import type { Peer } from '@/features/app-tabs/types'
 
 // The period column's header is the actual date window (computed per render
@@ -275,10 +277,15 @@ export function LedgerPeersTable({
             {ALL_COLUMNS.map((column) =>
               visibleColumns.has(column) ? (
                 <TableHead className="type-label h-9 px-3 text-fg-faint" key={column}>
-                  {/* The period column's header is the real date window across
-                     the visible rows (e.g. `22–26 Sep`), never the word
-                     "Period"; every other column keeps its plain label. */}
-                  {column === 'period' ? peersWindowText(visibleRows) : COLUMN_LABELS[column]}
+                  <span className="inline-flex items-center gap-1">
+                    {/* The period column's header is the real date window across
+                       the visible rows (e.g. `22–26 Sep`), never the word
+                       "Period"; every other column keeps its plain label. */}
+                    {column === 'period' ? peersWindowText(visibleRows) : COLUMN_LABELS[column]}
+                    {/* Terse header on the face; what the column means and what
+                       evidence backs it live behind the (i). */}
+                    <InfoHover describes={COLUMN_LABELS[column]} label={PEER_COLUMN_INFO[column]} />
+                  </span>
                 </TableHead>
               ) : null
             )}

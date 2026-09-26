@@ -291,6 +291,36 @@ export function rightCellText(state: RightCellState): string {
   }
 }
 
+/** The fuller story behind a state's terse cell -- moved off the face and
+ *  behind the (i). Each states what the terse cell means and what evidence
+ *  backs it (or honestly, what is missing), never a score. The CLOSED and
+ *  not-held cases are the ones Item 4 calls out; the rest carry the same
+ *  discipline so every state's (i) has an honest sentence. */
+export function rightCellDetail(state: RightCellState): string {
+  switch (state.kind) {
+    case 'closed':
+      return 'Their signed half is held here and recomputes to cite your half by the same request and response digests — through the one gate, not a reputation signal. The per-property cells restate exactly those gate inputs.'
+    case 'contradicted':
+      return 'A held half disagrees with yours by digest — a recomputed disagreement, surfaced here, not a judgement of the peer.'
+    case 'open_refused':
+      return 'The peer declined to share their half and signed the refusal. The signed refusal is the evidence; the exchange stays open.'
+    case 'open_absent':
+      return 'The peer says they hold no record of this exchange. That is their statement, held here — nothing here recomputes their half.'
+    case 'open_asked':
+      return 'You asked for their half and no reply has arrived. The exchange stays open until a held half can be recomputed.'
+    case 'open_not_held':
+      return 'A peer capsule id is known but their half is not held here, so nothing can be recomputed against yours yet. Expand checks to fetch it.'
+    case 'open_not_given':
+      return 'The peer’s capsule id was not given, so their half is not held and nothing can be recomputed against yours.'
+    case 'open_not_asked':
+      return 'You have not asked for their half. Corroboration cannot come from you — it needs their signed half, held and recomputed here.'
+    default: {
+      const exhaustiveCheck: never = state.kind
+      return exhaustiveCheck
+    }
+  }
+}
+
 export function rightCellStatusLabel(state: RightCellState): string {
   switch (state.kind) {
     case 'closed':

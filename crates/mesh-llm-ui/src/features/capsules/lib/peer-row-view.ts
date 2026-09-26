@@ -354,6 +354,11 @@ export function sortPeerRows<T>(rows: readonly T[], keyOf: (row: T) => readonly 
 
 export const SELF_REPORTED_NOTE = 'self-reported — not independently attested'
 
+/** The full sentence behind the `self-reported` chip's (i) -- the terse chip
+ *  on the row's face, the fuller honest statement on hover. */
+export const SELF_REPORTED_DETAIL =
+  'This identity is self-reported by the peer. Nothing here independently attests it — only the halves they signed and you recomputed are evidence.'
+
 // ---------------------------------------------------------------------------
 // Witness -- no pane exposes a peer-scoped witness registration count today
 // (`history.mine_for_reference.witnessed` is THIS node's OWN chain, carried
@@ -490,6 +495,25 @@ export const ALL_PEER_TABLE_COLUMNS: ReadonlySet<PeerTableColumnKey> = new Set<P
   'witness',
   'period'
 ])
+
+// The per-column (i) hover copy -- what the column means and what evidence
+// backs it, moved off the face and behind the glyph. Each states the evidence,
+// never a reputation/score reading (the three-sharer-answers framing: what it
+// is, what backs it, what it does NOT establish). The `confirmed` line is the
+// task's blessed wording verbatim.
+export const PEER_COLUMN_INFO: Record<PeerTableColumnKey, string> = {
+  exchanges:
+    'Distinct exchanges with this peer, counted by the request each side signed over — the two halves of one exchange count once, not twice.',
+  confirmed:
+    'their signed half of this exchange, held here and recomputed — not a reputation signal',
+  match:
+    'Whether the half they sent cites your half by the same digest (clean) or disagrees (mismatch) — recomputed here, not taken on their word.',
+  adjudication:
+    'Sealed adjudications naming this peer, with a denominator so an unchecked exchange is never a silent pass — never a judgement of the peer.',
+  witness:
+    'Whether a witness this node does not run holds a checkpoint covering these records. Not available here yet — this view has no peer-scoped witness count.',
+  period: 'The first-to-last date window of the exchanges on screen — the real span, not a ranking.'
+}
 
 export function advertisedOnlyRowView(displayId: string): PeerTableRowView {
   return {

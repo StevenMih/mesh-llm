@@ -221,12 +221,13 @@ describe('ExchangeStreamRow — the states render distinct text/status/action', 
       expect(screen.getByText(status)).toBeInTheDocument()
       // [ledger-T4-inline-inspector] no whole-row click target and no modal
       // left to open -- every row always carries the two `▸ content`/
-      // `▸ checks` toggle buttons, plus one more when an action exists.
+      // `▸ checks` toggle buttons + the state (i) info glyph, plus one more
+      // when an action exists.
       if (action) {
         expect(screen.getByRole('button', { name: action })).toBeInTheDocument()
-        expect(screen.getAllByRole('button')).toHaveLength(3)
+        expect(screen.getAllByRole('button')).toHaveLength(4)
       } else {
-        expect(screen.getAllByRole('button')).toHaveLength(2)
+        expect(screen.getAllByRole('button')).toHaveLength(3)
       }
       unmount()
     })
@@ -242,15 +243,33 @@ describe('ExchangeStreamRow — the states render distinct text/status/action', 
     expect(screen.getByText('request digest =')).toBeInTheDocument()
     expect(screen.getByText('response digest =')).toBeInTheDocument()
     // The old single sentence is gone; no action button on a closed row --
-    // only the two disclosure toggles.
+    // the two disclosure toggles + the state (i) info glyph.
     expect(screen.queryByText('✓ cites your half by digest')).not.toBeInTheDocument()
-    expect(screen.getAllByRole('button')).toHaveLength(2)
+    expect(screen.getAllByRole('button')).toHaveLength(3)
   })
 
   it('D4(d) ADVERSARIAL: the per-property cells render ONLY on a gate-closed row — an OPEN row never borrows them', () => {
     render(<ExchangeStreamRow onAction={vi.fn()} {...toggleProps()} rail={NO_RAIL} row={makeRow('open_not_held')} />)
     expect(screen.queryByText('signature ✓')).not.toBeInTheDocument()
     expect(screen.queryByText('request digest =')).not.toBeInTheDocument()
+  })
+
+  it('Item 4: the state carries an (i) whose aria-describedby holds the fuller story (terse cell on the face)', () => {
+    render(<ExchangeStreamRow onAction={vi.fn()} {...toggleProps()} rail={NO_RAIL} row={makeRow('closed')} />)
+    // Terse status on the face.
+    expect(screen.getByText('CLOSED')).toBeInTheDocument()
+    // The (i), wired to the fuller CLOSED story.
+    const glyph = screen.getByRole('button', { name: 'About the CLOSED state' })
+    const description = document.getElementById(glyph.getAttribute('aria-describedby') as string)
+    expect(description).toHaveTextContent('cite your half by the same request and response digests')
+    expect(description).toHaveTextContent('not a reputation signal')
+  })
+
+  it('Item 4: an OPEN · not held state carries the "their half is not held" fuller story behind its (i)', () => {
+    render(<ExchangeStreamRow onAction={vi.fn()} {...toggleProps()} rail={NO_RAIL} row={makeRow('open_not_held')} />)
+    const glyph = screen.getByRole('button', { name: 'About the OPEN · not held state' })
+    const description = document.getElementById(glyph.getAttribute('aria-describedby') as string)
+    expect(description).toHaveTextContent('their half is not held here')
   })
 
   it('LOAD-BEARING: not-asked and unanswered render visibly distinct text on the row', () => {
