@@ -225,6 +225,23 @@ export type PaneCRow = {
      *  fetchable join key, same "never fabricate" discipline as every other
      *  optional field in this file. */
     peer_id?: string | null
+    /** [mesh-closed-wiring-four-gaps] Seam A3 -- a capsule THIS node already
+     *  holds locally, received via record-push and identity-verified server
+     *  side (`record_push.py`'s `received-provenance.jsonl`) before it was
+     *  ever stored (`capsule_panes_native.rs::local_sibling_cell`). Present
+     *  ONLY when a local sibling with `received_from === peer_id` and
+     *  `signature_ok === true` was found AND the capsule it names is
+     *  actually held in this node's own ledger -- never fabricated, never a
+     *  stand-in for a fetch this browser did not run. `signature_ok` here
+     *  reflects the DOOR's own real cryptographic verification at receive
+     *  time (`capsule_emit.signing.verify_capsule_signature` + the announced-
+     *  key check), not a re-verification this file performs. */
+    local_sibling?: {
+      capsule_id: string
+      received_from: string
+      signature_ok: boolean
+      record: Record<string, unknown>
+    } | null
   }
   unilateral: boolean
   timestamp: string | null

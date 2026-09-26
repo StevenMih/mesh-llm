@@ -73,6 +73,7 @@
 //!    diverges the day a tampered record lands.
 
 use serde_json::{Value, json};
+use std::collections::HashMap;
 use std::path::Path;
 
 /// Sentinel for "this mechanism exists but isn't wired for a plugin-ledger
@@ -164,6 +165,29 @@ fn read_checkpoint_card(ledger_dir: &Path) -> Value {
     card
 }
 
+/// Reads `<ledger_dir>/received-provenance.jsonl` (written by
+/// `record_push.py`'s `_append_provenance`, Seam A2 -- co-located with
+/// `capsules.jsonl`, same convention as `checkpoints.jsonl`) -- one line
+/// per successfully identity-verified received push, keyed by `capsule_id`.
+/// A missing file or an unparsable line is dropped, never a panic -- same
+/// discipline as `read_capsule_records`. [mesh-closed-wiring-four-gaps]
+/// Seam A3.
+fn read_received_provenance(ledger_dir: &Path) -> HashMap<String, Value> {
+    let path = ledger_dir.join("received-provenance.jsonl");
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return HashMap::new();
+    };
+    text.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter_map(|entry| {
+            let capsule_id = entry.get("capsule_id")?.as_str()?.to_string();
+            Some((capsule_id, entry))
+        })
+        .collect()
+}
+
 fn request_digest(record: &Value) -> Option<&str> {
     record
         .pointer("/effect/request_digest")
@@ -248,6 +272,42 @@ fn peer_fetch_join_key(record: &Value) -> Option<(&str, &str)> {
     Some((capsule_id, peer_id))
 }
 
+/// [mesh-closed-wiring-four-gaps] Seam A3 -- the local-sibling half of
+/// `theirs_cell`. A capsule this node already holds qualifies as `theirs`
+/// ONLY when: a peer-asserted join key names it (`peer_fetch_join_key`), a
+/// provenance record exists for that EXACT `capsule_id` (Seam A2's door only
+/// ever writes one after a REAL identity+signature verify), that
+/// provenance's `received_from` matches the row's OWN counterparty (`peer_id`
+/// -- the SAME value `peer_fetch_join_key` returns, i.e. `served_by`),
+/// `signature_ok` is `true`, AND the capsule it names is actually present in
+/// this node's own ledger (`all_records_by_id`). Every failing condition is
+/// `None` -- a sibling WE sealed (no provenance entry at all), one pushed by
+/// a DIFFERENT peer than this row's counterparty, or one whose signature
+/// failed to verify never qualifies -- same "never fabricate" discipline as
+/// `peer_fetch_join_key` itself.
+fn local_sibling_cell(
+    record: &Value,
+    all_records_by_id: &HashMap<&str, &Value>,
+    provenance_by_capsule_id: &HashMap<String, Value>,
+) -> Option<Value> {
+    let (claimed_capsule_id, peer_id) = peer_fetch_join_key(record)?;
+    let provenance = provenance_by_capsule_id.get(claimed_capsule_id)?;
+    let received_from = provenance.get("received_from").and_then(Value::as_str)?;
+    if received_from != peer_id {
+        return None;
+    }
+    if provenance.get("signature_ok").and_then(Value::as_bool) != Some(true) {
+        return None;
+    }
+    let sibling_record = *all_records_by_id.get(claimed_capsule_id)?;
+    Some(json!({
+        "capsule_id": claimed_capsule_id,
+        "received_from": received_from,
+        "signature_ok": true,
+        "record": sibling_record,
+    }))
+}
+
 /// Pane C row `theirs` cell (`capsule_exchange_tab`'s own field). `NOT_CHECKED`
 /// -- not `absent` -- the moment a real peer-asserted join key exists: the
 /// peer half is KNOWN to be fetchable (`ledger-fetch/1`, piece 2's
@@ -255,14 +315,29 @@ fn peer_fetch_join_key(record: &Value) -> Option<(&str, &str)> {
 /// `POST /api/plugins/admission-policy/tools/mesh_ledger_fetch`), only
 /// unverified until the browser's own recompute actually runs one -- this
 /// route never fetches, verifies, or fabricates a verdict itself.
-fn theirs_cell(record: &Value) -> Value {
+///
+/// [mesh-closed-wiring-four-gaps] Seam A3 additionally embeds `local_sibling`
+/// (see `local_sibling_cell`) whenever this node already holds an identity-
+/// verified sibling for the same join key -- the pane's own local evidence,
+/// never a fetch, never a second source of truth: the browser still runs the
+/// SAME `deriveRightCellState` gate either way (`exchange-row-state.ts`).
+fn theirs_cell(
+    record: &Value,
+    all_records_by_id: &HashMap<&str, &Value>,
+    provenance_by_capsule_id: &HashMap<String, Value>,
+) -> Value {
     match peer_fetch_join_key(record) {
-        Some((capsule_id, peer_id)) => json!({
-            "state": NOT_CHECKED,
-            "text": "peer capsule known -- fetch to recompute",
-            "capsule_id": capsule_id,
-            "peer_id": peer_id,
-        }),
+        Some((capsule_id, peer_id)) => {
+            let mut cell = json!({
+                "state": NOT_CHECKED,
+                "text": "peer capsule known -- fetch to recompute",
+                "capsule_id": capsule_id,
+                "peer_id": peer_id,
+            });
+            cell["local_sibling"] =
+                local_sibling_cell(record, all_records_by_id, provenance_by_capsule_id).unwrap_or(Value::Null);
+            cell
+        }
         None => json!({
             "state": STATE_ABSENT,
             "text": "none (unilateral)",
@@ -620,7 +695,16 @@ pub(super) fn build_pane_b(records: &[Value]) -> Value {
 /// build_exchange_list_payload`. `default_sort`/`filters` are the exact
 /// literal constants from capsule-emit-mesh main (`capsule_exchange_tab.py
 /// :549-552,764`), not guessed.
-pub(super) fn build_pane_c_list(records: &[Value]) -> Value {
+pub(super) fn build_pane_c_list(records: &[Value], provenance: &HashMap<String, Value>) -> Value {
+    // [mesh-closed-wiring-four-gaps] Seam A3 -- built once per call, not per
+    // row: a received sibling lives in the SAME `capsules.jsonl` self-sealed
+    // capsules do (`record_push.append_capsule` never writes a second file),
+    // so `theirs_cell` looks a claimed peer capsule_id up here rather than
+    // re-scanning `records` per row.
+    let all_records_by_id: HashMap<&str, &Value> = records
+        .iter()
+        .filter_map(|r| r.get("capsule_id").and_then(Value::as_str).map(|id| (id, r)))
+        .collect();
     let mut rows = Vec::new();
     for record in records {
         let Some(exchange_key) = exchange_key_for(record) else {
@@ -644,7 +728,7 @@ pub(super) fn build_pane_c_list(records: &[Value]) -> Value {
                 "capsule_id": record.get("capsule_id").cloned().unwrap_or(Value::Null),
                 "role": label_role(record),
             },
-            "theirs": theirs_cell(record),
+            "theirs": theirs_cell(record, &all_records_by_id, provenance),
             // Whether a real peer join key exists does not yet change
             // `unilateral` -- that flag (and the `confirmed`/tone semantics
             // it feeds, `exchange-ledger.ts`) is earned only once the
@@ -705,7 +789,7 @@ pub(super) fn build_pane_json(
         "pane-b" => Some(build_pane_b(&records)),
         "pane-c" => Some(match exchange_id {
             Some(id) if !id.is_empty() => build_pane_c_drilldown(&records, id),
-            _ => build_pane_c_list(&records),
+            _ => build_pane_c_list(&records, &read_received_provenance(ledger_dir)),
         }),
         _ => None,
     }
@@ -911,7 +995,7 @@ mod tests {
             fixture_record("cap-1", "2026-09-01T00:00:00Z", "req-1", None),
             fixture_record("cap-2", "2026-09-02T00:00:00Z", "req-2", Some("cap-1")),
         ];
-        let pane = build_pane_c_list(&records);
+        let pane = build_pane_c_list(&records, &HashMap::new());
         assert_eq!(pane["row_count"], json!(2));
         assert_eq!(pane["default_sort"], json!("timestamp"));
         assert_eq!(pane["rows"][0]["exchange_key"], json!("digest:req-1"));
@@ -943,7 +1027,7 @@ mod tests {
         record["model_attestation"]["compute_attestation"]["x-mesh-poc-v1"] = json!({
             "serving_provenance": { "exchange_id": "exch-real", "twin_bracket_id": "twin-abc123" }
         });
-        let pane = build_pane_c_list(&[record]);
+        let pane = build_pane_c_list(&[record], &HashMap::new());
         assert_eq!(pane["rows"][0]["twin_bracket_id"], json!("twin-abc123"));
     }
 
@@ -963,11 +1047,142 @@ mod tests {
                 "served_by_node_id": "peer-node-3",
             }
         });
-        let pane = build_pane_c_list(&[record]);
+        let pane = build_pane_c_list(&[record], &HashMap::new());
         let theirs = &pane["rows"][0]["theirs"];
         assert_eq!(theirs["state"], json!(NOT_CHECKED));
         assert_eq!(theirs["capsule_id"], json!("peer-cap-987"));
         assert_eq!(theirs["peer_id"], json!("peer-node-3"));
+        // No provenance was supplied -- a real join key alone never embeds
+        // a local sibling.
+        assert_eq!(theirs["local_sibling"], Value::Null);
+    }
+
+    /// [mesh-closed-wiring-four-gaps] Seam A3 -- the required positive
+    /// mutant: a real join key + a matching, identity-verified provenance
+    /// entry + the named capsule actually present in this node's own ledger
+    /// -> `theirs.local_sibling` carries the sibling's own record. MUTANT:
+    /// drop the `local_sibling_cell` call in `theirs_cell` and this goes red.
+    #[test]
+    fn pane_c_row_embeds_a_local_sibling_when_provenance_and_record_both_match() {
+        let mut asking_record = fixture_record("cap-1", "2026-09-01T00:00:00Z", "req-1", None);
+        asking_record["model_attestation"]["compute_attestation"]["x-mesh-poc-v1"] = json!({
+            "serving_provenance": {
+                "peer_capsule_id": "peer-cap-987",
+                "peer_capsule_id_provenance": "peer_asserted",
+                "served_by_node_id": "peer-node-3",
+            }
+        });
+        let sibling_record = fixture_record("peer-cap-987", "2026-09-01T00:00:05Z", "req-1", None);
+        let mut provenance = HashMap::new();
+        provenance.insert(
+            "peer-cap-987".to_string(),
+            json!({ "received_from": "peer-node-3", "via": "push", "received_at": "2026-09-01T00:00:06Z", "signature_ok": true }),
+        );
+        let pane = build_pane_c_list(&[asking_record, sibling_record.clone()], &provenance);
+        let theirs = &pane["rows"][0]["theirs"];
+        assert_eq!(theirs["state"], json!(NOT_CHECKED));
+        let sibling = &theirs["local_sibling"];
+        assert_eq!(sibling["capsule_id"], json!("peer-cap-987"));
+        assert_eq!(sibling["received_from"], json!("peer-node-3"));
+        assert_eq!(sibling["signature_ok"], json!(true));
+        assert_eq!(sibling["record"], sibling_record);
+    }
+
+    /// R4 negative half 1/4: a sibling capsule with NO provenance entry at
+    /// all -- i.e. one THIS NODE SEALED itself, never received via push --
+    /// never qualifies. `local_sibling` stays `null`, the row stays whatever
+    /// `theirs_cell`'s non-local-sibling state already was (OPEN via the
+    /// existing fetch/not-fetched path, never CLOSED through this door).
+    #[test]
+    fn pane_c_row_never_embeds_a_self_sealed_sibling_with_no_provenance() {
+        let mut asking_record = fixture_record("cap-1", "2026-09-01T00:00:00Z", "req-1", None);
+        asking_record["model_attestation"]["compute_attestation"]["x-mesh-poc-v1"] = json!({
+            "serving_provenance": {
+                "peer_capsule_id": "peer-cap-987",
+                "peer_capsule_id_provenance": "peer_asserted",
+                "served_by_node_id": "peer-node-3",
+            }
+        });
+        // The named capsule genuinely exists in this node's own ledger, but
+        // NO provenance record names it -- exactly what a self-sealed
+        // capsule (or one that arrived some other way) looks like.
+        let self_sealed = fixture_record("peer-cap-987", "2026-09-01T00:00:05Z", "req-1", None);
+        let pane = build_pane_c_list(&[asking_record, self_sealed], &HashMap::new());
+        assert_eq!(pane["rows"][0]["theirs"]["local_sibling"], Value::Null);
+    }
+
+    /// R4 negative half 2/4: a provenance entry exists for the claimed
+    /// capsule_id, but its `received_from` names a DIFFERENT peer than this
+    /// row's own counterparty (`served_by_node_id`) -- never qualifies. A
+    /// capsule genuinely pushed by peer X must never be treated as peer Y's
+    /// half just because both rows happen to reference the same capsule_id.
+    #[test]
+    fn pane_c_row_never_embeds_a_sibling_received_from_a_different_peer() {
+        let mut asking_record = fixture_record("cap-1", "2026-09-01T00:00:00Z", "req-1", None);
+        asking_record["model_attestation"]["compute_attestation"]["x-mesh-poc-v1"] = json!({
+            "serving_provenance": {
+                "peer_capsule_id": "peer-cap-987",
+                "peer_capsule_id_provenance": "peer_asserted",
+                "served_by_node_id": "peer-node-3",
+            }
+        });
+        let sibling_record = fixture_record("peer-cap-987", "2026-09-01T00:00:05Z", "req-1", None);
+        let mut provenance = HashMap::new();
+        provenance.insert(
+            "peer-cap-987".to_string(),
+            json!({ "received_from": "some-other-node", "via": "push", "received_at": "2026-09-01T00:00:06Z", "signature_ok": true }),
+        );
+        let pane = build_pane_c_list(&[asking_record, sibling_record], &provenance);
+        assert_eq!(pane["rows"][0]["theirs"]["local_sibling"], Value::Null);
+    }
+
+    /// R4 negative half 3/4: `received_from` matches, but `signature_ok` is
+    /// `false` (or absent) -- Seam A2's door only ever writes `true` after a
+    /// real verify, so this shape would mean the sidecar's own invariant
+    /// broke; the pane must still refuse to trust it rather than propagate
+    /// a false CLOSED.
+    #[test]
+    fn pane_c_row_never_embeds_a_sibling_whose_signature_ok_is_not_true() {
+        let mut asking_record = fixture_record("cap-1", "2026-09-01T00:00:00Z", "req-1", None);
+        asking_record["model_attestation"]["compute_attestation"]["x-mesh-poc-v1"] = json!({
+            "serving_provenance": {
+                "peer_capsule_id": "peer-cap-987",
+                "peer_capsule_id_provenance": "peer_asserted",
+                "served_by_node_id": "peer-node-3",
+            }
+        });
+        let sibling_record = fixture_record("peer-cap-987", "2026-09-01T00:00:05Z", "req-1", None);
+        let mut provenance = HashMap::new();
+        provenance.insert(
+            "peer-cap-987".to_string(),
+            json!({ "received_from": "peer-node-3", "via": "push", "received_at": "2026-09-01T00:00:06Z", "signature_ok": false }),
+        );
+        let pane = build_pane_c_list(&[asking_record, sibling_record], &provenance);
+        assert_eq!(pane["rows"][0]["theirs"]["local_sibling"], Value::Null);
+    }
+
+    /// R4 negative half 4/4: provenance matches perfectly, but the capsule
+    /// it names is NOT actually present in this node's own ledger (e.g. a
+    /// provenance line survived a partial write, or a capsule was pruned) --
+    /// never point the pane at bytes it does not hold.
+    #[test]
+    fn pane_c_row_never_embeds_a_sibling_whose_capsule_record_is_absent() {
+        let mut asking_record = fixture_record("cap-1", "2026-09-01T00:00:00Z", "req-1", None);
+        asking_record["model_attestation"]["compute_attestation"]["x-mesh-poc-v1"] = json!({
+            "serving_provenance": {
+                "peer_capsule_id": "peer-cap-987",
+                "peer_capsule_id_provenance": "peer_asserted",
+                "served_by_node_id": "peer-node-3",
+            }
+        });
+        let mut provenance = HashMap::new();
+        provenance.insert(
+            "peer-cap-987".to_string(),
+            json!({ "received_from": "peer-node-3", "via": "push", "received_at": "2026-09-01T00:00:06Z", "signature_ok": true }),
+        );
+        // No "peer-cap-987" record in the ledger at all.
+        let pane = build_pane_c_list(&[asking_record], &provenance);
+        assert_eq!(pane["rows"][0]["theirs"]["local_sibling"], Value::Null);
     }
 
     /// (negative, R4 other half) `self_minted` is THIS node's own marker,
@@ -984,7 +1199,7 @@ mod tests {
                 "served_by_node_id": "peer-node-3",
             }
         });
-        let pane = build_pane_c_list(&[record]);
+        let pane = build_pane_c_list(&[record], &HashMap::new());
         assert_eq!(pane["rows"][0]["theirs"]["state"], json!(STATE_ABSENT));
         assert_eq!(pane["rows"][0]["theirs"]["capsule_id"], Value::Null);
     }
@@ -1002,7 +1217,7 @@ mod tests {
                 "served_by_node_id": "unknown",
             }
         });
-        let pane = build_pane_c_list(&[record]);
+        let pane = build_pane_c_list(&[record], &HashMap::new());
         assert_eq!(pane["rows"][0]["theirs"]["state"], json!(STATE_ABSENT));
     }
 

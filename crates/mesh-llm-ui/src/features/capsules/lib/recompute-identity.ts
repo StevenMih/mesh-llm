@@ -224,3 +224,53 @@ export function usePeerLedgerRecompute(row: PaneCRow): PeerRecomputeState {
   const current = resolved.key === rowKey ? resolved.result : PEER_NOT_FETCHED
   return { ...current, fetch: triggerFetch }
 }
+
+/**
+ * [mesh-closed-wiring-four-gaps] Seam A3 -- builds a `PeerRecomputeState`
+ * from `row.theirs.local_sibling` (a capsule this node already holds,
+ * received via record-push and identity-verified DOOR-SIDE before it was
+ * ever stored -- see `sidecarTypes.ts`'s own doc on the field). No network
+ * call: the whole point of a local sibling is that closing this row does not
+ * need a live fetch, so unlike `usePeerLedgerRecompute` this resolves
+ * automatically, without a caller-triggered `.fetch()`. `idMatch` is still
+ * recomputed IN THE BROWSER (`recomputeIdMatch`, the SAME real, cheap, local
+ * check the fetch path runs) -- never trusted from the server without an
+ * independent check. `signatureOk` reflects the door's own real
+ * cryptographic verdict at receive time (`capsule_emit.signing.
+ * verify_capsule_signature` + the announced-key check); this hook does not
+ * re-run that check -- there is no detached signed-statement byte stream
+ * carried alongside a local sibling to re-verify against, unlike the
+ * peer-fetch path's `statementBytes`.
+ *
+ * `{ status: 'not_fetched', ... }` when no local sibling is present -- the
+ * caller falls through to `usePeerLedgerRecompute` for the live-fetch path,
+ * so a row with no sibling behaves exactly as it did before this task.
+ */
+export function useLocalSiblingRecompute(row: PaneCRow): PeerRecomputeState {
+  const sibling = row.theirs.local_sibling ?? null
+  const siblingKey = sibling ? `${sibling.received_from}:${sibling.capsule_id}` : null
+  const [resolved, setResolved] = useState<{ key: string | null; result: Omit<PeerRecomputeState, 'fetch'> }>({
+    key: null,
+    result: PEER_NOT_FETCHED
+  })
+
+  useEffect(() => {
+    if (!sibling) return undefined
+    let cancelled = false
+    void recomputeIdMatch(sibling.record, sibling.capsule_id).then((idMatch) => {
+      if (cancelled) return
+      setResolved({
+        key: siblingKey,
+        result: { status: 'found', idMatch, signatureOk: sibling.signature_ok, peerRecord: sibling.record }
+      })
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [sibling, siblingKey])
+
+  const noopFetch = () => {}
+  if (!sibling) return { ...PEER_NOT_FETCHED, fetch: noopFetch }
+  if (resolved.key !== siblingKey) return { ...PEER_NOT_FETCHED, fetch: noopFetch }
+  return { ...resolved.result, fetch: noopFetch }
+}

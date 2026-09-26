@@ -29,7 +29,11 @@ import {
   rightCellText
 } from '@/features/capsules/lib/exchange-row-state'
 import type { RailSegment } from '@/features/capsules/lib/exchange-stream'
-import { useRecomputedIdentity, usePeerLedgerRecompute } from '@/features/capsules/lib/recompute-identity'
+import {
+  useLocalSiblingRecompute,
+  usePeerLedgerRecompute,
+  useRecomputedIdentity
+} from '@/features/capsules/lib/recompute-identity'
 
 /** The gated cell text ([ledger-T1-ask-half-action] Do (2)) when an ask
  *  action's row carries no recorded counterparty -- today: all of them, a
@@ -102,7 +106,16 @@ export function ExchangeStreamRow({
   // itself is cheap and a no-op until `.fetch()` is called (rules of
   // hooks require it run unconditionally, same as `useRecomputedIdentity`
   // below).
-  const theirsRecompute = usePeerLedgerRecompute(row.raw)
+  // [mesh-closed-wiring-four-gaps] Seam A3 -- a local sibling (received via
+  // record-push, identity-verified door-side) needs no live fetch, so it
+  // takes priority when present; the live-fetch hook still runs
+  // unconditionally either way (rules of hooks), and its result is what
+  // `theirsRecompute` falls back to for every row without a sibling --
+  // ONE shared gate (`deriveRightCellState`, untouched below) either way,
+  // never a second CLOSED predicate.
+  const localSibling = useLocalSiblingRecompute(row.raw)
+  const peerFetch = usePeerLedgerRecompute(row.raw)
+  const theirsRecompute = localSibling.status === 'found' ? localSibling : peerFetch
   const state = deriveRightCellState(row.raw, theirsRecompute, localRecord)
   const alarm = isAlarmState(state)
   // [ledger-T1-ask-half-action] Do (2): an ask action with no recorded

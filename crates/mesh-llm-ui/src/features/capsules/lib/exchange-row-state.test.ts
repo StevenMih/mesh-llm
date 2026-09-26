@@ -162,6 +162,98 @@ describe('deriveRightCellState — finding 1 (2026-09-23 assessment): CLOSED req
   })
 })
 
+describe('deriveRightCellState — [mesh-closed-wiring-four-gaps] Seam A3: a locally-held pushed sibling runs the SAME gate as a live fetch', () => {
+  // A local sibling (a half the peer PUSHED to us at completion, verified
+  // door-side per Seam A2) is surfaced by the sidecar as `theirs.local_sibling`
+  // ONLY when it carries the right provenance (`received_from === served_by`
+  // AND `signature_ok`) -- that qualification is enforced natively
+  // (`capsule_panes_native.rs::local_sibling_cell`, with its own mutant
+  // tests). `useLocalSiblingRecompute` then turns a qualifying sibling into a
+  // `PeerRecomputeState` of the SAME shape a live fetch produces, and feeds it
+  // to the IDENTICAL `deriveRightCellState` gate. These tests build that exact
+  // recompute shape and drive the gate, so a mutation to the ONE shared CLOSED
+  // predicate flips them whichever source produced the evidence.
+
+  /** The `PeerRecomputeState` `useLocalSiblingRecompute` produces from a
+   *  qualifying local sibling: `status: 'found'`, `signatureOk` from the
+   *  door's stored verdict, `peerRecord` the sibling's own bytes, `idMatch`
+   *  recomputed in-browser. Same object the fetch path feeds the gate. */
+  function fromLocalSibling(overrides: Partial<PeerRecomputeState> = {}): PeerRecomputeState {
+    return {
+      status: 'found',
+      idMatch: true,
+      signatureOk: true,
+      peerRecord: citingPeerRecord(),
+      fetch: () => {},
+      ...overrides
+    }
+  }
+
+  it('MUTANT (sibling without provenance -> OPEN): a row with no local_sibling and no fetch is never CLOSED', () => {
+    // No local_sibling surfaced (the sidecar dropped it for want of
+    // provenance) means no recompute is passed at all -- the row falls through
+    // to open_pending_fetch, never CLOSED off an unverified local hold.
+    const row = paneCRow()
+    expect(row.theirs.local_sibling).toBeUndefined()
+    const state = deriveRightCellState(row, undefined, localRecordWithDigests())
+    expect(state.kind).not.toBe('closed')
+    expect(state.kind).toBe('open_pending_fetch')
+  })
+
+  it('MUTANT (a sibling WE sealed -> OPEN): a self-sealed sibling never becomes a local_sibling recompute, so the row stays OPEN', () => {
+    // A sibling we sealed carries no `received_from`, so `local_sibling_cell`
+    // (native) never surfaces it and `useLocalSiblingRecompute` returns
+    // not_fetched -- modeled here as no recompute reaching the gate. The row
+    // must NOT read CLOSED.
+    const row = paneCRow()
+    const notFetched = fromLocalSibling({ status: 'not_fetched', idMatch: null, signatureOk: null, peerRecord: null })
+    const state = deriveRightCellState(row, notFetched, localRecordWithDigests())
+    expect(state.kind).not.toBe('closed')
+    expect(state.kind).toBe('open_pending_fetch')
+  })
+
+  it('MUTANT (provenance ok but digests differ -> CONTRADICTED): a verified sibling whose recomputed id does not match the claimed id is CONTRADICTED', () => {
+    // The sibling verified door-side (signature_ok true) but its own bytes do
+    // not produce the capsule_id claimed for them -- the "both present,
+    // disagreeing" case. Same gate outcome as a fetch with idMatch false.
+    const row = paneCRow()
+    const state = deriveRightCellState(row, fromLocalSibling({ idMatch: false }), localRecordWithDigests())
+    expect(state.kind).toBe('contradicted')
+  })
+
+  it('a verified, id-matching, digest-citing local sibling -> CLOSED, with NO live fetch run', () => {
+    const row = paneCRow()
+    const state = deriveRightCellState(
+      row,
+      fromLocalSibling({ idMatch: true, signatureOk: true, peerRecord: citingPeerRecord() }),
+      localRecordWithDigests()
+    )
+    expect(state.kind).toBe('closed')
+  })
+
+  it('a local sibling that id-matches and cites, but whose stored signature_ok is not true -> NOT CLOSED (the door never wrote signature_ok:true for an unverified push)', () => {
+    const row = paneCRow()
+    const state = deriveRightCellState(
+      row,
+      fromLocalSibling({ idMatch: true, signatureOk: false, peerRecord: citingPeerRecord() }),
+      localRecordWithDigests()
+    )
+    expect(state.kind).not.toBe('closed')
+    expect(state.kind).toBe('open_pending_fetch')
+  })
+
+  it('a verified, id-matching local sibling that does NOT cite our request/response digests -> NOT CLOSED (§6.2/L-G holds for a pushed half too)', () => {
+    const row = paneCRow()
+    const state = deriveRightCellState(
+      row,
+      fromLocalSibling({ idMatch: true, signatureOk: true, peerRecord: { capsule_id: 'a'.repeat(64) } }),
+      localRecordWithDigests()
+    )
+    expect(state.kind).not.toBe('closed')
+    expect(state.kind).toBe('open_pending_fetch')
+  })
+})
+
 describe('deriveRightCellState — bilateral-retention-decay-property (agent-action-capsule @7f8a78d8, Steven-ratified 2026-09-23): one-half-unavailable MUST NOT collapse into both-present-disagreeing', () => {
   it('a peer fetch that legitimately comes back not_found (their retention decayed the record away, or they never held it) renders OPEN — never CONTRADICTED, never CLOSED/"attested by both"', () => {
     const row = paneCRow()
