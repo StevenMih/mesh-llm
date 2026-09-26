@@ -777,13 +777,28 @@ pub(super) fn build_pane_b(
     // a peer's own record can find the foreign half that closes it -- the SAME
     // digest-first correlator Pane C groups on, never a peer-label match.
     let siblings_by_key = received_siblings_by_key(records, received_provenance);
+    // The peer each correlated exchange belongs to, resolved through the door's
+    // provenance ([mesh-closed-pane-b-sibling-attribution]): both the received
+    // sibling AND the local half it correlates with attribute here, so a
+    // confirmed sibling lands in its real peer's row and never the null group a
+    // `role: served` local half's own (absent) label would drop it into.
+    let sibling_peer_by_key = sibling_peer_by_key(&siblings_by_key);
     // BTreeMap: deterministic (sorted) peer ordering; attributed peers first,
     // the unattributed residual last -- so an all-unattributed ledger yields
     // exactly the prior single-row output (rows[0] == the residual).
     let mut by_peer: std::collections::BTreeMap<String, Vec<Value>> = std::collections::BTreeMap::new();
     let mut unattributed: Vec<Value> = Vec::new();
     for record in records {
-        match counterparty_peer_label(record) {
+        // A record that takes part in a correlated cross-node exchange (its own
+        // half or the pushed sibling's) attributes to the peer that pushed the
+        // sibling -- the door-verified `received_from`/node-id join, not the
+        // local half's own counterparty label (which is `None` for a served
+        // half). Falls back to `counterparty_peer_label` for records with no
+        // received sibling on their exchange (unchanged behaviour).
+        let label = exchange_key_for(record)
+            .and_then(|key| sibling_peer_by_key.get(&key).cloned())
+            .or_else(|| counterparty_peer_label(record));
+        match label {
             Some(label) => by_peer.entry(label).or_default().push(record.clone()),
             None => unattributed.push(record.clone()),
         }
@@ -818,6 +833,52 @@ struct CorrelatedSibling<'a> {
     provenance: &'a ReceivedProvenance,
 }
 
+/// The peer-row a received foreign SIBLING belongs to -- the fix for
+/// [mesh-closed-pane-b-sibling-attribution]. A pushed sibling and the peer-row
+/// key live in TWO id spaces: the peer row is keyed by the mesh NODE-ID
+/// (`counterparty_peer_label` -> `node:<served_by_node_id>`), but a pushed
+/// sibling records only the door's `received_from` -- the pushing peer's stable
+/// *peer-id* (`record_push`'s `sender_peer_id`, verified against
+/// `peer_keys.announced_key_for`), NOT its node-id. The prior reader attributed
+/// a confirmed sibling by the LOCAL half's own label, so it landed on whatever
+/// row that half fell into -- which is the null/unattributed group whenever
+/// this node SERVED (a `role: served` local half names no counterparty). That
+/// is the observed live bug: three confirmed siblings under `peer_id: null`
+/// while the real peer rows show `confirmed_siblings: 0`.
+///
+/// Attribute the sibling by the peer that PUSHED it, choosing the id space by
+/// the sibling's own role -- which unambiguously says whose node-id
+/// `served_by_node_id` is:
+///   1. **Peer served us (`role: served`) -> mesh node-id.** The sibling's
+///      `served_by_node_id` IS the peer (the provider), a real mesh node-id
+///      that matches the peer-row key directly (`counterparty_peer_label`'s
+///      tier 2). Use `node:<served_by_node_id[:16]>`.
+///   2. **Peer asked us (`role: requested`, or any other) -> `received_from`.**
+///      The peer's requester-half names US in `served_by_node_id` (the server),
+///      never itself (it records `requesting_party: unknown`), so the only peer
+///      identity on this record is the door's `received_from`. Key the row
+///      `node:<received_from>` -- the same `node:` convention, so a local half
+///      that independently names this same id merges onto one row.
+///
+/// A sibling with no usable identity in either space is genuinely
+/// unattributable and stays in the null group honestly.
+fn sibling_peer_label(sibling: &Value, provenance: &ReceivedProvenance) -> Option<String> {
+    if label_role(sibling) == "served"
+        && let Some(served_by) = poc_block(sibling)
+            .and_then(|poc| poc.get("serving_provenance"))
+            .and_then(|sp| sp.get("served_by_node_id"))
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty() && *s != "unknown")
+    {
+        return Some(format!("node:{}", short_id(served_by, 16)));
+    }
+    let received_from = provenance.received_from.trim();
+    if received_from.is_empty() {
+        return None;
+    }
+    Some(format!("node:{received_from}"))
+}
+
 /// Indexes every received (provenance-carrying) foreign sibling by its
 /// `exchange_key_for` correlator, so a peer's own record can look up the half
 /// that closes it. Mirrors Pane C's `is_received_sibling` split, but keyed for
@@ -841,6 +902,33 @@ fn received_siblings_by_key<'a>(
         map.entry(key)
             .or_default()
             .push(CorrelatedSibling { record, provenance });
+    }
+    map
+}
+
+/// The peer-row every correlated exchange belongs to, keyed by `exchange_key_for`
+/// -- the fix's attribution join ([mesh-closed-pane-b-sibling-attribution]).
+/// For each exchange that has a received (provenance-carrying) foreign sibling,
+/// `sibling_peer_label` names the peer that PUSHED it (mesh node-id when the
+/// peer served us, door `received_from` when it asked us). `build_pane_b` uses
+/// this to attribute BOTH the received sibling AND the local half it correlates
+/// with to that one peer, so a confirmed sibling lands in its real peer's row
+/// rather than the null group a `role: served` local half would otherwise fall
+/// into. An exchange with no received sibling is absent here -- its local half
+/// keeps its own `counterparty_peer_label` attribution, unchanged.
+fn sibling_peer_by_key(
+    siblings_by_key: &HashMap<String, Vec<CorrelatedSibling<'_>>>,
+) -> HashMap<String, String> {
+    let mut map: HashMap<String, String> = HashMap::new();
+    for (key, siblings) in siblings_by_key {
+        // A single exchange key correlates one counterparty half; take the
+        // first that resolves to a peer identity (they share `received_from`).
+        if let Some(label) = siblings
+            .iter()
+            .find_map(|s| sibling_peer_label(s.record, s.provenance))
+        {
+            map.insert(key.clone(), label);
+        }
     }
     map
 }
@@ -1172,6 +1260,33 @@ mod tests {
         })
     }
 
+    /// A cross-node mesh half with an explicit `served_by_node_id` -- the live
+    /// run-5 orientation ([mesh-closed-pane-b-sibling-attribution]): this node
+    /// SERVED a peer, so its own half is `role: served` naming ITSELF in
+    /// `served_by_node_id`, and the peer's pushed requester half is
+    /// `role: requested` naming this node (the server) in `served_by_node_id`
+    /// too, `requesting_party: unknown`. NEITHER half names the peer's mesh
+    /// node-id -- the peer's only identity is the door's `received_from`.
+    fn mesh_half_served_by(
+        capsule_id: &str,
+        role: &str,
+        request_digest: &str,
+        response_digest: &str,
+        exchange_id: &str,
+        served_by_node_id: &str,
+    ) -> Value {
+        json!({
+            "capsule_id": capsule_id,
+            "timestamp": "2026-09-25T00:00:00Z",
+            "operator": "op",
+            "effect": { "request_digest": request_digest, "response_digest": response_digest },
+            "model_attestation": { "compute_attestation": { "x-mesh-poc-v1": {
+                "role": role,
+                "serving_provenance": { "exchange_id": exchange_id, "served_by_node_id": served_by_node_id, "requesting_party": "unknown" },
+            } } },
+        })
+    }
+
     #[test]
     fn missing_ledger_dir_yields_empty_records_not_a_panic() {
         let dir = std::env::temp_dir().join("mesh-c3-missing-ledger-test");
@@ -1443,6 +1558,100 @@ mod tests {
         let siblings = row["confirmed_siblings"].as_array().unwrap();
         assert_eq!(siblings.len(), 1);
         assert_eq!(siblings[0]["digest_match"]["state"], json!(STATE_FAILED));
+    }
+
+    // -----------------------------------------------------------------
+    // [mesh-closed-pane-b-sibling-attribution] The join-key fix. In the live
+    // run-5 orientation this node SERVED the peer, so its own half is
+    // `role: served` naming ITSELF in `served_by_node_id` (no counterparty
+    // label -> the null group), and the peer's pushed REQUESTER half names this
+    // node in `served_by_node_id` too. The peer's only identity is the door's
+    // `received_from`. The prior reader attributed the confirmed sibling by the
+    // served local half's own (absent) label, dropping it into `peer_id: null`
+    // while the real peer row showed `confirmed_siblings: 0`. The fix attributes
+    // by the peer that PUSHED the sibling (`sibling_peer_label`), so the
+    // confirmed sibling lands in that peer's row.
+    // -----------------------------------------------------------------
+
+    /// The exact live bug: this node served a peer (local `role: served`,
+    /// `served_by_node_id` = SELF, so no counterparty label of its own) and the
+    /// peer pushed its requester half (`role: requested`, `served_by_node_id` =
+    /// SELF, provenance `received_from` = the peer's stable id). The confirmed
+    /// sibling MUST land in the pushing peer's row (`node:<received_from>`),
+    /// which shows confirmed/clean, and the null group must be EMPTY -- not the
+    /// prior `confirmed_siblings: 3 under peer_id: null` while the peer showed 0.
+    /// MUTANT: revert to attributing by the local half's own label and the
+    /// sibling falls back into the null group -- both asserts go red.
+    #[test]
+    fn pane_b_attributes_a_served_sides_pushed_sibling_to_the_pushing_peer_not_the_null_group() {
+        // `me-node` is THIS node's id (the server the peer named); `m3` is the
+        // peer's door `received_from`. Neither half carries the peer's node-id.
+        let local_served = mesh_half_served_by(
+            "a".repeat(64).as_str(), "served",
+            "d".repeat(64).as_str(), "e".repeat(64).as_str(), "me-914b61c1", "me-node");
+        let pushed_requester = mesh_half_served_by(
+            "b".repeat(64).as_str(), "requested",
+            "d".repeat(64).as_str(), "e".repeat(64).as_str(), "m3-82777e20", "me-node");
+        let provenance: HashMap<String, ReceivedProvenance> =
+            [provenance_for("b".repeat(64).as_str(), "m3")].into_iter().collect();
+
+        let pane = build_pane_b(&[local_served, pushed_requester], &provenance);
+        let rows = pane["rows"].as_array().unwrap();
+
+        // The confirmed sibling attributes to the pushing peer, keyed by the
+        // door's `received_from` -- not a self row, not the null group.
+        let peer = rows
+            .iter()
+            .find(|r| r["peer_id"] == json!("node:m3"))
+            .expect("the pushing peer (received_from) gets a row");
+        let siblings = peer["confirmed_siblings"].as_array().unwrap();
+        assert_eq!(siblings.len(), 1, "the confirmed sibling lands in the peer's row");
+        assert_eq!(siblings[0]["theirs"]["received_from"], json!("m3"));
+        assert_eq!(siblings[0]["digest_match"]["state"], json!(STATE_VERIFIED));
+
+        // No unattributed residual carrying a confirmed sibling -- the null
+        // group is empty (both halves of the exchange attributed to the peer).
+        let null_with_siblings = rows.iter().find(|r| {
+            r["peer_id"] == Value::Null && !r["confirmed_siblings"].as_array().unwrap().is_empty()
+        });
+        assert!(
+            null_with_siblings.is_none(),
+            "no confirmed sibling remains in the null/unattributed group"
+        );
+    }
+
+    /// A pushed sibling with NO resolvable peer identity -- the peer served us
+    /// (so its `served_by_node_id` WOULD name it) but recorded `"unknown"`, AND
+    /// the door recorded an empty `received_from` -- is genuinely unattributable
+    /// and stays in the null group honestly (never a fabricated peer). The
+    /// exchange still folds into ONE unattributed row; the sibling is not lost.
+    #[test]
+    fn pane_b_sibling_with_no_resolvable_peer_identity_stays_unattributed_honestly() {
+        let local = mesh_half_served_by(
+            "a".repeat(64).as_str(), "served",
+            "d".repeat(64).as_str(), "e".repeat(64).as_str(), "me-914b61c1", "unknown");
+        let pushed = mesh_half_served_by(
+            "b".repeat(64).as_str(), "requested",
+            "d".repeat(64).as_str(), "e".repeat(64).as_str(), "m3-82777e20", "unknown");
+        // Empty `received_from` -> no peer-id either. (The door never writes a
+        // blank line in practice; `sibling_peer_label` still refuses to invent.)
+        let provenance: HashMap<String, ReceivedProvenance> =
+            [provenance_for("b".repeat(64).as_str(), "")].into_iter().collect();
+
+        let pane = build_pane_b(&[local, pushed], &provenance);
+        let rows = pane["rows"].as_array().unwrap();
+        // No named peer row -- the exchange has no resolvable counterparty.
+        assert!(rows.iter().all(|r| r["peer_id"] == Value::Null));
+        // The one honest unattributed row still carries the correlated sibling.
+        let residual = rows
+            .iter()
+            .find(|r| r["peer_id"] == Value::Null)
+            .expect("an unattributed residual row");
+        assert_eq!(
+            residual["confirmed_siblings"].as_array().unwrap().len(),
+            1,
+            "a genuinely unattributable sibling stays in the null group, not dropped"
+        );
     }
 
     #[test]
