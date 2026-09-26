@@ -26,7 +26,7 @@ const PENDING: RecomputedIdentity = { idMatch: null, signatureOk: null }
 /** Shared by `recompute()` (which fetches `mine`'s statement from the LOCAL
  *  ledger route) and `recomputeFromFetchedBytes` (peer bytes the mesh
  *  already delivered) -- one rule for "does capsule_id match", not two. */
-async function recomputeIdMatch(
+export async function recomputeIdMatch(
   record: Record<string, unknown>,
   claimedCapsuleId: string | null
 ): Promise<boolean | null> {

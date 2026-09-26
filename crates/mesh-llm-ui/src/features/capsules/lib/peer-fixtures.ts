@@ -12,24 +12,24 @@ import type { CapsuleRecord } from '@/features/capsules/api/types'
 import type { ModelSummary, Peer } from '@/features/app-tabs/types'
 import type { PaneBConfirmedSibling, PaneBJson, PaneBRow } from '@/features/capsules/api/sidecarTypes'
 import type { PeerExchangeSource } from '@/features/capsules/lib/peer-exchange-timeline'
+import { fixtureMineCell, fixtureTheirsCell } from '@/features/capsules/lib/pushed-half-fixtures'
 import { LatencySource } from '@/lib/api/types'
 
 const CLEAN_PEER_ID = 'node:aa11bb22cc33dd44'
 const ALARMED_PEER_ID = 'node:ff99ee88dd77cc66'
 
-/** A pushed counterparty half as `capsule_panes_native.rs` supplies it: the
- *  two inputs the ONE gate reads. `verified` digest_match + `signature_ok`
- *  closes (clean); `failed` contradicts (mismatch). Mirrors the Pane C sibling
- *  fixtures so the two panes render off the SAME gate. */
+/** A pushed counterparty half as `capsule_panes_native.rs` supplies it: both
+ *  bodies, the door's verdict and the browser's id recompute. `verified`
+ *  closes (clean); `failed` carries a differing digest and contradicts
+ *  (mismatch). Same builders as the Pane C fixtures, so both panes render off
+ *  the SAME gate. */
 function confirmedSibling(state: 'verified' | 'failed', index: number): PaneBConfirmedSibling {
   return {
-    theirs: {
-      state: 'present-unverified',
-      capsule_id: `pushed_half_${String(index).padStart(2, '0')}`,
-      received_from: state === 'failed' ? ALARMED_PEER_ID : CLEAN_PEER_ID,
-      via: 'push',
-      signature_ok: true
-    },
+    mine: fixtureMineCell(`mine_half_${String(index).padStart(2, '0')}`),
+    theirs: fixtureTheirsCell(state === 'verified' ? 'agrees' : 'disagrees', {
+      capsuleId: `pushed_half_${String(index).padStart(2, '0')}`,
+      receivedFrom: state === 'failed' ? ALARMED_PEER_ID : CLEAN_PEER_ID
+    }),
     digest_match: { state }
   }
 }

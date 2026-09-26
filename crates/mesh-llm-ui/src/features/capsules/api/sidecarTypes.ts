@@ -130,14 +130,15 @@ export type PaneBAskedCell = PaneState & {
 /** [mesh-closed-on-frozen-base] One correlated push-primary counterparty half
  *  supplied to the ONE gate, per this peer's asked half that a
  *  provenance-carrying foreign sibling reconciles with
- *  (`capsule_panes_native.rs::confirmed_siblings_for`). Carries exactly the two
- *  inputs `exchange-row-state.ts::deriveRightCellState` reads on the
- *  push-primary path -- the door's recorded `signature_ok` (inside a
- *  `theirs`-shaped cell) and the structural `digest_match` -- so Pane B's
+ *  (`capsule_panes_native.rs::confirmed_siblings_for`). Carries both bodies
+ *  plus the door's recorded `signature_ok`, the inputs
+ *  `exchange-row-state.ts::deriveRightCellState` judges -- so Pane B's
  *  "confirmed by the other side" / MATCH derive from the SAME gate Pane C uses,
  *  never a second browser-peer-fetch predicate. Empty on a peer with no
  *  correlated pushed half; the gate reads that as "not confirmed", honest. */
 export type PaneBConfirmedSibling = {
+  /** Our asked half, with its body (`mine_pair_cell`). */
+  mine?: PaneCRow['mine']
   theirs: PaneCRow['theirs']
   digest_match?: PaneCRow['digest_match']
 }
@@ -252,6 +253,10 @@ export type PaneCRow = {
      *  side was never populated to begin with (L-F). */
     deleted?: boolean
     deleted_date?: string | null
+    /** OUR half's own body -- sent only on a correlated pushed pair
+     *  (`capsule_panes_native.rs::mine_pair_cell`), so the gate compares the
+     *  counterparty half against our real digests + `served_by_node_id`. */
+    record?: Record<string, unknown>
   }
   theirs: {
     state: string
@@ -269,27 +274,34 @@ export type PaneCRow = {
     peer_id?: string | null
     /** [mesh-closed-on-frozen-base] The record-push door's provenance triple
      *  for a locally-held, identity-verified counterparty half
-     *  (`capsule_panes_native.rs::theirs_sibling_cell`, sourced from
-     *  `received-provenance.jsonl`). `signature_ok` is the door's recorded
-     *  verdict of the peer-key signature check -- the ONLY fact the CLOSED
-     *  gate trusts to close a local sibling WITHOUT a live browser fetch (the
-     *  push-primary path). Absent on every row with no received-provenance
-     *  line; a self-sealed / provenance-less sibling never carries it, so it
-     *  never closes. */
+     *  (`capsule_panes_native.rs::theirs_sibling_cell`, read off OUR citing
+     *  record's `received_half`). `signature_ok` is the door's recorded
+     *  verdict of the peer-key signature check -- one of the ONE gate's four
+     *  CLOSED conditions, never sufficient alone. Absent on every row with no
+     *  citing record; a self-sealed / provenance-less sibling never carries
+     *  it, so it never closes. */
     signature_ok?: boolean
     received_from?: string
     via?: string
     received_at?: string
+    /** The held foreign body itself -- the provider-signed bytes the door
+     *  verified (`capsule_panes_native.rs::theirs_sibling_cell`). Present only
+     *  on a correlated pushed half; the gate recomputes its `capsule_id` and
+     *  compares its digests + provider against OUR half. */
+    record?: Record<string, unknown>
+    /** Whether `record` recomputes to `capsule_id`, computed IN THIS BROWSER
+     *  by `attachPushedHalfRecompute` before the pane query resolves (never
+     *  sent by the host). `null` when the recompute could not run; absent
+     *  until it has run. */
+    id_match?: boolean | null
   }
   unilateral: boolean
   /** [mesh-closed-on-frozen-base] The STRUCTURAL digest reconciliation of a
    *  correlated pair (`capsule_panes_native.rs::digest_match_state`) -- both
    *  halves' `effect.request_digest`/`effect.response_digest` compared
-   *  field-by-field. This is the `digestsCiteOurHalf` INPUT the CLOSED gate
-   *  reads on the push-primary path (`exchange-row-state.ts`), never a second
-   *  predicate: `verified` (with `theirs.signature_ok`) closes the row,
-   *  `failed` contradicts it. Absent on a unilateral row (nothing to
-   *  reconcile). */
+   *  field-by-field. Display-only: the ONE gate (`exchange-row-state.ts`)
+   *  compares the two bodies itself and does not read this. Absent on a
+   *  unilateral row (nothing to reconcile). */
   digest_match?: { state: 'verified' | 'failed' | 'absent' | 'present-unverified' }
   timestamp: string | null
   /** The conversation this exchange belongs to, when this node was the

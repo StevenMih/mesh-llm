@@ -38,6 +38,7 @@ import {
   withYouCountsText,
   WITNESS_COVERAGE_COMPACT_TEXT
 } from '@/features/capsules/lib/peer-row-view'
+import { fixtureMineCell, fixtureTheirsCell } from '@/features/capsules/lib/pushed-half-fixtures'
 
 function baseRow(overrides: Partial<PaneBRow> = {}): PaneBRow {
   return {
@@ -57,22 +58,21 @@ function baseRow(overrides: Partial<PaneBRow> = {}): PaneBRow {
   }
 }
 
-/** A pushed counterparty half as the Rust pane supplies it -- the two inputs
- *  the ONE gate reads. A digest-shaped, signature-verified, `verified`
- *  digest_match sibling closes; a `failed` digest_match contradicts; anything
- *  else (no signature, no match) is not confirmed. Mirrors the Pane C sibling
- *  fixtures so the two panes are pinned against the SAME gate. */
+/** A pushed counterparty half as the Rust pane supplies it: both bodies, the
+ *  door's verdict and the browser's id recompute. `verified` -> the bodies
+ *  agree (closes); `failed` -> a digest differs (contradicts); `absent` -> the
+ *  pushed body carries no digests to compare (not confirmed). Same builders as
+ *  the Pane C fixtures so the two panes are pinned against the SAME gate. */
 function confirmedSibling(overrides: Partial<PaneBConfirmedSibling['theirs']> & { matchState?: 'verified' | 'failed' | 'absent' } = {}): PaneBConfirmedSibling {
   const { matchState = 'verified', ...theirs } = overrides
+  const base = fixtureTheirsCell(matchState === 'failed' ? 'disagrees' : 'agrees', { receivedFrom: 'node:m3' })
+  if (matchState === 'absent' && base.record) {
+    const { effect: _noDigests, ...record } = base.record
+    base.record = record
+  }
   return {
-    theirs: {
-      state: 'present-unverified',
-      capsule_id: 'a'.repeat(64),
-      received_from: 'node:m3',
-      via: 'push',
-      signature_ok: true,
-      ...theirs
-    },
+    mine: fixtureMineCell(),
+    theirs: { ...base, ...theirs },
     digest_match: { state: matchState }
   }
 }

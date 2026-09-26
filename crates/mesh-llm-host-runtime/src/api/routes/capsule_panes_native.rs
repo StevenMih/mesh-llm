@@ -1350,6 +1350,7 @@ fn confirmed_siblings_for(
         };
         for sibling in siblings {
             out.push(json!({
+                "mine": mine_pair_cell(mine),
                 "theirs": theirs_sibling_cell(sibling.record, sibling.provenance),
                 "digest_match": { "state": digest_match_state(mine, sibling.record) },
             }));
@@ -1366,8 +1367,12 @@ fn confirmed_siblings_for(
 /// `signatureOk` input it reads to close a locally-held counterparty half.
 /// `state` is `present-unverified` (a real record, not yet crypto-checked in
 /// THIS route -- gap 2), exactly `mine`'s own state; the CLOSED/CONTRADICTED
-/// DECISION is the gate's, from this cell's provenance + the row's
-/// `digest_match`, never a second predicate here.
+/// DECISION is the gate's, never a second predicate here.
+///
+/// `record` is the held foreign body itself (the provider-signed bytes the door
+/// verified), so the browser can recompute its `capsule_id` and compare its
+/// digests and provider against our half -- the same inputs a live peer fetch
+/// hands the gate.
 fn theirs_sibling_cell(sibling: &Value, provenance: &ReceivedProvenance) -> Value {
     json!({
         "state": STATE_PRESENT_UNVERIFIED,
@@ -1377,6 +1382,20 @@ fn theirs_sibling_cell(sibling: &Value, provenance: &ReceivedProvenance) -> Valu
         "via": provenance.via,
         "received_at": provenance.received_at,
         "signature_ok": provenance.signature_ok,
+        "record": sibling,
+    })
+}
+
+/// Our own half of a correlated pair, with its body, so the gate compares the
+/// counterparty half against OUR record's digests and `served_by_node_id`
+/// rather than a structural summary. Only emitted for a correlated pair, so an
+/// ordinary unilateral row's payload does not grow.
+fn mine_pair_cell(mine: &Value) -> Value {
+    json!({
+        "state": STATE_PRESENT_UNVERIFIED,
+        "capsule_id": mine.get("capsule_id").cloned().unwrap_or(Value::Null),
+        "role": label_role(mine),
+        "record": mine,
     })
 }
 
@@ -1452,6 +1471,7 @@ pub(super) fn build_pane_c_list(
         let anchor = mine.or(theirs_sibling).unwrap_or(group[0]);
 
         let mine_cell = match mine {
+            Some(record) if theirs_sibling.is_some() => mine_pair_cell(record),
             Some(record) => json!({
                 "state": STATE_PRESENT_UNVERIFIED,
                 "capsule_id": record.get("capsule_id").cloned().unwrap_or(Value::Null),
@@ -1921,6 +1941,9 @@ mod tests {
         assert_eq!(siblings[0]["theirs"]["signature_ok"], json!(true));
         assert_eq!(siblings[0]["theirs"]["received_from"], json!("m3"));
         assert_eq!(siblings[0]["digest_match"]["state"], json!(STATE_VERIFIED));
+        // The Peers gate gets the same two bodies the Exchanges gate does.
+        assert!(siblings[0]["theirs"]["record"].is_object());
+        assert!(siblings[0]["mine"]["record"].is_object());
         // The half IS held now -- the node text stops asserting "not held".
         assert!(
             row["node"]["text"]
@@ -2474,6 +2497,12 @@ mod tests {
         assert_eq!(row["theirs"]["received_from"], json!("m3"));
         assert_eq!(row["theirs"]["via"], json!("push"));
         assert_eq!(row["theirs"]["state"], json!(STATE_PRESENT_UNVERIFIED));
+        // Both bodies ride on the pair so the browser gate can recompute the
+        // foreign capsule_id and compare digests + provider against OUR half.
+        // MUTANT: drop `"record": sibling` from `theirs_sibling_cell` (or the
+        // `mine_pair_cell` arm) and these go red.
+        assert_eq!(row["theirs"]["record"], foreign);
+        assert_eq!(row["mine"]["record"], local);
     }
 
     /// Only the local half present (no sibling, no provenance): unilateral/OPEN,
@@ -2487,6 +2516,8 @@ mod tests {
         assert_eq!(pane["row_count"], json!(1));
         let row = &pane["rows"][0];
         assert_eq!(row["unilateral"], json!(true));
+        // A lone half carries no body: payload stays small, nothing to compare.
+        assert_eq!(row["mine"].get("record"), None);
         assert_eq!(row["theirs"]["state"], json!(STATE_ABSENT));
         assert_eq!(row["digest_match"]["state"], json!(STATE_ABSENT));
     }

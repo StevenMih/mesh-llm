@@ -9,6 +9,10 @@
 // server-to-server forward has no CORS to fail.
 import { env } from '@/lib/env'
 import type { PaneAJson, PaneBJson, PaneCDrilldownJson, PaneCListJson } from '@/features/capsules/api/sidecarTypes'
+import {
+  attachPushedHalfRecomputeToPaneB,
+  attachPushedHalfRecomputeToPaneC
+} from '@/features/capsules/lib/pushed-half-recompute'
 
 const PANES_BASE = `${env.managementApiUrl}/api/capsules/panes`
 
@@ -35,16 +39,22 @@ export function fetchPaneA(): Promise<PaneAJson> {
   return getJson<PaneAJson>(`${PANES_BASE}/pane-a`)
 }
 
-export function fetchPaneB(): Promise<PaneBJson> {
-  return getJson<PaneBJson>(`${PANES_BASE}/pane-b`)
+/** Resolves only after every pushed half's `capsule_id` has been recomputed
+ *  in this browser (`pushed-half-recompute.ts`), so no reader of this query
+ *  ever sees a pushed half without its verdict. */
+export async function fetchPaneB(): Promise<PaneBJson> {
+  return attachPushedHalfRecomputeToPaneB(await getJson<PaneBJson>(`${PANES_BASE}/pane-b`))
 }
 
-export function fetchPaneCList(opts?: { limit?: number; afterSeq?: number }): Promise<PaneCListJson> {
+export async function fetchPaneCList(opts?: { limit?: number; afterSeq?: number }): Promise<PaneCListJson> {
   const params = new URLSearchParams()
   if (opts?.limit != null) params.set('limit', String(opts.limit))
   if (opts?.afterSeq != null) params.set('after_seq', String(opts.afterSeq))
   const query = params.toString()
-  return getJson<PaneCListJson>(`${PANES_BASE}/pane-c${query ? `?${query}` : ''}`)
+  // Same recompute-before-resolve rule as `fetchPaneB`.
+  return attachPushedHalfRecomputeToPaneC(
+    await getJson<PaneCListJson>(`${PANES_BASE}/pane-c${query ? `?${query}` : ''}`)
+  )
 }
 
 export function fetchPaneCDrilldown(exchangeId: string): Promise<PaneCDrilldownJson> {

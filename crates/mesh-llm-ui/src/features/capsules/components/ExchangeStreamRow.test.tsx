@@ -12,6 +12,7 @@ import type { RailSegment } from '@/features/capsules/lib/exchange-stream'
 import type { PaneCRow } from '@/features/capsules/api/sidecarTypes'
 import type { CapsuleRecord } from '@/features/capsules/api/types'
 import { usePeerLedgerRecompute, type PeerRecomputeState } from '@/features/capsules/lib/recompute-identity'
+import { fixtureHalfBody } from '@/features/capsules/lib/pushed-half-fixtures'
 
 const REQUEST_DIGEST = 'a'.repeat(64)
 const RESPONSE_DIGEST = 'b'.repeat(64)
@@ -21,10 +22,7 @@ const RESPONSE_DIGEST = 'b'.repeat(64)
  *  `toggleProps()` on every render -- harmless for every non-`closed` kind,
  *  since `deriveRightCellState` never reads `localRecord` unless
  *  `idMatch`/`signatureOk` both already came back true. */
-const LOCAL_RECORD_WITH_DIGESTS: CapsuleRecord = {
-  capsule_id: 'mine-1',
-  effect: { request_digest: REQUEST_DIGEST, response_digest: RESPONSE_DIGEST }
-}
+const LOCAL_RECORD_WITH_DIGESTS: CapsuleRecord = fixtureHalfBody({ capsuleId: 'mine-1' }) as CapsuleRecord
 
 // [mesh-console-evidence-tab-honesty-defects] finding 1: `ExchangeStreamRow`
 // now derives its own right-cell state from `row.raw` + a live
@@ -62,7 +60,7 @@ function fixturesFor(kind: RightCellStateKind): { theirs: PaneCRow['theirs']; re
           status: 'found',
           idMatch: true,
           signatureOk: true,
-          peerRecord: { effect: { request_digest: REQUEST_DIGEST, response_digest: RESPONSE_DIGEST } }
+          peerRecord: fixtureHalfBody({ capsuleId: 'a'.repeat(64) })
         }
       }
     case 'contradicted':

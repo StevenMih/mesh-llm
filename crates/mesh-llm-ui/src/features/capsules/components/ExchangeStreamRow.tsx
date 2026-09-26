@@ -29,6 +29,7 @@ import {
   deriveRightCellState,
   isAlarmState,
   isAskAction,
+  pushedHalfRecompute,
   rightCellAction,
   rightCellDetail,
   type RightCellStateKind,
@@ -38,7 +39,7 @@ import {
 } from '@/features/capsules/lib/exchange-row-state'
 import { InfoHover } from '@/features/capsules/components/InfoHover'
 import type { RailSegment } from '@/features/capsules/lib/exchange-stream'
-import { useRecomputedIdentity, usePeerLedgerRecompute } from '@/features/capsules/lib/recompute-identity'
+import { usePeerLedgerRecompute, useRecomputedIdentity } from '@/features/capsules/lib/recompute-identity'
 import { formatModelIdentity, servingProvenance } from '@/features/capsules/lib/serving-provenance'
 import { shortId } from '@/features/capsules/lib/short-id'
 import { copyStateLabel } from '@/lib/copyStateLabel'
@@ -174,7 +175,12 @@ export function ExchangeStreamRow({
   // itself is cheap and a no-op until `.fetch()` is called (rules of
   // hooks require it run unconditionally, same as `useRecomputedIdentity`
   // below).
-  const theirsRecompute = usePeerLedgerRecompute(row.raw)
+  // A live fetch wins when this browser ran one; otherwise the pushed half the
+  // pane already correlated (its capsule_id recomputed before the query
+  // resolved). Either way the SAME gate below judges it, and the checks panel
+  // shows the same evidence.
+  const peerFetch = usePeerLedgerRecompute(row.raw)
+  const theirsRecompute = peerFetch.status === 'found' ? peerFetch : (pushedHalfRecompute(row.raw) ?? peerFetch)
   const state = deriveRightCellState(row.raw, theirsRecompute, localRecord)
   const alarm = isAlarmState(state)
   // [ledger-T1-ask-half-action] Do (2): an ask action with no recorded

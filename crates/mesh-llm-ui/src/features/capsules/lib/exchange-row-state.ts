@@ -40,56 +40,32 @@ const EVIDENCE_OUTCOME_TO_KIND: Record<string, RightCellStateKind> = {
 }
 
 /**
- * Derives the right-cell state from a Pane C row and, when this browser has
- * actually gone and fetched the peer's half, that fetch's outcome.
+ * Derives the right-cell state from a Pane C row (`deriveRightCellState`,
+ * below the helpers).
  *
- * If the row already carries `theirs.evidence_outcome` (one of the four
- * evidence-request outcomes named above), that value wins outright.
+ * If the row carries `theirs.evidence_outcome` (one of the four
+ * evidence-request outcomes above), that value wins outright. A row with no
+ * counterparty recorded at all (`theirs.state === 'absent'`) is
+ * `open_not_asked`.
  *
- * **Finding 1 (2026-09-23 assessment, reworked 2026-09-23 bounce): CLOSED
- * requires a held, SIGNED, and CITING artifact, not just a matching id.**
- * `theirs.state === 'NOT_CHECKED'` (the only non-absent state `theirs_cell`
- * -- `capsule_panes_native.rs` -- emits) means a peer-asserted `capsule_id`
- * is on the record and is fetchable, and nothing more: no bytes are held,
- * nothing has been checked. Reading that alone as "artifact, agrees"
- * rendered ~110 of 135 live rows CLOSED with zero corroboration ever
- * performed -- the one claim this tab exists to make ("we both say so"),
- * true when it was false. CLOSED/CONTRADICTED are now reachable only via
- * `theirsRecompute`, the record of an ACTUAL `mesh_ledger_fetch` this
- * browser ran (`recompute-identity.ts`):
- *   - `status === 'found'` and `idMatch === false` -> CONTRADICTED: the
- *     peer's own bytes don't produce the id they claimed for them.
- *   - `status === 'found'` and `idMatch === true` but `signatureOk` is not
- *     `true` (the bounce's own repro: `idMatch: true, signatureOk: false`
- *     used to read CLOSED) -> not CLOSED. An id match with no verified
- *     signature over the fetched bytes proves nothing was tampered with in
- *     transit -- it is still an unauthenticated artifact, so it falls
- *     through to `open_not_held` below, same as a fetch that hasn't
- *     resolved yet.
- *   - `status === 'found'`, `idMatch === true`, `signatureOk === true`, AND
- *     the peer's own fetched record actually cites `mine`'s
- *     `effect.request_digest`/`effect.response_digest` (§6.2/L-G: "cites
- *     your half by digest" is a claim about THOSE two fields, not a
- *     byproduct of the id/signature check) -> CLOSED. `digestsCiteOurHalf`
- *     below runs the SAME per-field comparison `security-checks-view.ts`'s
- *     `buildCommitsToRows` already does for the CHECKS panel (peer record
- *     absent the field, or `localRecord` missing/non-digest-shaped on our
- *     own side, both read as "does not cite" -- never a fabricated match).
- *   - anything else (not fetched, fetching, not_found, error, a fetch whose
- *     id recompute itself couldn't run, or a verified-and-matching fetch
- *     that doesn't cite our digests) leaves the row at `open_not_held`
- *     below -- a fetch that hasn't resolved to full corroboration is not
- *     evidence of either CLOSED or CONTRADICTED.
+ * Otherwise CLOSED/CONTRADICTED come from ONE predicate
+ * (`counterpartyHalfState`), whichever way the counterparty's bytes arrived:
+ *   - a live `mesh_ledger_fetch` this browser ran (`theirsRecompute`), or
+ *   - the half the peer PUSHED, correlated by the pane from our own citing
+ *     record (`pushedHalfRecompute`: the held body, the door's signature
+ *     verdict, and the `capsule_id` recompute done before the pane query
+ *     resolved).
+ * CLOSED needs all four: the signature verified against the peer's announced
+ * key, the body recomputes to its `capsule_id`, both `effect` digests equal
+ * ours (§6.2/L-G), and the provider check (`providerMatches`, provisional).
+ * CONTRADICTED: the body does not recompute to its id, or both sides carry
+ * real digests that differ. Anything else -- not recomputed yet, unsigned,
+ * a missing digest, a different or unnamed provider -- stays OPEN
+ * (`open_not_held`): never a verdict we did not check.
  *
- * With no evidence_outcome and no confirmed fetch, `theirs.state`
- * distinguishes only two real facts -- **L-C: the right cell never renders
- * a state we inferred.**
- *   - `NOT_CHECKED`: a peer-asserted id is known and fetchable but nothing
- *     has confirmed it yet -> `open_not_held`.
- *   - `absent`: no counterparty is recorded for this row at all -> the only
- *     claim this supports is `open_not_asked` ("you haven't asked for
- *     their half") -- `open_asked`/`open_refused`/`open_absent` would all
- *     require a signed statement or ask-log this row carries none of.
+ * With no evidence at all, a digest-shaped peer id is `open_not_held` (known,
+ * fetchable) and a non-digest correlation marker is `open_not_given`
+ * (**L-C: the right cell never renders a state we inferred**).
  */
 /** Reads a dotted-path string field off a loosely-typed record, `null` when
  *  the path doesn't resolve to a non-empty string -- same discipline as
@@ -126,6 +102,78 @@ function digestsCiteOurHalf(localRecord: CapsuleRecord | null | undefined, peerR
   )
 }
 
+const DIGEST_FIELDS = [
+  ['effect', 'request_digest'],
+  ['effect', 'response_digest']
+] as const
+
+/** Both halves carry a real digest for the same field and they differ: the
+ *  two sides are on record disagreeing about this exchange. A field missing
+ *  on either side is never read as disagreement. */
+function digestsDisagree(localRecord: CapsuleRecord | null | undefined, peerRecord: Record<string, unknown> | null): boolean {
+  return DIGEST_FIELDS.some((path) => {
+    const ours = recordString(localRecord, path)
+    const theirs = recordString(peerRecord, path)
+    return !!ours && !!theirs && isDigestShaped(ours) && isDigestShaped(theirs) && ours !== theirs
+  })
+}
+
+const SERVED_BY_PATH = ['model_attestation', 'compute_attestation', 'x-mesh-poc-v1', 'serving_provenance', 'served_by_node_id'] as const
+
+/** "Obtained from the provider": both halves name the same serving node.
+ *
+ *  PROVISIONAL -- check (i). The rule is `received_from == served_by`, but the
+ *  citing record's `received_from` is the plugin's endpoint id, not a mesh
+ *  node id, and the host cannot yet supply the sender's node id. Until the
+ *  peer ANNOUNCEMENT's key -> node join lands, this compares the node the
+ *  provider-signed body names as its server (its own signature, verified at
+ *  the door against the announced key for `received_from`) with the node OUR
+ *  record says served us. When the announcement join lands, replace this with
+ *  check (ii): the announced node id for the signing key must equal our
+ *  `served_by_node_id`. */
+function providerMatches(localRecord: CapsuleRecord | null | undefined, peerRecord: Record<string, unknown> | null): boolean {
+  const ours = recordString(localRecord, SERVED_BY_PATH)
+  const theirs = recordString(peerRecord, SERVED_BY_PATH)
+  return !!ours && ours !== 'unknown' && ours === theirs
+}
+
+/** The counterparty half the pane correlated from OUR citing record, as the
+ *  same evidence shape a live fetch produces -- the held body, the door's
+ *  signature verdict, and the in-browser `capsule_id` recompute
+ *  (`pushed-half-recompute.ts`). `null` when the row carries no pushed body. */
+export function pushedHalfRecompute(row: PaneCRow): PeerRecomputeState | null {
+  const theirs = row.theirs
+  if (!theirs.record || theirs.signature_ok === undefined) return null
+  return {
+    status: 'found',
+    idMatch: theirs.id_match ?? null,
+    signatureOk: theirs.signature_ok === true,
+    peerRecord: theirs.record,
+    fetch: () => {}
+  }
+}
+
+/** THE gate. CLOSED iff all four hold for provider-signed bytes this node
+ *  holds (pushed or fetched): the signature verified against the peer's
+ *  announced key, the body recomputes to its `capsule_id`, both digests equal
+ *  ours, and it came from the provider (`providerMatches`). */
+function counterpartyHalfState(
+  evidence: PeerRecomputeState,
+  localRecord: CapsuleRecord | null | undefined
+): RightCellStateKind {
+  // Recompute not run / could not run: inconclusive, never a verdict.
+  if (evidence.idMatch === null) return 'open_not_held'
+  // The peer's own bytes don't produce the id claimed for them.
+  if (!evidence.idMatch) return 'contradicted'
+  // Unauthenticated bytes prove nothing either way.
+  if (evidence.signatureOk !== true) return 'open_not_held'
+  if (digestsDisagree(localRecord, evidence.peerRecord)) return 'contradicted'
+  if (digestsCiteOurHalf(localRecord, evidence.peerRecord) && providerMatches(localRecord, evidence.peerRecord)) {
+    return 'closed'
+  }
+  return 'open_not_held'
+}
+
 /** A real sealed capsule id is 64 lower-hex (`capsule-emit-mesh`
  *  capsule-producer `DIGEST_LEN`); the self-minted per-response marker
  *  `capsule-<response.id>` (e.g. `capsule-chatcmpl-…`) is not. Only a
@@ -159,26 +207,14 @@ export function deriveRightCellState(
     return { kind: 'open_not_asked', date: null }
   }
 
-  // Push-primary CLOSED (the local-sibling path): a provenance-carrying
-  // foreign sibling is ALREADY held locally -- the `record_push` door verified
-  // its signature against the announced peer key and recorded `signature_ok`,
-  // and the Rust pane (`capsule_panes_native.rs::build_pane_c_list`) correlated
-  // it into `theirs` and supplied the structural `digest_match`. This is the
-  // SAME predicate as the fetch branch below -- `signatureOk === true` AND both
-  // request/response digests cite our half -- read from the door's recorded
-  // verdict + the structural digest comparison, NOT a second predicate. The
-  // fetch branch stays the authority when a LIVE fetch has run (that path never
-  // carries `theirs.signature_ok`, so it never enters here); this fires only
-  // for a door-verified sibling the browser never had to fetch.
-  if (row.theirs.signature_ok === true && row.digest_match) {
-    if (row.digest_match.state === 'verified') return { kind: 'closed', date: null }
-    if (row.digest_match.state === 'failed') return { kind: 'contradicted', date: null }
-  }
-
-  if (theirsRecompute?.status === 'found' && theirsRecompute.idMatch !== null) {
-    if (!theirsRecompute.idMatch) return { kind: 'contradicted', date: null }
-    const closed = theirsRecompute.signatureOk === true && digestsCiteOurHalf(localRecord, theirsRecompute.peerRecord)
-    return { kind: closed ? 'closed' : 'open_not_held', date: null }
+  // One code path for both sources: a live fetch this browser ran wins; else
+  // the pushed half the pane correlated from our citing record. Our half is
+  // the caller's record when supplied, else the body the pane sent with the
+  // pair.
+  const evidence = theirsRecompute?.status === 'found' ? theirsRecompute : pushedHalfRecompute(row)
+  if (evidence) {
+    const ours = localRecord ?? (row.mine.record as CapsuleRecord | undefined) ?? null
+    return { kind: counterpartyHalfState(evidence, ours), date: null }
   }
 
   // No confirmed fetch yet. A peer id is "known but not fetched" (fetchable)

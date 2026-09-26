@@ -239,8 +239,8 @@ export function theirChainSummary(row: PaneBRow): ChainSummary {
 export type ConfirmedByOtherSide = { confirmed: number; total: number; note: string | null }
 
 /** Runs one supplied sibling through the ONE gate as a minimal Pane C row --
- *  the gate reads only `theirs` + `digest_match` on the push-primary path, so
- *  the rest of a full `PaneCRow` is never consulted and is stubbed honestly. */
+ *  the gate reads only `mine.record` + `theirs` (body, door verdict, in-browser
+ *  id recompute) here, so the rest of a full `PaneCRow` is stubbed honestly. */
 function siblingGateState(sibling: PaneBConfirmedSibling): ReturnType<typeof deriveRightCellState> {
   const row: PaneCRow = {
     exchange_key: '',
@@ -248,7 +248,7 @@ function siblingGateState(sibling: PaneBConfirmedSibling): ReturnType<typeof der
     header_state: '',
     properties: null,
     has_issue: false,
-    mine: { state: 'present-unverified', capsule_id: null },
+    mine: sibling.mine ?? { state: 'present-unverified', capsule_id: null },
     theirs: sibling.theirs,
     unilateral: false,
     digest_match: sibling.digest_match,

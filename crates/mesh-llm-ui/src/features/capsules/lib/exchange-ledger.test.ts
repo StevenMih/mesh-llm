@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { buildExchangeCounterpartyIndex, buildExchangeLedgerRows } from '@/features/capsules/lib/exchange-ledger'
 import type { PaneBRow, PaneCRow } from '@/features/capsules/api/sidecarTypes'
+import { fixtureMineCell, fixtureTheirsCell } from '@/features/capsules/lib/pushed-half-fixtures'
 
 function paneCRow(overrides: Partial<PaneCRow>): PaneCRow {
   return {
@@ -95,10 +96,12 @@ describe('buildExchangeLedgerRows', () => {
   it('Confirmed derives from the ONE gate (rightCellState closed), never the retired structural theirs-present read', () => {
     const rows = buildExchangeLedgerRows(
       [
-        // Gate-closed: door-verified signature + verified digest match.
+        // Gate-closed: a pushed half whose body agrees with ours (signature,
+        // capsule_id, both digests, provider).
         paneCRow({
           exchange_key: 'exch-confirmed',
-          theirs: { state: 'present-unverified', capsule_id: 'a'.repeat(64), signature_ok: true },
+          mine: fixtureMineCell(),
+          theirs: fixtureTheirsCell('agrees'),
           digest_match: { state: 'verified' },
           unilateral: false
         }),
@@ -125,7 +128,8 @@ describe('buildExchangeLedgerRows', () => {
       [
         paneCRow({
           exchange_key: 'a',
-          theirs: { state: 'present-unverified', capsule_id: 'a'.repeat(64), signature_ok: true },
+          mine: fixtureMineCell(),
+          theirs: fixtureTheirsCell('agrees'),
           digest_match: { state: 'verified' }
         }),
         paneCRow({ exchange_key: 'b' }),

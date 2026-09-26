@@ -14,9 +14,7 @@ import {
 import type { PaneCRow } from '@/features/capsules/api/sidecarTypes'
 import type { CapsuleRecord } from '@/features/capsules/api/types'
 import type { PeerRecomputeState } from '@/features/capsules/lib/recompute-identity'
-
-const REQUEST_DIGEST = 'a'.repeat(64)
-const RESPONSE_DIGEST = 'b'.repeat(64)
+import { fixtureHalfBody, fixtureMineCell, fixtureTheirsCell } from '@/features/capsules/lib/pushed-half-fixtures'
 
 function paneCRow(overrides: Partial<PaneCRow> = {}): PaneCRow {
   return {
@@ -36,17 +34,14 @@ function paneCRow(overrides: Partial<PaneCRow> = {}): PaneCRow {
 /** Our own record, carrying the two §6.2/L-G digests CLOSED requires a
  *  peer's fetched record to cite. */
 function localRecordWithDigests(): CapsuleRecord {
-  return { capsule_id: 'mine-1', effect: { request_digest: REQUEST_DIGEST, response_digest: RESPONSE_DIGEST } }
+  return fixtureHalfBody({ capsuleId: 'mine-1' }) as CapsuleRecord
 }
 
 /** A peer record that actually cites both of `localRecordWithDigests()`'s
  *  digests -- the ONLY peerRecord shape `digestsCiteOurHalf` reads as
  *  CLOSED-eligible. */
 function citingPeerRecord(): Record<string, unknown> {
-  return {
-    capsule_id: 'a'.repeat(64),
-    effect: { request_digest: REQUEST_DIGEST, response_digest: RESPONSE_DIGEST }
-  }
+  return fixtureHalfBody({ capsuleId: 'a'.repeat(64) })
 }
 
 function fetched(overrides: Partial<PeerRecomputeState> = {}): PeerRecomputeState {
@@ -163,61 +158,81 @@ describe('deriveRightCellState — finding 1 (2026-09-23 assessment): CLOSED req
   })
 })
 
-describe('deriveRightCellState — push-primary (mesh-closed-on-frozen-base): a door-verified local sibling closes through the ONE gate, no browser fetch', () => {
-  /** A push-primary row as the Rust pane now supplies it: a
-   *  provenance-carrying foreign sibling correlated into `theirs`
-   *  (`signature_ok` = the door's recorded verdict, `state` present-unverified,
-   *  a real capsule_id) + the row-level structural `digest_match`, and
-   *  `unilateral: false`. No `theirsRecompute` -- the sibling is already held. */
-  function pushPrimaryRow(digestMatch: 'verified' | 'failed', overrides: Partial<PaneCRow> = {}): PaneCRow {
-    return paneCRow({
-      unilateral: false,
-      theirs: { state: 'present-unverified', capsule_id: 'b'.repeat(64), signature_ok: true, received_from: 'm3', via: 'push' },
-      digest_match: { state: digestMatch },
-      ...overrides
-    })
+describe('deriveRightCellState — the ONE gate: pushed and fetched halves take the same predicate', () => {
+  // CLOSED = provider-signed bytes this node holds (pushed or fetched), checked
+  // locally: signature verified against the peer's announced key, the body
+  // recomputes to its capsule_id, both digests equal ours, and it came from the
+  // provider (provisional check (i): both halves name the same server). The
+  // real in-browser recompute of `id_match` is exercised in
+  // `pushed-half-recompute.test.ts`; here it is supplied as the pane query
+  // delivers it.
+  function pushedRow(theirs: PaneCRow['theirs'], overrides: Partial<PaneCRow> = {}): PaneCRow {
+    return paneCRow({ unilateral: false, mine: fixtureMineCell(), theirs, digest_match: { state: 'verified' }, ...overrides })
   }
 
-  it('a door-verified sibling (signature_ok) whose digests reconcile VERIFIED -> CLOSED, with NO browser fetch', () => {
-    expect(deriveRightCellState(pushPrimaryRow('verified')).kind).toBe('closed')
+  it('a pushed half that agrees closes on the LIST path (no recompute, no local record passed)', () => {
+    expect(deriveRightCellState(pushedRow(fixtureTheirsCell('agrees'))).kind).toBe('closed')
   })
 
-  it('the SAME gate on the LIST path (deriveRightCellState with no recompute/localRecord) closes -- this is what the console table reads', () => {
-    // buildExchangeLedgerRows calls deriveRightCellState(row) with no extra
-    // args; the push-primary branch reads the supplied row itself.
-    expect(deriveRightCellState(pushPrimaryRow('verified'), undefined, undefined).kind).toBe('closed')
+  it('MUTANT no provenance -> OPEN: a held body with no door verdict from a citing record never closes', () => {
+    const { signature_ok: _dropped, ...noVerdict } = fixtureTheirsCell('agrees')
+    const kind = deriveRightCellState(pushedRow(noVerdict)).kind
+    expect(kind).not.toBe('closed')
+    expect(kind).not.toBe('contradicted')
   })
 
-  it('a door-verified sibling whose digests DIFFER (digest_match failed) -> CONTRADICTED, never CLOSED', () => {
-    expect(deriveRightCellState(pushPrimaryRow('failed')).kind).toBe('contradicted')
+  it('MUTANT self-sealed sibling -> OPEN: the pane files our own second half under mine, so theirs is absent', () => {
+    const row = pushedRow({ state: 'absent', capsule_id: null }, { unilateral: true })
+    expect(deriveRightCellState(row).kind).toBe('open_not_asked')
   })
 
-  it('PROVENANCE RULE: a correlated sibling with a matching digest_match but NO signature_ok (never door-verified) does NOT close -- falls through to the honest fetch/pending state', () => {
-    const row = paneCRow({
-      unilateral: false,
-      theirs: { state: 'NOT_CHECKED', capsule_id: 'b'.repeat(64), peer_id: 'm3' }, // no signature_ok
-      digest_match: { state: 'verified' }
-    })
-    const state = deriveRightCellState(row)
-    expect(state.kind).not.toBe('closed')
-    expect(state.kind).not.toBe('contradicted')
+  it('MUTANT provenance ok, digests differ -> CONTRADICTED', () => {
+    expect(deriveRightCellState(pushedRow(fixtureTheirsCell('disagrees'))).kind).toBe('contradicted')
   })
 
-  it('a supplied digest_match that is neither verified nor failed (absent/present-unverified) is not a close/contradict signal', () => {
-    expect(deriveRightCellState(pushPrimaryRow('verified', { digest_match: { state: 'absent' } })).kind).not.toBe('closed')
-    expect(deriveRightCellState(pushPrimaryRow('verified', { digest_match: { state: 'present-unverified' } })).kind).not.toBe(
+  it('reads the bodies, not the structural summary: a stale "verified" digest_match over disagreeing bodies still CONTRADICTS', () => {
+    const row = pushedRow(fixtureTheirsCell('disagrees'), { digest_match: { state: 'verified' } })
+    expect(deriveRightCellState(row).kind).toBe('contradicted')
+  })
+
+  it('before the capsule_id recompute has run (id_match absent) a pushed half is never CLOSED', () => {
+    const { id_match: _dropped, ...unrecomputed } = fixtureTheirsCell('agrees')
+    expect(deriveRightCellState(pushedRow(unrecomputed)).kind).toBe('open_not_held')
+  })
+
+  it('a pushed body that does not recompute to its capsule_id -> CONTRADICTED', () => {
+    expect(deriveRightCellState(pushedRow({ ...fixtureTheirsCell('agrees'), id_match: false })).kind).toBe('contradicted')
+  })
+
+  it('a door verdict other than true -> not CLOSED', () => {
+    expect(deriveRightCellState(pushedRow({ ...fixtureTheirsCell('agrees'), signature_ok: false })).kind).toBe('open_not_held')
+  })
+
+  it('PROVISIONAL provider check (i): a pushed body naming a different server -> not CLOSED', () => {
+    const theirs = fixtureTheirsCell('agrees')
+    const record = fixtureHalfBody({ capsuleId: theirs.capsule_id ?? undefined, servedBy: 'd'.repeat(64) })
+    expect(deriveRightCellState(pushedRow({ ...theirs, record })).kind).toBe('open_not_held')
+  })
+
+  it('the fetch path takes the SAME predicate: agreeing, signed, same provider -> CLOSED', () => {
+    expect(deriveRightCellState(paneCRow(), fetched({ peerRecord: citingPeerRecord() }), localRecordWithDigests()).kind).toBe(
       'closed'
     )
   })
 
-  it('LOAD-BEARING: the push-primary branch fires BEFORE the browser-fetch branch, but a live fetch row (no signature_ok) is untouched -- both paths reach the same predicate, neither shadows the other', () => {
-    // A door-verified sibling closes without any recompute...
-    expect(deriveRightCellState(pushPrimaryRow('verified')).kind).toBe('closed')
-    // ...and the fetch path (no signature_ok on theirs) still governs a fetched row.
-    const fetchRow = paneCRow()
-    expect(
-      deriveRightCellState(fetchRow, fetched({ idMatch: true, signatureOk: true, peerRecord: citingPeerRecord() }), localRecordWithDigests()).kind
-    ).toBe('closed')
+  it('the fetch path takes the SAME predicate: digests differ -> CONTRADICTED', () => {
+    const peerRecord = fixtureHalfBody({ capsuleId: 'a'.repeat(64), responseDigest: 'e'.repeat(64) })
+    expect(deriveRightCellState(paneCRow(), fetched({ peerRecord }), localRecordWithDigests()).kind).toBe('contradicted')
+  })
+
+  it('the fetch path takes the SAME predicate: a different provider -> not CLOSED', () => {
+    const peerRecord = fixtureHalfBody({ capsuleId: 'a'.repeat(64), servedBy: 'd'.repeat(64) })
+    expect(deriveRightCellState(paneCRow(), fetched({ peerRecord }), localRecordWithDigests()).kind).toBe('open_not_held')
+  })
+
+  it('a live fetch this browser ran wins over the pushed evidence on the same row', () => {
+    const row = pushedRow(fixtureTheirsCell('agrees'))
+    expect(deriveRightCellState(row, fetched({ idMatch: false }), localRecordWithDigests()).kind).toBe('contradicted')
   })
 })
 
