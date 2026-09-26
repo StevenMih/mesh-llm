@@ -210,11 +210,25 @@ export function buildRegistrationCopy(card: JsonRecord | null | undefined): Regi
 // three-state absence handling and the leaf pluralization are unit-testable.
 // ---------------------------------------------------------------------------
 
-export function chainStripCaption(sealedCount: number, checkpointCount: number | null): string {
+export function chainStripCaption(
+  sealedCount: number,
+  checkpointCount: number | null,
+  // The covered-LEAF count from the card (`covered_leaf_count`, inverted from
+  // the checkpoint's MMR node count by the host) -- NOT `checkpointCount`, which
+  // is the number of checkpoint LINES. The old caption rendered the line count
+  // as a leaf count (a live "covered by checkpoint (1 leaves)" for a 1-line,
+  // 8-leaf checkpoint). Null when the host did not report a covered-leaf count.
+  coveredLeafCount: number | null = null
+): string {
   if (checkpointCount !== null && checkpointCount > 0) {
-    // "1 leaf" / "N leaves" -- never "1 leaves" ([mesh-citing-record-shots-
-    // four-defects] D1 minor).
-    return `covered by checkpoint (${checkpointCount} ${checkpointCount === 1 ? 'leaf' : 'leaves'}) · after the last checkpoint is unshaded`
+    // A checkpoint exists. Report the covered-LEAF count when the host gave one
+    // ("1 leaf" / "N leaves" -- never "1 leaves", [mesh-citing-record-shots-
+    // four-defects] D1 minor). If it did not, say so honestly rather than
+    // reprint the checkpoint-line count as if it were leaves.
+    if (coveredLeafCount !== null) {
+      return `covered by checkpoint (${coveredLeafCount} ${coveredLeafCount === 1 ? 'leaf' : 'leaves'}) · after the last checkpoint is unshaded`
+    }
+    return 'covered by checkpoint (covered leaf count not reported) · after the last checkpoint is unshaded'
   }
   const entries = `${sealedCount} entr${sealedCount === 1 ? 'y' : 'ies'}, all sealed`
   // Not reported by the host -- NEVER a false "none exists". A null count

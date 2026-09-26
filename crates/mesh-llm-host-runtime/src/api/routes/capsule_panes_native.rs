@@ -133,6 +133,32 @@ pub(super) fn read_capsule_records(ledger_dir: &Path) -> Vec<Value> {
         .collect()
 }
 
+/// Inverts an MMR total-node count back to the LEAF count it covers.
+///
+/// An append-only Merkle Mountain Range over `L` leaves has a fixed total node
+/// count: `mmr_size == 2*L - popcount(L)` (each leaf contributes itself plus
+/// the internal nodes formed when perfect-binary-tree peaks merge; the merges
+/// saved are exactly the set bits of `L`). That relation is strictly increasing
+/// in `L`, so a node count uniquely determines its leaf count -- e.g. 15 -> 8,
+/// 11 -> 7, 4 -> 3, 1 -> 1. `None` for a node count that no leaf count produces
+/// (never a fabricated coverage figure). This is what turns the checkpoint's
+/// on-disk `mmr_size` (a NODE count) into the covered-LEAF count the chain strip
+/// caption reports -- distinct from `checkpoint_count`, which is merely the
+/// number of checkpoint LINES on disk.
+fn mmr_leaf_count(mmr_size: u64) -> Option<u64> {
+    if mmr_size == 0 {
+        return Some(0);
+    }
+    // From `mmr_size = 2*L - popcount(L)`, `L = (mmr_size + popcount(L)) / 2`,
+    // and `popcount(L) <= 64` for any u64 L. So L lies in
+    // `[mmr_size/2, mmr_size/2 + 32]` (dividing the +popcount(L) term by 2).
+    // Scan that small window rather than a full search; the relation is
+    // strictly increasing, so at most one L in the window matches.
+    let lo = mmr_size / 2;
+    let hi = mmr_size / 2 + 33;
+    (lo..=hi).find(|&l| l != 0 && 2 * l - u64::from(l.count_ones()) == mmr_size)
+}
+
 /// Reads `<ledger_dir>/checkpoints.jsonl` (co-located with `capsules.jsonl`,
 /// written by the plugin's checkpoint cadence via `cll::store` -- one JSON
 /// object per line, the same on-disk shape `accountability_pane_routes.py`
@@ -146,6 +172,13 @@ pub(super) fn read_capsule_records(ledger_dir: &Path) -> Vec<Value> {
 /// an honest `[]` for a self-checkpointed node) are surfaced -- exactly the
 /// fields the Integrity view reads off `card`. `build_pane_a` hardcoded
 /// `card: null` before this, so a real on-disk checkpoint never showed.
+///
+/// `covered_leaf_count` is the number of chain LEAVES the latest checkpoint
+/// covers -- the figure the chain strip caption reports. It is NOT
+/// `checkpoint_count` (the number of checkpoint lines): the earlier caption
+/// mislabelled the line count as a leaf count. It is read directly from the
+/// checkpoint line when carried (`covered_leaf_count`/`leaf_count`), else
+/// inverted from the line's `mmr_size` (a NODE count) via `mmr_leaf_count`.
 fn read_checkpoint_card(ledger_dir: &Path) -> Value {
     let path = ledger_dir.join("checkpoints.jsonl");
     let checkpoints: Vec<Value> = match std::fs::read_to_string(&path) {
@@ -171,6 +204,23 @@ fn read_checkpoint_card(ledger_dir: &Path) -> Value {
         }
         if let Some(size) = latest.get("mmr_size") {
             card["latest_mmr_size"] = size.clone();
+        }
+        // The covered-LEAF count the chain strip reports -- NOT `checkpoint_count`
+        // (the number of checkpoint lines). Prefer a leaf count the checkpoint
+        // line carries directly (`leaf_count`/`covered_leaf_count`); else invert
+        // the MMR node count (`mmr_size`) via `mmr_leaf_count`. Left absent (never
+        // a fabricated figure) when neither is available or the node count is not
+        // a valid MMR size.
+        let carried_leaf = latest
+            .get("covered_leaf_count")
+            .or_else(|| latest.get("leaf_count"))
+            .and_then(Value::as_u64);
+        let derived_leaf = latest
+            .get("mmr_size")
+            .and_then(Value::as_u64)
+            .and_then(mmr_leaf_count);
+        if let Some(leaves) = carried_leaf.or(derived_leaf) {
+            card["covered_leaf_count"] = json!(leaves);
         }
     }
     card
@@ -2906,8 +2956,54 @@ mod tests {
         assert_eq!(card["registered_no_later_than"], json!("2026-09-03T07:28:00Z"));
         assert_eq!(card["latest_root"], json!("bb"));
         assert_eq!(card["latest_mmr_size"], json!(7));
+        // The covered-LEAF count is inverted from the latest mmr_size (7 nodes ->
+        // 4 leaves), NOT `checkpoint_count` (2). This is the field the chain strip
+        // caption reads.
+        assert_eq!(card["covered_leaf_count"], json!(4));
         assert_eq!(card["witnesses"].as_array().unwrap().len(), 1);
         assert_eq!(build_pane_a(&[], card)["card"]["checkpoint_count"], json!(2));
+    }
+
+    /// `mmr_leaf_count` inverts an MMR total-node count back to its leaf count
+    /// via `mmr_size == 2*L - popcount(L)`. The task's worked example (node
+    /// count 15 -> 8 leaves) and the boundary/round-trip cases: every leaf count
+    /// L maps to a node count that inverts back to exactly L, node count 0 is 0
+    /// leaves, and a node count no MMR produces (e.g. 2) has no inverse.
+    #[test]
+    fn mmr_leaf_count_inverts_node_count_to_leaf_count() {
+        // The task's worked example.
+        assert_eq!(mmr_leaf_count(15), Some(8));
+        // Spot cases: 1->1, 4->3, 11->7 (and the empty MMR).
+        assert_eq!(mmr_leaf_count(0), Some(0));
+        assert_eq!(mmr_leaf_count(1), Some(1));
+        assert_eq!(mmr_leaf_count(4), Some(3));
+        assert_eq!(mmr_leaf_count(11), Some(7));
+        // A node count that no MMR yields (2 leaves -> 3 nodes; 1 leaf -> 1 node;
+        // nothing produces 2) has no inverse -- never a fabricated leaf count.
+        assert_eq!(mmr_leaf_count(2), None);
+        // Round-trip every leaf count in a wide range through the forward
+        // relation and back.
+        for leaves in 1u64..=5000 {
+            let nodes = 2 * leaves - u64::from(leaves.count_ones());
+            assert_eq!(mmr_leaf_count(nodes), Some(leaves), "round-trip failed for {leaves} leaves");
+        }
+    }
+
+    /// The card prefers a leaf count the checkpoint line carries directly
+    /// (`covered_leaf_count`, then `leaf_count`) over inverting `mmr_size` --
+    /// so a plugin that records the covered-leaf count need not have it re-derived.
+    #[test]
+    fn checkpoint_card_prefers_a_carried_leaf_count_over_inverting_mmr_size() {
+        let dir = tempfile::tempdir().unwrap();
+        // mmr_size 15 would invert to 8, but the line carries 6 directly.
+        std::fs::write(
+            dir.path().join("checkpoints.jsonl"),
+            "{\"kind\":\"mmr_checkpoint\",\"mmr_size\":15,\"covered_leaf_count\":6,\"root\":\"aa\",\"timestamp\":\"2026-09-03T07:23:31Z\",\"witnesses\":[]}\n",
+        )
+        .unwrap();
+        let card = read_checkpoint_card(dir.path());
+        assert_eq!(card["covered_leaf_count"], json!(6));
+        assert_eq!(card["latest_mmr_size"], json!(15));
     }
 
     #[test]

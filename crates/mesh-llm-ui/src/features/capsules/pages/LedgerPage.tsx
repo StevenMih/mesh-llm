@@ -852,9 +852,20 @@ function ExchangesSection({
 
 /** The chain strip: a bar of this node's sealed entries, shading the
  *  checkpoint-covered range when a checkpoint exists. */
-function ChainStrip({ sealedCount, checkpointCount }: { sealedCount: number; checkpointCount: number | null }) {
+function ChainStrip({
+  sealedCount,
+  checkpointCount,
+  coveredLeafCount
+}: {
+  sealedCount: number
+  checkpointCount: number | null
+  coveredLeafCount: number | null
+}) {
   const hasCheckpoint = checkpointCount !== null && checkpointCount > 0
-  const coveredCount = hasCheckpoint ? Math.min(checkpointCount, sealedCount) : 0
+  // Shade the covered-LEAF range, not the checkpoint-LINE count. Fall back to
+  // no shading when the host did not report a covered-leaf count -- never shade
+  // a wrong width off the line count.
+  const coveredCount = hasCheckpoint && coveredLeafCount !== null ? Math.min(coveredLeafCount, sealedCount) : 0
   const coveredPct = sealedCount > 0 ? (coveredCount / sealedCount) * 100 : 0
 
   return (
@@ -877,8 +888,9 @@ function ChainStrip({ sealedCount, checkpointCount }: { sealedCount: number; che
         <span className="font-mono text-xs text-fg-faint">{sealedCount}</span>
       </div>
       {/* Three-state absence handling + leaf pluralization live in
-         `chainStripCaption` (integrity-view.ts) so both are unit-tested. */}
-      <p className="type-caption text-fg-dim">{chainStripCaption(sealedCount, checkpointCount)}</p>
+         `chainStripCaption` (integrity-view.ts) so both are unit-tested. The
+         leaf figure is the covered-leaf count, NOT the checkpoint-line count. */}
+      <p className="type-caption text-fg-dim">{chainStripCaption(sealedCount, checkpointCount, coveredLeafCount)}</p>
     </div>
   )
 }
@@ -961,6 +973,11 @@ function IntegritySection() {
 
   // Extract from the card if present
   const checkpointCount = typeof card?.checkpoint_count === 'number' ? card.checkpoint_count : null
+  // The covered-LEAF count (host-inverted from the checkpoint's MMR node count),
+  // distinct from `checkpoint_count` (the number of checkpoint lines). The chain
+  // strip caption/shading read THIS, so a 1-line checkpoint over 8 leaves reads
+  // "8 leaves", never "1 leaves".
+  const coveredLeafCount = typeof card?.covered_leaf_count === 'number' ? card.covered_leaf_count : null
   const continuity = typeof card?.continuity === 'string' ? card.continuity : null
   const witnesses: unknown[] = Array.isArray(card?.witnesses) ? (card.witnesses as unknown[]) : []
   const witnessCount = witnesses.length
@@ -1015,7 +1032,7 @@ function IntegritySection() {
         </Button>
       </CardHeader>
       <CardContent className="flex flex-col gap-4 pt-0 text-sm text-fg-dim">
-        <ChainStrip checkpointCount={checkpointCount} sealedCount={sealedCount} />
+        <ChainStrip checkpointCount={checkpointCount} coveredLeafCount={coveredLeafCount} sealedCount={sealedCount} />
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
           <IntegrityStatCard label="Sealed" value={sealedCount} />
           <IntegrityStatCard label="Registered" value={witnessCount} />

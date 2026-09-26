@@ -165,14 +165,31 @@ describe('buildRegistrationCopy — only renders once a checkpoint exists', () =
 })
 
 describe('chainStripCaption — leaf pluralization + the three absence states', () => {
-  it('pluralizes correctly: "1 leaf", never "1 leaves"', () => {
-    expect(chainStripCaption(5, 1)).toBe('covered by checkpoint (1 leaf) · after the last checkpoint is unshaded')
-    expect(chainStripCaption(5, 3)).toBe('covered by checkpoint (3 leaves) · after the last checkpoint is unshaded')
+  it('pluralizes correctly off the COVERED-LEAF count: "1 leaf", never "1 leaves"', () => {
+    // 3rd arg is the covered-leaf count; 2nd is the checkpoint-LINE count.
+    expect(chainStripCaption(5, 1, 1)).toBe('covered by checkpoint (1 leaf) · after the last checkpoint is unshaded')
+    expect(chainStripCaption(5, 1, 3)).toBe('covered by checkpoint (3 leaves) · after the last checkpoint is unshaded')
+  })
+
+  it('renders the covered-leaf count, NOT the checkpoint-line count', () => {
+    // The bug: a SINGLE checkpoint line covering 8 leaves read "1 leaves"
+    // because the caption printed checkpoint_count. It must print the covered
+    // leaf count (8), against the live-ledger reshoot: mmr_size 15 -> 8 leaves.
+    expect(chainStripCaption(8, 1, 8)).toBe(
+      'covered by checkpoint (8 leaves) · after the last checkpoint is unshaded'
+    )
+  })
+
+  it('says so honestly when a checkpoint exists but no covered-leaf count was reported', () => {
+    // Never reprint the checkpoint-line count as if it were a leaf count.
+    expect(chainStripCaption(5, 2, null)).toBe(
+      'covered by checkpoint (covered leaf count not reported) · after the last checkpoint is unshaded'
+    )
   })
 
   it('keeps the three-state absence handling: null card is "not reported", never a false "no checkpoint yet"', () => {
-    expect(chainStripCaption(2, null)).toBe('2 entries, all sealed · checkpoint status not reported')
-    expect(chainStripCaption(1, 0)).toBe('1 entry, all sealed · no checkpoint yet · nothing here is registered')
+    expect(chainStripCaption(2, null, null)).toBe('2 entries, all sealed · checkpoint status not reported')
+    expect(chainStripCaption(1, 0, null)).toBe('1 entry, all sealed · no checkpoint yet · nothing here is registered')
   })
 })
 
