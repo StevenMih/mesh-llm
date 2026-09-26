@@ -92,16 +92,50 @@ describe('buildExchangeLedgerRows', () => {
     expect(row.checksText).toBe('pair reconciliation')
   })
 
-  it('Confirmed is the double-entry fact (theirs present and not unilateral), not registration', () => {
+  it('Confirmed derives from the ONE gate (rightCellState closed), never the retired structural theirs-present read', () => {
     const rows = buildExchangeLedgerRows(
       [
-        paneCRow({ exchange_key: 'exch-confirmed', theirs: { state: 'present', capsule_id: 't' }, unilateral: false }),
+        // Gate-closed: door-verified signature + verified digest match.
+        paneCRow({
+          exchange_key: 'exch-confirmed',
+          theirs: { state: 'present-unverified', capsule_id: 'a'.repeat(64), signature_ok: true },
+          digest_match: { state: 'verified' },
+          unilateral: false
+        }),
+        // ADVERSARIAL (the dormant second predicate, pinned dead): theirs
+        // "present" and not unilateral, but NO gate inputs -- the old
+        // `theirs.state !== 'absent' && !unilateral` read called this
+        // confirmed; the gate does not.
+        paneCRow({
+          exchange_key: 'exch-present-not-verified',
+          theirs: { state: 'present', capsule_id: 't' },
+          unilateral: false
+        }),
         paneCRow({ exchange_key: 'exch-unilateral', theirs: { state: 'absent', capsule_id: null }, unilateral: true })
       ],
       new Map()
     )
     expect(rows.find((r) => r.exchangeKey === 'exch-confirmed')?.confirmed).toBe(true)
+    expect(rows.find((r) => r.exchangeKey === 'exch-present-not-verified')?.confirmed).toBe(false)
     expect(rows.find((r) => r.exchangeKey === 'exch-unilateral')?.confirmed).toBe(false)
+  })
+
+  it('confirmed always equals rightCellState.kind === "closed" — one gate, one field, never divergent', () => {
+    const rows = buildExchangeLedgerRows(
+      [
+        paneCRow({
+          exchange_key: 'a',
+          theirs: { state: 'present-unverified', capsule_id: 'a'.repeat(64), signature_ok: true },
+          digest_match: { state: 'verified' }
+        }),
+        paneCRow({ exchange_key: 'b' }),
+        paneCRow({ exchange_key: 'c', theirs: { state: 'absent', capsule_id: null } })
+      ],
+      new Map()
+    )
+    for (const row of rows) {
+      expect(row.confirmed).toBe(row.rightCellState.kind === 'closed')
+    }
   })
 
   it('names the counterparty from the Pane B join, never inventing one when absent', () => {
@@ -110,6 +144,45 @@ describe('buildExchangeLedgerRows', () => {
     const [unnamed] = buildExchangeLedgerRows([paneCRow({ exchange_key: 'exch-2' })], index)
     expect(named.counterparty).toBe('node:aa11bb22')
     expect(unnamed.counterparty).toBeNull()
+  })
+
+  it('[mesh-citing-record-shots-four-defects] D4(a): a requester row names the peer its own record routed to (row.counterparty), still OPEN', () => {
+    const [row] = buildExchangeLedgerRows(
+      [
+        paneCRow({
+          exchange_key: 'exch-asked',
+          role_tag: 'ASKED',
+          counterparty: 'node:a70d3967bea3b22f',
+          theirs: { state: 'absent', capsule_id: null },
+          unilateral: true
+        })
+      ],
+      new Map()
+    )
+    expect(row.counterparty).toBe('node:a70d3967bea3b22f')
+    // Naming whom we asked is NOT claiming their half.
+    expect(row.confirmed).toBe(false)
+    expect(row.rightCellState.kind).toBe('open_not_asked')
+  })
+
+  it('the Pane B pair join outranks the row field; the door sender is the last resort', () => {
+    const index = new Map([['exch-1', 'node:from-pane-b']])
+    const [joined] = buildExchangeLedgerRows(
+      [paneCRow({ exchange_key: 'exch-1', counterparty: 'key:from-row' })],
+      index
+    )
+    expect(joined.counterparty).toBe('node:from-pane-b')
+
+    const [doorFallback] = buildExchangeLedgerRows(
+      [
+        paneCRow({
+          exchange_key: 'exch-2',
+          theirs: { state: 'present-unverified', capsule_id: 't', received_from: 'e5ba9d1001' }
+        })
+      ],
+      new Map()
+    )
+    expect(doorFallback.counterparty).toBe('e5ba9d1001')
   })
 })
 

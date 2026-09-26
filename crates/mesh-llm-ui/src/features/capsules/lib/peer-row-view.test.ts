@@ -23,6 +23,7 @@ import {
   matchTally,
   matchTallyText,
   meshMetaLine,
+  peerAliasLine,
   peerDisplayId,
   periodRangeText,
   peersWindowText,
@@ -74,8 +75,8 @@ function confirmedSibling(overrides: Partial<PaneBConfirmedSibling['theirs']> & 
   }
 }
 
-describe('withYouCounts', () => {
-  it('reads requested/served/confirmed from role_and_count_cell and pair_cell, never invents a field', () => {
+describe('withYouCounts — [mesh-citing-record-shots-four-defects] fold-in finding 1: confirmed comes from the ONE gate', () => {
+  it('reads requested/served from role_and_count_cell and confirmed from the gate — NEVER pair.verified', () => {
     const row = baseRow({
       role: {
         state: 'present',
@@ -85,10 +86,25 @@ describe('withYouCounts', () => {
         them_to_you_count: 12,
         exchange_count: 36
       },
-      pair: { state: 'verified', text: '', verified: 20, failed: 0, missing: 0, details: [] }
+      // ADVERSARIAL: pair.verified says 20, but no native payload populates
+      // it (always 0 live) -- the inspector Overview must not read it. The
+      // gate closes exactly the two siblings below.
+      pair: { state: 'verified', text: '', verified: 20, failed: 0, missing: 0, details: [] },
+      confirmed_siblings: [confirmedSibling(), confirmedSibling()]
     })
-    expect(withYouCounts(row)).toEqual({ requested: 24, served: 12, confirmed: 20 })
-    expect(withYouCountsText(withYouCounts(row))).toBe('24 requested · 12 served · 20 confirmed')
+    expect(withYouCounts(row)).toEqual({ requested: 24, served: 12, confirmed: 2 })
+    expect(withYouCountsText(withYouCounts(row))).toBe('24 requested · 12 served · 2 confirmed')
+  })
+
+  it('PINNED: the inspector Overview count equals the Peers table count — one predicate, one number, two surfaces', () => {
+    const rows = [
+      baseRow({ exchange_count: 6, confirmed_siblings: [confirmedSibling(), confirmedSibling(), confirmedSibling()] }),
+      baseRow({ exchange_count: 2, confirmed_siblings: [] }),
+      baseRow({ exchange_count: 4, confirmed_siblings: [confirmedSibling(), confirmedSibling({ matchState: 'failed' })] })
+    ]
+    for (const row of rows) {
+      expect(withYouCounts(row).confirmed).toBe(confirmedByOtherSide(row).confirmed)
+    }
   })
 })
 
@@ -359,6 +375,53 @@ describe('peerDisplayId — no synthetic peer', () => {
   it('prefers the row-level peer_id over the node cell id when both are present', () => {
     const row = baseRow({ peer_id: 'peer-verified', node: { state: 'present', text: null, peer_id: 'node:other' } })
     expect(peerDisplayId(row)).toBe('peer-verified')
+  })
+})
+
+describe('peerAliasLine — [mesh-citing-record-shots-four-defects] D3: aliases on ONE row, never extra peers', () => {
+  it('renders "signed by <key16> · endpoint <id>" for a key-joined peer with no node evidence', () => {
+    const row = baseRow({
+      peer_id: 'key:71eb26f8e583ccc9',
+      identity: {
+        signing_key_id: '71eb26f8e583ccc99e0ae72e1eee88ead06a81159d8e721ba98eeffe5c30550d',
+        endpoint_id: 'e5ba9d1001',
+        node_id: null
+      }
+    })
+    expect(peerAliasLine(row)).toBe('signed by 71eb26f8e583ccc9 · endpoint e5ba9d1001')
+  })
+
+  it('adds the node alias only when the evidence carries one (the bridged case)', () => {
+    const row = baseRow({
+      peer_id: 'key:71eb26f8e583ccc9',
+      identity: {
+        signing_key_id: '71eb26f8e583ccc99e0ae72e1eee88ead06a81159d8e721ba98eeffe5c30550d',
+        endpoint_id: 'e5ba9d1001',
+        node_id: `a70d3967bea3b22f${'a'.repeat(48)}`
+      }
+    })
+    expect(peerAliasLine(row)).toBe('signed by 71eb26f8e583ccc9 · node a70d3967bea3b22f… · endpoint e5ba9d1001')
+  })
+
+  it('labels the UNLINKED node-id row honestly — the id is from our own records, no signing key linked yet', () => {
+    const row = baseRow({
+      peer_id: 'node:a70d3967bea3b22f',
+      identity: { signing_key_id: null, endpoint_id: null, node_id: `a70d3967bea3b22f${'a'.repeat(48)}` }
+    })
+    expect(peerAliasLine(row)).toBe('node id from your own records — no signing key linked yet')
+  })
+
+  it('degrades to null (no line, never a fabricated identity) when the row carries no identity evidence', () => {
+    expect(peerAliasLine(baseRow())).toBeNull()
+    expect(peerAliasLine(baseRow({ identity: null }))).toBeNull()
+  })
+
+  it('the dealt-with view carries the alias line; an advertised-only view never does', () => {
+    const row = baseRow({
+      identity: { signing_key_id: 'ab'.repeat(32), endpoint_id: 'e5ba9d1001', node_id: null }
+    })
+    expect(dealtWithRowView(row).aliasLine).toBe(`signed by ${'ab'.repeat(8)} · endpoint e5ba9d1001`)
+    expect(advertisedOnlyRowView('node:unused').aliasLine).toBeNull()
   })
 })
 

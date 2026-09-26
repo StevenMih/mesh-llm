@@ -21,12 +21,16 @@ import {
 import type { ExchangeLedgerRow } from '@/features/capsules/lib/exchange-ledger'
 import { exchangeRowDomId } from '@/features/capsules/lib/exchange-pages'
 import {
+  bracketStrip,
+  bracketStripText,
+  closedPropertyCells,
   deriveRightCellState,
   isAlarmState,
   isAskAction,
   rightCellAction,
   rightCellStatusLabel,
-  rightCellText
+  rightCellText,
+  rowStateMarker
 } from '@/features/capsules/lib/exchange-row-state'
 import type { RailSegment } from '@/features/capsules/lib/exchange-stream'
 import { useRecomputedIdentity, usePeerLedgerRecompute } from '@/features/capsules/lib/recompute-identity'
@@ -124,8 +128,14 @@ export function ExchangeStreamRow({
   // itself must always be called (rules of hooks), but its effect no-ops on
   // a `null` record, so collapsed rows never pay for a fetch+verify.
   const identity = useRecomputedIdentity(checksExpanded ? localRecord : null, nodePubKeyPem)
-  // L-O -- served rows render a distinct marker and never a rail.
-  const marker = row.roleTag === 'SERVED' ? '◐' : '●'
+  // [mesh-citing-record-shots-four-defects] D4(b): the glyph draws the
+  // EXCHANGE state (both halves held -> ●, one half -> ◐) -- the role is
+  // stated in words below, never by glyph. (L-O's served-rows-carry-no-rail
+  // rule is unchanged; it lives in `buildRailSegments`.)
+  const marker = rowStateMarker(state)
+  // The design's bracket strip (double-entry design §7) -- how the state is
+  // drawn: `{ yours ● } ⟷ { theirs ● }`. Same state the badge renders.
+  const strip = bracketStripText(bracketStrip(row.raw, state))
 
   return (
     <div className="flex flex-col" id={exchangeRowDomId(row.exchangeKey)}>
@@ -173,7 +183,25 @@ export function ExchangeStreamRow({
             </p>
           </div>
           <div className="flex flex-col gap-1.5 px-3 py-2">
-            <p className="text-xs text-fg-dim">{cellText}</p>
+            <p aria-hidden="true" className="font-mono text-[11px] text-fg-faint">
+              {strip}
+            </p>
+            {state.kind === 'closed' ? (
+              // D4(d): CLOSED renders per-property cells, not one sentence --
+              // each cell restates a fact the gate's own inputs established.
+              <div className="flex flex-wrap gap-1" data-closed-property-cells="true">
+                {closedPropertyCells(row.raw).map((cell) => (
+                  <span
+                    className="rounded border border-border-soft px-1.5 py-0.5 font-mono text-[11px] text-fg-dim"
+                    key={cell}
+                  >
+                    {cell}
+                  </span>
+                ))}
+              </div>
+            ) : (
+              <p className="text-xs text-fg-dim">{cellText}</p>
+            )}
             {action ? (
               <Button
                 className="ui-control h-7 w-fit gap-1 rounded-[var(--radius)] px-2 text-[length:var(--density-type-caption)]"

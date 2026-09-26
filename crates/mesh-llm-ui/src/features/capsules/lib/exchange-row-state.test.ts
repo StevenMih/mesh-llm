@@ -262,7 +262,7 @@ describe('deriveRightCellState — bilateral-retention-decay-property (agent-act
   })
 })
 
-describe('deriveRightCellState — all seven states reachable', () => {
+describe('deriveRightCellState — all eight states reachable', () => {
   it('signed_refusal evidence_outcome -> open_refused, carrying its date', () => {
     const row = paneCRow({
       theirs: { state: 'absent', capsule_id: null, evidence_outcome: 'signed_refusal', evidence_outcome_date: '4 Sep' }

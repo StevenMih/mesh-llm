@@ -1,9 +1,10 @@
 // The two-sided Ledger row's right-cell state ([mesh-ledger-b2-two-sided-
-// row]). Seven states -- v3 §2's table enumerates six ("closed"/
+// row]). Eight states -- v3 §2's table enumerates six ("closed"/
 // "contradicted"/refused/absent/asked/not-asked), plus `open_not_held`
-// added by [mesh-console-evidence-tab-honesty-defects] finding 1: a
-// peer-asserted capsule id with no bytes fetched yet is its own honest
-// state, not a fast path into `closed`.
+// ([mesh-console-evidence-tab-honesty-defects] finding 1: a peer-asserted
+// capsule id with no bytes fetched yet is its own honest state, not a fast
+// path into `closed`) and `open_not_given` (a non-digest correlation marker
+// is nothing fetchable, not a fetch waiting to happen).
 import type { PaneCRow } from '@/features/capsules/api/sidecarTypes'
 import type { CapsuleRecord } from '@/features/capsules/api/types'
 import { isDigestShaped } from '@/features/capsules/lib/canonical'
@@ -193,6 +194,73 @@ export function deriveRightCellState(
 
 function dateOrFallback(date: string | null): string {
   return date ?? 'date unavailable'
+}
+
+// ---------------------------------------------------------------------------
+// Row glyph + bracket strip ([mesh-citing-record-shots-four-defects] D4(b),
+// mesh-evidence-tab-double-entry-design-2026-09-23 §7). The row's lone glyph
+// draws the EXCHANGE state -- the role is stated in words ("you asked"/"you
+// served", v3 §2), never by glyph: both halves held (closed/contradicted) is
+// the filled, complete glyph; one half is the half glyph. The strip is how
+// the state is *drawn* -- "left bracket always solid (we always have ours);
+// right bracket is the state; the arrow between is the handshake". Glyphs:
+// `◌` nothing · `◔` id known, bytes not held · `●` held · `◐` incomplete ·
+// `⊘` refused · `≠` contradicted. Pure derivations from the SAME row + state
+// the badge renders -- never a new predicate.
+// ---------------------------------------------------------------------------
+
+/** CLOSED/CONTRADICTED (both halves held) -> `●`; every OPEN state -> `◐`. */
+export function rowStateMarker(state: RightCellState): string {
+  return state.kind === 'closed' || state.kind === 'contradicted' ? '●' : '◐'
+}
+
+export type BracketStrip = { yours: string; arrow: string; theirs: string }
+
+export function bracketStrip(row: PaneCRow, state: RightCellState): BracketStrip {
+  // Ours is solid whenever our half is held; `◌` only for the received-
+  // without-a-commitment row shape (`mine.state === 'absent'`).
+  const yours = row.mine.state === 'absent' ? '◌' : '●'
+  switch (state.kind) {
+    case 'closed':
+      return { yours, arrow: '⟷', theirs: '●' }
+    case 'contradicted':
+      return { yours, arrow: '⇄≠', theirs: '●' }
+    case 'open_refused':
+      return { yours, arrow: '⇥', theirs: '⊘' }
+    case 'open_asked':
+      return { yours, arrow: '⇢', theirs: '◌' }
+    case 'open_not_held':
+      // The honest rendering of a peer-asserted id: known, bytes not held.
+      return { yours, arrow: '→', theirs: '◔' }
+    case 'open_absent':
+    case 'open_not_given':
+    case 'open_not_asked':
+      return { yours, arrow: '→', theirs: '◌' }
+    default: {
+      const exhaustiveCheck: never = state.kind
+      return exhaustiveCheck
+    }
+  }
+}
+
+export function bracketStripText(strip: BracketStrip): string {
+  return `{ yours ${strip.yours} } ${strip.arrow} { theirs ${strip.theirs} }`
+}
+
+/** [mesh-citing-record-shots-four-defects] D4(d): the CLOSED right column as
+ *  compact per-property cells -- their id · signature ✓ · request digest = ·
+ *  response digest =. Rendered ONLY when the ONE gate already returned
+ *  `closed`, i.e. each cell restates a fact the gate's own inputs
+ *  established (`signatureOk === true`, both digests cite our half) -- no
+ *  second predicate, no re-derivation. */
+export function closedPropertyCells(row: PaneCRow): string[] {
+  const theirId = row.theirs.capsule_id
+  return [
+    theirId ? `their id ${theirId.slice(0, 12)}…` : 'their id —',
+    'signature ✓',
+    'request digest =',
+    'response digest ='
+  ]
 }
 
 /** The right cell's rendered sentence. Every OPEN variant reads as a

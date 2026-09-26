@@ -74,6 +74,10 @@ export function PeerTableRow({
         <TableCell>
           <div className="flex flex-col items-start gap-1.5">
             <span className="truncate font-mono text-sm font-medium text-foreground">{view.displayId}</span>
+            {/* [mesh-citing-record-shots-four-defects] D3: the peer's other
+               id spaces render as ALIASES on this one row -- signing key ·
+               node · endpoint -- never as extra peer rows. */}
+            {view.aliasLine ? <span className="font-mono text-fg-faint text-xs">{view.aliasLine}</span> : null}
             <span className="text-fg-faint text-xs">{view.identityNote}</span>
             {/* Always rendered, whether or not the inspector is open --
                chooser-v2 §3-F: "⚠ alarm chip visible while collapsed". The

@@ -16,15 +16,19 @@ export type ExchangeLedgerRow = {
   roleTag: string
   counterparty: string | null
   /** The double-entry differentiator (not registration, which is a range
-   *  fact that belongs on Integrity, never per-row). */
+   *  fact that belongs on Integrity, never per-row). Derived from the ONE
+   *  gate (`rightCellState.kind === 'closed'`), never a second structural
+   *  predicate -- the old `theirs.state !== 'absent' && !unilateral` read
+   *  was a dormant CLOSED-ish overclaim the gate never authorized. */
   confirmed: boolean
   hasIssue: boolean
   /** Exceptions-first, NEVER a count — "—" when clean, else the specific
    *  failing property name(s), or the pair-reconciliation fallback when
    *  `has_issue` is driven by that check rather than a named property. */
   checksText: string
-  /** The right cell's one of six states (v3 §2) -- see
-   *  `exchange-row-state.ts` for the derivation and its honesty limits. */
+  /** The right cell's one of eight states (v3 §2's six + not-held/
+   *  not-given) -- see `exchange-row-state.ts` for the derivation and its
+   *  honesty limits. */
   rightCellState: RightCellState
   /** Toggle ① content state (v3 §3) -- see `exchange-content-state.ts`. */
   contentToggleState: ContentToggleState
@@ -90,24 +94,34 @@ export function buildExchangeLedgerRows(
   rows: readonly PaneCRow[],
   counterpartyIndex: ReadonlyMap<string, string>
 ): ExchangeLedgerRow[] {
-  return rows.map((row) => ({
-    exchangeKey: row.exchange_key,
-    timestamp: row.timestamp,
-    roleTag: row.role_tag,
-    // Prefer the Pane B pair-reconciliation join, but fall back to the sender
-    // the record-push door recorded for a locally-held counterparty half -- a
-    // row whose CLOSED state cites that half must name whose half it is.
-    counterparty: counterpartyIndex.get(row.exchange_key) ?? pushedHalfCounterparty(row),
-    confirmed: row.theirs.state !== 'absent' && !row.unilateral,
-    hasIssue: row.has_issue,
-    checksText: checksTextFor(row),
-    rightCellState: deriveRightCellState(row),
-    contentToggleState: deriveContentToggleState(row),
-    // L-O -- a served row structurally has no session (this node was never
-    // party to the requester's conversation), regardless of what the
-    // record carries.
-    sessionId: row.role_tag === 'ASKED' ? (row.session_id ?? null) : null,
-    twinBracketId: row.twin_bracket_id ?? null,
-    raw: row
-  }))
+  return rows.map((row) => {
+    const rightCellState = deriveRightCellState(row)
+    return {
+      exchangeKey: row.exchange_key,
+      timestamp: row.timestamp,
+      roleTag: row.role_tag,
+      // Prefer the Pane B pair-reconciliation join; then the row's own
+      // `counterparty` (the native pane's peer attribution -- names the
+      // server a requester-side row routed to, and uses the SAME row key as
+      // the Peers table, [mesh-citing-record-shots-four-defects] D4(a));
+      // last, the sender the record-push door recorded for a locally-held
+      // counterparty half (older payloads without the row field).
+      counterparty: counterpartyIndex.get(row.exchange_key) ?? row.counterparty ?? pushedHalfCounterparty(row),
+      // Derived from the ONE gate -- `closed` is the only state where their
+      // half is held, signed, and cites ours. The retired structural read
+      // (`theirs.state !== 'absent' && !unilateral`) was a dormant second
+      // CLOSED-ish predicate; nothing may re-grow one.
+      confirmed: rightCellState.kind === 'closed',
+      hasIssue: row.has_issue,
+      checksText: checksTextFor(row),
+      rightCellState,
+      contentToggleState: deriveContentToggleState(row),
+      // L-O -- a served row structurally has no session (this node was never
+      // party to the requester's conversation), regardless of what the
+      // record carries.
+      sessionId: row.role_tag === 'ASKED' ? (row.session_id ?? null) : null,
+      twinBracketId: row.twin_bracket_id ?? null,
+      raw: row
+    }
+  })
 }

@@ -221,6 +221,15 @@ pub(super) struct ReceivedProvenance {
     via: String,
     received_at: String,
     signature_ok: bool,
+    /// [mesh-citing-record-shots-four-defects] The pushing peer's mesh NODE id,
+    /// when the citing record carries it (`received_half.received_from_node_id`
+    /// -- sender-node-id capture at the receive door is landing in
+    /// capsule-emit-mesh; ledgers written before that have no such field).
+    /// This is the ONLY evidence-backed bridge between the endpoint-id and
+    /// node-id spaces for a peer that ASKED us: when present, the peer's
+    /// node-id alias merges rows with no further code change here; when
+    /// absent, no bridge is invented.
+    received_from_node_id: Option<String>,
 }
 
 /// [mesh-received-half-is-a-citing-record] Reads the held-artifact store
@@ -297,6 +306,11 @@ fn received_half_provenance(citing: &Value) -> Option<ReceivedProvenance> {
             .unwrap_or_default()
             .to_string(),
         signature_ok: true,
+        received_from_node_id: rh
+            .get("received_from_node_id")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty() && *s != "unknown")
+            .map(str::to_string),
     })
 }
 
@@ -749,6 +763,7 @@ fn dealt_with_row(
     records: &[Value],
     siblings_by_key: &HashMap<String, Vec<CorrelatedSibling<'_>>>,
     received_provenance: &HashMap<String, ReceivedProvenance>,
+    identity: Option<&PeerIdentity>,
 ) -> Value {
     let (first_seen, last_seen) = seen_range(records);
     let total = records.len();
@@ -771,6 +786,11 @@ fn dealt_with_row(
     };
     json!({
         "peer_id": label,
+        // [mesh-citing-record-shots-four-defects] D3: the alias evidence for
+        // this row -- signing key / endpoint id / node id, each present only
+        // when a record actually carries it. The UI renders these as one
+        // row's aliases, never as extra peers.
+        "identity": identity_json(identity),
         "node": {
             "state": CELL_PRESENT,
             "text": format!("dealt with {label} in {total} exchange(s) — {half_state}"),
@@ -845,6 +865,7 @@ fn unattributed_row(
     };
     json!({
         "peer_id": Value::Null,
+        "identity": Value::Null,
         "node": {
             "state": STATE_ABSENT,
             "text": format!(
@@ -924,35 +945,49 @@ pub(super) fn build_pane_b(
     // a peer's own record can find the foreign half that closes it -- the SAME
     // digest-first correlator Pane C groups on, never a peer-label match.
     let siblings_by_key = received_siblings_by_key(records, received_provenance);
-    // The peer each correlated exchange belongs to, resolved through the door's
-    // provenance ([mesh-closed-pane-b-sibling-attribution]): both the received
-    // sibling AND the local half it correlates with attribute here, so a
-    // confirmed sibling lands in its real peer's row and never the null group a
-    // `role: served` local half's own (absent) label would drop it into.
-    let sibling_peer_by_key = sibling_peer_by_key(&siblings_by_key);
+    // [mesh-citing-record-shots-four-defects] D3: ONE row per peer, joined on
+    // the signing key ([`peer_attribution`]), with node id / endpoint id as
+    // aliases. Both the received sibling AND the local half it correlates with
+    // attribute to that one row ([mesh-closed-pane-b-sibling-attribution]'s
+    // fix, preserved); a `node:`-labeled local group merges onto a signing-key
+    // row only when the evidence carries the same node id.
+    let mut attribution = peer_attribution(&siblings_by_key);
     // BTreeMap: deterministic (sorted) peer ordering; attributed peers first,
     // the unattributed residual last -- so an all-unattributed ledger yields
     // exactly the prior single-row output (rows[0] == the residual).
     let mut by_peer: std::collections::BTreeMap<String, Vec<Value>> = std::collections::BTreeMap::new();
     let mut unattributed: Vec<Value> = Vec::new();
     for record in records {
-        // A record that takes part in a correlated cross-node exchange (its own
-        // half or the pushed sibling's) attributes to the peer that pushed the
-        // sibling -- the door-verified `received_from`/node-id join, not the
-        // local half's own counterparty label (which is `None` for a served
-        // half). Falls back to `counterparty_peer_label` for records with no
-        // received sibling on their exchange (unchanged behaviour).
-        let label = exchange_key_for(record)
-            .and_then(|key| sibling_peer_by_key.get(&key).cloned())
-            .or_else(|| counterparty_peer_label(record));
-        match label {
-            Some(label) => by_peer.entry(label).or_default().push(record.clone()),
+        match attribution.row_key_for(record) {
+            Some(label) => {
+                // A plain `node:`-labeled row (no sibling evidence) still
+                // carries its FULL node id as identity evidence -- this
+                // node's own record names it, and the exact id (never a
+                // truncation) is what future evidence can merge on.
+                if label.starts_with("node:") && !attribution.identity_by_row_key.contains_key(&label)
+                    && let Some(full_node_id) = full_counterparty_node_id(record)
+                {
+                    attribution.identity_by_row_key.insert(
+                        label.clone(),
+                        PeerIdentity { node_id: Some(full_node_id), ..PeerIdentity::default() },
+                    );
+                }
+                by_peer.entry(label).or_default().push(record.clone());
+            }
             None => unattributed.push(record.clone()),
         }
     }
     let mut rows: Vec<Value> = by_peer
         .iter()
-        .map(|(label, group)| dealt_with_row(label, group, &siblings_by_key, received_provenance))
+        .map(|(label, group)| {
+            dealt_with_row(
+                label,
+                group,
+                &siblings_by_key,
+                received_provenance,
+                attribution.identity_by_row_key.get(label),
+            )
+        })
         .collect();
     if !unattributed.is_empty() {
         rows.push(unattributed_row(
@@ -980,50 +1015,196 @@ struct CorrelatedSibling<'a> {
     provenance: &'a ReceivedProvenance,
 }
 
-/// The peer-row a received foreign SIBLING belongs to -- the fix for
-/// [mesh-closed-pane-b-sibling-attribution]. A pushed sibling and the peer-row
-/// key live in TWO id spaces: the peer row is keyed by the mesh NODE-ID
-/// (`counterparty_peer_label` -> `node:<served_by_node_id>`), but a pushed
-/// sibling records only the door's `received_from` -- the pushing peer's stable
-/// *peer-id* (`record_push`'s `sender_peer_id`, verified against
-/// `peer_keys.announced_key_for`), NOT its node-id. The prior reader attributed
-/// a confirmed sibling by the LOCAL half's own label, so it landed on whatever
-/// row that half fell into -- which is the null/unattributed group whenever
-/// this node SERVED (a `role: served` local half names no counterparty). That
-/// is the observed live bug: three confirmed siblings under `peer_id: null`
-/// while the real peer rows show `confirmed_siblings: 0`.
-///
-/// Attribute the sibling by the peer that PUSHED it, choosing the id space by
-/// the sibling's own role -- which unambiguously says whose node-id
-/// `served_by_node_id` is:
-///   1. **Peer served us (`role: served`) -> mesh node-id.** The sibling's
-///      `served_by_node_id` IS the peer (the provider), a real mesh node-id
-///      that matches the peer-row key directly (`counterparty_peer_label`'s
-///      tier 2). Use `node:<served_by_node_id[:16]>`.
-///   2. **Peer asked us (`role: requested`, or any other) -> `received_from`.**
-///      The peer's requester-half names US in `served_by_node_id` (the server),
-///      never itself (it records `requesting_party: unknown`), so the only peer
-///      identity on this record is the door's `received_from`. Key the row
-///      `node:<received_from>` -- the same `node:` convention, so a local half
-///      that independently names this same id merges onto one row.
-///
-/// A sibling with no usable identity in either space is genuinely
-/// unattributable and stays in the null group honestly.
-fn sibling_peer_label(sibling: &Value, provenance: &ReceivedProvenance) -> Option<String> {
-    if label_role(sibling) == "served"
-        && let Some(served_by) = poc_block(sibling)
-            .and_then(|poc| poc.get("serving_provenance"))
-            .and_then(|sp| sp.get("served_by_node_id"))
+/// [mesh-citing-record-shots-four-defects] The evidence-backed identity of ONE
+/// peer, joined on the SIGNING KEY (Steven's ruling: the announcing key is the
+/// sealing key -- the pushed body's `key_id` is what actually signed the
+/// halves), with the endpoint id (the door's `received_from`) and the mesh
+/// node id carried as ALIASES on the same row. Every field is read off
+/// evidence this reader actually holds:
+///   - `signing_key_id`: the resolved foreign body's own `key_id`. The door
+///     verified it against the announced peer key (`peer_keys.
+///     announced_key_for(received_from)`) BEFORE the provenance line/citing
+///     record was ever written, so `received_from <-> key_id` is
+///     door-verified, not a guess.
+///   - `endpoint_id`: the door's `received_from` (the plugin's stable peer
+///     id -- NOT a node id; the prior reader's `node:<received_from>` label
+///     mislabeled the id space, which is exactly how one live peer rendered
+///     as two rows).
+///   - `node_id`: only when a record actually names one -- the citing
+///     record's `received_from_node_id` (once the receive door captures it),
+///     or a pushed SERVED half's own `served_by_node_id` (the provider names
+///     itself). Never bridged by assumption.
+#[derive(Clone, Default)]
+struct PeerIdentity {
+    signing_key_id: Option<String>,
+    endpoint_id: Option<String>,
+    node_id: Option<String>,
+}
+
+impl PeerIdentity {
+    /// Union of two evidence sets for the same peer row -- first evidence
+    /// wins per field; nothing is overwritten, nothing invented.
+    fn merge(&mut self, other: PeerIdentity) {
+        if self.signing_key_id.is_none() {
+            self.signing_key_id = other.signing_key_id;
+        }
+        if self.endpoint_id.is_none() {
+            self.endpoint_id = other.endpoint_id;
+        }
+        if self.node_id.is_none() {
+            self.node_id = other.node_id;
+        }
+    }
+}
+
+/// The identity evidence one received (provenance-carrying) sibling supplies.
+/// Replaces the retired `sibling_peer_label` ([mesh-closed-pane-b-sibling-
+/// attribution]), which keyed rows by `node:<received_from>` -- an endpoint id
+/// passed off as a node id, the exact id-space mislabeling behind the live
+/// one-peer-two-rows defect ([mesh-citing-record-shots-four-defects] D3).
+fn sibling_peer_identity(sibling: &Value, provenance: &ReceivedProvenance) -> PeerIdentity {
+    let signing_key_id = sibling
+        .get("key_id")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    let endpoint_id = Some(provenance.received_from.trim())
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    let node_id = provenance.received_from_node_id.clone().or_else(|| {
+        if label_role(sibling) == "served" {
+            poc_block(sibling)
+                .and_then(|poc| poc.pointer("/serving_provenance/served_by_node_id"))
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty() && *s != "unknown")
+                .map(str::to_string)
+        } else {
+            None
+        }
+    });
+    PeerIdentity { signing_key_id, endpoint_id, node_id }
+}
+
+/// The peer ROW key for an identity: signing key first (the join ruling),
+/// node id next (the same `node:<short16>` space `counterparty_peer_label`
+/// uses, so a local half naming the same node merges onto this row), endpoint
+/// id last -- labeled as what it IS (`endpoint:`), never passed off as a node
+/// id. `None` when no identity evidence exists at all.
+fn peer_row_key(identity: &PeerIdentity) -> Option<String> {
+    if let Some(key) = &identity.signing_key_id {
+        return Some(format!("key:{}", short_id(key, 16)));
+    }
+    if let Some(node) = &identity.node_id {
+        return Some(format!("node:{}", short_id(node, 16)));
+    }
+    identity
+        .endpoint_id
+        .as_ref()
+        .map(|endpoint| format!("endpoint:{endpoint}"))
+}
+
+/// The FULL counterparty node id behind a `node:`-shaped label, read off the
+/// same fields `counterparty_peer_label` reads (tier 2/3) -- kept full-length
+/// so a row can carry it as identity evidence (aliases are exact ids, never
+/// truncations). `None` when the record names no distinct node.
+fn full_counterparty_node_id(record: &Value) -> Option<String> {
+    let poc = poc_block(record)?;
+    let sp = poc.get("serving_provenance")?;
+    if poc.get("role").and_then(Value::as_str) == Some("requested")
+        && let Some(served_by) = sp
+            .get("served_by_node_id")
             .and_then(Value::as_str)
             .filter(|s| !s.is_empty() && *s != "unknown")
     {
-        return Some(format!("node:{}", short_id(served_by, 16)));
+        return Some(served_by.to_string());
     }
-    let received_from = provenance.received_from.trim();
-    if received_from.is_empty() {
-        return None;
+    sp.get("requesting_party")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty() && *s != "unknown")
+        .map(str::to_string)
+}
+
+/// The one attribution join both Pane B and Pane C's `counterparty` field
+/// read, so the two panes can never name the same peer differently.
+struct PeerAttribution {
+    /// exchange key -> the pushing peer's row key (via `sibling_peer_identity`).
+    row_key_by_exchange_key: HashMap<String, String>,
+    /// row key -> merged identity evidence (aliases).
+    identity_by_row_key: HashMap<String, PeerIdentity>,
+    /// short16(node id) -> row key, for bridging a `node:`-labeled local
+    /// group onto a signing-key row -- populated ONLY from evidence-backed
+    /// node aliases, so the bridge exists exactly when the evidence does.
+    node_alias_to_row_key: HashMap<String, String>,
+}
+
+fn peer_attribution(siblings_by_key: &HashMap<String, Vec<CorrelatedSibling<'_>>>) -> PeerAttribution {
+    let mut attribution = PeerAttribution {
+        row_key_by_exchange_key: HashMap::new(),
+        identity_by_row_key: HashMap::new(),
+        node_alias_to_row_key: HashMap::new(),
+    };
+    for (key, siblings) in siblings_by_key {
+        // A single exchange key correlates one counterparty half; take the
+        // first sibling whose evidence resolves to any identity at all.
+        let Some((row_key, identity)) = siblings.iter().find_map(|sibling| {
+            let identity = sibling_peer_identity(sibling.record, sibling.provenance);
+            peer_row_key(&identity).map(|row_key| (row_key, identity))
+        }) else {
+            continue;
+        };
+        attribution
+            .row_key_by_exchange_key
+            .insert(key.clone(), row_key.clone());
+        attribution
+            .identity_by_row_key
+            .entry(row_key)
+            .or_default()
+            .merge(identity);
     }
-    Some(format!("node:{received_from}"))
+    for (row_key, identity) in &attribution.identity_by_row_key {
+        if let Some(node) = &identity.node_id {
+            attribution
+                .node_alias_to_row_key
+                .insert(short_id(node, 16), row_key.clone());
+        }
+    }
+    attribution
+}
+
+impl PeerAttribution {
+    /// The peer row a record belongs to: its exchange's pushed-sibling
+    /// identity first (the door-verified join); else its own counterparty
+    /// label, BRIDGED onto a signing-key row if -- and only if -- that row's
+    /// evidence carries the same node id. No evidence, no bridge: an
+    /// unlinked `node:` label stays its own (honestly labeled) row.
+    fn row_key_for(&self, record: &Value) -> Option<String> {
+        if let Some(key) = exchange_key_for(record)
+            && let Some(row_key) = self.row_key_by_exchange_key.get(&key)
+        {
+            return Some(row_key.clone());
+        }
+        let label = counterparty_peer_label(record)?;
+        if let Some(node_short) = label.strip_prefix("node:")
+            && let Some(row_key) = self.node_alias_to_row_key.get(node_short)
+        {
+            return Some(row_key.clone());
+        }
+        Some(label)
+    }
+}
+
+/// The row's `identity` cell -- the alias evidence the UI renders as
+/// "signed by <key> · node <id> · endpoint <id>". `null` (never `{}`) for a
+/// row with no identity evidence beyond its own label.
+fn identity_json(identity: Option<&PeerIdentity>) -> Value {
+    match identity {
+        Some(identity) => json!({
+            "signing_key_id": identity.signing_key_id,
+            "endpoint_id": identity.endpoint_id,
+            "node_id": identity.node_id,
+        }),
+        None => Value::Null,
+    }
 }
 
 /// Indexes every received (provenance-carrying) foreign sibling by its
@@ -1049,33 +1230,6 @@ fn received_siblings_by_key<'a>(
         map.entry(key)
             .or_default()
             .push(CorrelatedSibling { record, provenance });
-    }
-    map
-}
-
-/// The peer-row every correlated exchange belongs to, keyed by `exchange_key_for`
-/// -- the fix's attribution join ([mesh-closed-pane-b-sibling-attribution]).
-/// For each exchange that has a received (provenance-carrying) foreign sibling,
-/// `sibling_peer_label` names the peer that PUSHED it (mesh node-id when the
-/// peer served us, door `received_from` when it asked us). `build_pane_b` uses
-/// this to attribute BOTH the received sibling AND the local half it correlates
-/// with to that one peer, so a confirmed sibling lands in its real peer's row
-/// rather than the null group a `role: served` local half would otherwise fall
-/// into. An exchange with no received sibling is absent here -- its local half
-/// keeps its own `counterparty_peer_label` attribution, unchanged.
-fn sibling_peer_by_key(
-    siblings_by_key: &HashMap<String, Vec<CorrelatedSibling<'_>>>,
-) -> HashMap<String, String> {
-    let mut map: HashMap<String, String> = HashMap::new();
-    for (key, siblings) in siblings_by_key {
-        // A single exchange key correlates one counterparty half; take the
-        // first that resolves to a peer identity (they share `received_from`).
-        if let Some(label) = siblings
-            .iter()
-            .find_map(|s| sibling_peer_label(s.record, s.provenance))
-        {
-            map.insert(key.clone(), label);
-        }
     }
     map
 }
@@ -1189,6 +1343,14 @@ pub(super) fn build_pane_c_list(
                 .is_some_and(|id| received_provenance.contains_key(id))
         };
 
+    // [mesh-citing-record-shots-four-defects] D4(a): the SAME peer attribution
+    // Pane B rows use, so an Exchanges row and the Peers table can never name
+    // one peer differently. A requester-side OPEN row names the peer its own
+    // record routed to (`served_by_node_id`) -- naming whom we asked is not a
+    // claim to hold their half; the right cell still says OPEN.
+    let siblings_by_key = received_siblings_by_key(records, received_provenance);
+    let attribution = peer_attribution(&siblings_by_key);
+
     let mut rows = Vec::new();
     for exchange_key in order {
         let group = &groups[&exchange_key];
@@ -1243,9 +1405,16 @@ pub(super) fn build_pane_c_list(
             _ => json!({ "state": STATE_ABSENT }),
         };
 
+        // The named counterparty, when this row's own evidence names one:
+        // the pushed sibling's identity row key, or the anchor record's own
+        // `counterparty_peer_label` (a requester half names the server it
+        // routed to). `null` when no record names a peer -- never invented.
+        let counterparty = attribution.row_key_for(anchor);
+
         rows.push(json!({
             "exchange_key": exchange_key,
             "role_tag": role_tag(anchor),
+            "counterparty": counterparty,
             // `header_state`/`properties`/`has_issue` need the nine-key
             // assurance map (`build_assurance_map`), which is cryptographic
             // re-verification -- out of this cut (module docs gap 2). The
@@ -1386,8 +1555,31 @@ mod tests {
                 via: "push".to_string(),
                 received_at: "2026-09-25T00:00:01Z".to_string(),
                 signature_ok: true,
+                received_from_node_id: None,
             },
         )
+    }
+
+    /// [mesh-citing-record-shots-four-defects] a provenance line whose citing
+    /// record carried the sender's mesh node id (`received_from_node_id`, the
+    /// receive-door capture landing in capsule-emit-mesh) -- the
+    /// evidence-backed endpoint-id <-> node-id bridge.
+    fn provenance_with_node(
+        capsule_id: &str,
+        received_from: &str,
+        node_id: &str,
+    ) -> (String, ReceivedProvenance) {
+        let (id, mut prov) = provenance_for(capsule_id, received_from);
+        prov.received_from_node_id = Some(node_id.to_string());
+        (id, prov)
+    }
+
+    /// A sealed capsule always carries the raw pubkey hex that signed it --
+    /// `key_id` at the record's top level (the producer's emission). Fixtures
+    /// add it explicitly where a test exercises the signing-key join.
+    fn with_key(mut record: Value, key_id: &str) -> Value {
+        record["key_id"] = json!(key_id);
+        record
     }
 
     /// A cross-node mesh half -- same shape as capsule-emit-mesh's
@@ -1732,15 +1924,19 @@ mod tests {
     /// `served_by_node_id` = SELF, so no counterparty label of its own) and the
     /// peer pushed its requester half (`role: requested`, `served_by_node_id` =
     /// SELF, provenance `received_from` = the peer's stable id). The confirmed
-    /// sibling MUST land in the pushing peer's row (`node:<received_from>`),
-    /// which shows confirmed/clean, and the null group must be EMPTY -- not the
-    /// prior `confirmed_siblings: 3 under peer_id: null` while the peer showed 0.
+    /// sibling MUST land in the pushing peer's row -- keyed by the door's
+    /// endpoint id and LABELED as one (`endpoint:<received_from>`, never the
+    /// old `node:<received_from>` id-space mislabeling
+    /// [mesh-citing-record-shots-four-defects] D3) -- which shows
+    /// confirmed/clean, and the null group must be EMPTY -- not the prior
+    /// `confirmed_siblings: 3 under peer_id: null` while the peer showed 0.
     /// MUTANT: revert to attributing by the local half's own label and the
     /// sibling falls back into the null group -- both asserts go red.
     #[test]
     fn pane_b_attributes_a_served_sides_pushed_sibling_to_the_pushing_peer_not_the_null_group() {
         // `me-node` is THIS node's id (the server the peer named); `m3` is the
-        // peer's door `received_from`. Neither half carries the peer's node-id.
+        // peer's door `received_from`. Neither half carries the peer's node-id
+        // or its signing key, so the endpoint id is the only honest row key.
         let local_served = mesh_half_served_by(
             "a".repeat(64).as_str(), "served",
             "d".repeat(64).as_str(), "e".repeat(64).as_str(), "me-914b61c1", "me-node");
@@ -1754,15 +1950,20 @@ mod tests {
         let rows = pane["rows"].as_array().unwrap();
 
         // The confirmed sibling attributes to the pushing peer, keyed by the
-        // door's `received_from` -- not a self row, not the null group.
+        // door's `received_from` in its OWN id space -- not a self row, not
+        // the null group, and never labeled `node:`.
         let peer = rows
             .iter()
-            .find(|r| r["peer_id"] == json!("node:m3"))
+            .find(|r| r["peer_id"] == json!("endpoint:m3"))
             .expect("the pushing peer (received_from) gets a row");
         let siblings = peer["confirmed_siblings"].as_array().unwrap();
         assert_eq!(siblings.len(), 1, "the confirmed sibling lands in the peer's row");
         assert_eq!(siblings[0]["theirs"]["received_from"], json!("m3"));
         assert_eq!(siblings[0]["digest_match"]["state"], json!(STATE_VERIFIED));
+        assert!(
+            !rows.iter().any(|r| r["peer_id"] == json!("node:m3")),
+            "an endpoint id is never passed off as a node id"
+        );
 
         // No unattributed residual carrying a confirmed sibling -- the null
         // group is empty (both halves of the exchange attributed to the peer).
@@ -1806,6 +2007,177 @@ mod tests {
             residual["confirmed_siblings"].as_array().unwrap().len(),
             1,
             "a genuinely unattributable sibling stays in the null group, not dropped"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // [mesh-citing-record-shots-four-defects] Defect 3 -- one peer rendered
+    // as two. Peer identity joins on the SIGNING KEY (the pushed body's
+    // `key_id`, door-verified against the announced peer key), with the
+    // endpoint id and node id as aliases on ONE row. No evidence-backed
+    // bridge -> no merge: the node-id row stays separate, honestly, and the
+    // `received_from_node_id` provenance field completes the merge with no
+    // further code change the day the receive door captures it.
+    // -----------------------------------------------------------------
+
+    /// The live M4 ledger shape, exactly: 3 served halves + 3 pushed foreign
+    /// requester halves signed by `71eb…` and received from endpoint
+    /// `e5ba9d1001`, PLUS 2 requester halves naming mesh node `a70d…`. The
+    /// pushing peer is ONE row keyed by its signing key (aliases: endpoint),
+    /// the `a70d…` node row stays separate (no evidence links it to that
+    /// key), and no third row appears. MUTANT: revert the row key to
+    /// `node:<received_from>` and the `key:` row disappears.
+    #[test]
+    fn pane_b_joins_the_pushing_peer_on_the_signing_key_with_the_endpoint_as_alias() {
+        let peer_key = "71eb26f8e583ccc99e0ae72e1eee88ead06a81159d8e721ba98eeffe5c30550d";
+        let their_node = format!("a70d{}", "3".repeat(60));
+        // This node served the peer; the peer pushed its requester half.
+        let local_served = mesh_half_served_by(
+            "a".repeat(64).as_str(), "served",
+            "d".repeat(64).as_str(), "e".repeat(64).as_str(), "me-914b61c1", "me-node");
+        let pushed_requester = with_key(
+            mesh_half_served_by(
+                "b".repeat(64).as_str(), "requested",
+                "d".repeat(64).as_str(), "e".repeat(64).as_str(), "m3-82777e20", "me-node"),
+            peer_key,
+        );
+        // And this node ASKED a peer at mesh node a70d… (no push received for
+        // those exchanges, so no key evidence bridges the two id spaces).
+        let asked = mesh_half_served_by(
+            "c".repeat(64).as_str(), "requested",
+            "f".repeat(64).as_str(), "0".repeat(64).as_str(), "me-77aa", &their_node);
+        let provenance: HashMap<String, ReceivedProvenance> =
+            [provenance_for("b".repeat(64).as_str(), "e5ba9d1001")].into_iter().collect();
+
+        let pane = build_pane_b(&[local_served, pushed_requester, asked], &provenance);
+        let rows = pane["rows"].as_array().unwrap();
+
+        // ONE key-identified row for the pushing peer, endpoint as alias.
+        let key_row = rows
+            .iter()
+            .find(|r| r["peer_id"] == json!("key:71eb26f8e583ccc9"))
+            .expect("the pushing peer is keyed by its signing key");
+        assert_eq!(key_row["identity"]["signing_key_id"], json!(peer_key));
+        assert_eq!(key_row["identity"]["endpoint_id"], json!("e5ba9d1001"));
+        assert_eq!(key_row["identity"]["node_id"], Value::Null, "no node-id evidence -> no fabricated alias");
+        assert_eq!(key_row["confirmed_siblings"].as_array().unwrap().len(), 1);
+
+        // The asked node stays a SEPARATE row -- no evidence bridges a70d… to
+        // the signing key -- carrying its FULL node id as identity evidence.
+        let node_row = rows
+            .iter()
+            .find(|r| r["peer_id"] == json!(format!("node:{}", short_id(&their_node, 16))))
+            .expect("the unlinked node row stays separate");
+        assert_eq!(node_row["identity"]["node_id"], json!(their_node));
+        assert_eq!(node_row["identity"]["signing_key_id"], Value::Null);
+
+        // Exactly these two peers -- never an endpoint row AND a key row for
+        // the same pushing peer, never a null-group leak.
+        assert_eq!(pane["peer_count"], json!(2), "one row per peer, no third appearance");
+        assert!(!rows.iter().any(|r| r["peer_id"] == json!("endpoint:e5ba9d1001")));
+        assert!(!rows.iter().any(|r| r["peer_id"] == Value::Null));
+    }
+
+    /// The bridge case: the citing record carries `received_from_node_id`
+    /// naming the SAME mesh node our own requester halves routed to. All
+    /// three id spaces collapse onto ONE signing-key row -- endpoint AND node
+    /// aliases -- and the asked halves merge onto it with NO further code
+    /// change. MUTANT: drop the `received_from_node_id` read and this merge
+    /// splits back into two rows.
+    #[test]
+    fn pane_b_received_from_node_id_bridges_the_asked_node_row_onto_the_signing_key_row() {
+        let peer_key = "71eb26f8e583ccc99e0ae72e1eee88ead06a81159d8e721ba98eeffe5c30550d";
+        let their_node = format!("a70d{}", "3".repeat(60));
+        let local_served = mesh_half_served_by(
+            "a".repeat(64).as_str(), "served",
+            "d".repeat(64).as_str(), "e".repeat(64).as_str(), "me-914b61c1", "me-node");
+        let pushed_requester = with_key(
+            mesh_half_served_by(
+                "b".repeat(64).as_str(), "requested",
+                "d".repeat(64).as_str(), "e".repeat(64).as_str(), "m3-82777e20", "me-node"),
+            peer_key,
+        );
+        let asked = mesh_half_served_by(
+            "c".repeat(64).as_str(), "requested",
+            "f".repeat(64).as_str(), "0".repeat(64).as_str(), "me-77aa", &their_node);
+        // The door captured the sender's node id on the citing record.
+        let provenance: HashMap<String, ReceivedProvenance> =
+            [provenance_with_node("b".repeat(64).as_str(), "e5ba9d1001", &their_node)]
+                .into_iter()
+                .collect();
+
+        let pane = build_pane_b(&[local_served, pushed_requester, asked], &provenance);
+        let rows = pane["rows"].as_array().unwrap();
+
+        assert_eq!(pane["peer_count"], json!(1), "the evidence-backed bridge merges the rows");
+        let row = &rows[0];
+        assert_eq!(row["peer_id"], json!("key:71eb26f8e583ccc9"));
+        assert_eq!(row["identity"]["signing_key_id"], json!(peer_key));
+        assert_eq!(row["identity"]["endpoint_id"], json!("e5ba9d1001"));
+        assert_eq!(row["identity"]["node_id"], json!(their_node));
+        // Both the served exchange's halves AND the asked half land here.
+        assert_eq!(row["exchange_count"], json!(3));
+    }
+
+    /// [mesh-citing-record-shots-four-defects] D4(a): a requester-side OPEN
+    /// row names the peer this node's OWN record routed to
+    /// (`served_by_node_id`) -- naming whom we asked, never claiming their
+    /// half (the row stays unilateral). A served row with no counterparty
+    /// evidence carries `counterparty: null`; a row with a pushed sibling
+    /// carries the SAME row key Pane B uses.
+    #[test]
+    fn pane_c_names_the_counterparty_on_a_requester_row_without_claiming_their_half() {
+        let their_node = format!("a70d{}", "3".repeat(60));
+        let asked = mesh_half_served_by(
+            "c".repeat(64).as_str(), "requested",
+            "f".repeat(64).as_str(), "0".repeat(64).as_str(), "me-77aa", &their_node);
+        let served_local = fixture_record("cap-s", "2026-09-01T00:00:00Z", "req-s", None);
+
+        let pane = build_pane_c_list(&[asked, served_local], &no_provenance());
+        let rows = pane["rows"].as_array().unwrap();
+
+        let asked_row = rows
+            .iter()
+            .find(|r| r["role_tag"] == json!("ASKED"))
+            .expect("the requester row renders");
+        assert_eq!(
+            asked_row["counterparty"],
+            json!(format!("node:{}", short_id(&their_node, 16))),
+            "the requester row names the peer it routed to"
+        );
+        // Naming the peer is NOT claiming their half: still OPEN/unilateral.
+        assert_eq!(asked_row["unilateral"], json!(true));
+        assert_eq!(asked_row["theirs"]["state"], json!(STATE_ABSENT));
+
+        let served_row = rows
+            .iter()
+            .find(|r| r["role_tag"] == json!("SERVED"))
+            .expect("the served row renders");
+        assert_eq!(served_row["counterparty"], Value::Null, "no counterparty evidence -> null, never invented");
+    }
+
+    /// D4(a) closed-path agreement: a row closed by a pushed sibling names
+    /// the counterparty with the SAME key Pane B rows use (the signing-key
+    /// row key), so the two panes can never name one peer differently.
+    #[test]
+    fn pane_c_counterparty_matches_the_pane_b_row_key_for_a_pushed_sibling() {
+        let peer_key = "71eb26f8e583ccc99e0ae72e1eee88ead06a81159d8e721ba98eeffe5c30550d";
+        let local = mesh_half("a".repeat(64).as_str(), "requested", "d".repeat(64).as_str(), "e".repeat(64).as_str(), "m4-914b61c1");
+        let foreign = with_key(
+            mesh_half("b".repeat(64).as_str(), "served", "d".repeat(64).as_str(), "e".repeat(64).as_str(), "m3-82777e20"),
+            peer_key,
+        );
+        let provenance: HashMap<String, ReceivedProvenance> =
+            [provenance_for("b".repeat(64).as_str(), "m3")].into_iter().collect();
+
+        let pane_c = build_pane_c_list(&[local.clone(), foreign.clone()], &provenance);
+        let pane_b = build_pane_b(&[local, foreign], &provenance);
+
+        let c_counterparty = pane_c["rows"][0]["counterparty"].as_str().unwrap().to_string();
+        assert_eq!(c_counterparty, "key:71eb26f8e583ccc9");
+        assert!(
+            pane_b["rows"].as_array().unwrap().iter().any(|r| r["peer_id"] == json!(c_counterparty)),
+            "Exchanges and Peers name the peer identically"
         );
     }
 
@@ -2528,3 +2900,4 @@ mod tests {
         assert_no_retired_vocabulary(&build_pane_b(&records, &no_provenance()), "$");
     }
 }
+

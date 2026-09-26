@@ -142,8 +142,23 @@ export type PaneBConfirmedSibling = {
   digest_match?: PaneCRow['digest_match']
 }
 
+/** [mesh-citing-record-shots-four-defects] D3 -- ONE peer's alias evidence,
+ *  joined on the signing key (`capsule_panes_native.rs::PeerIdentity`): the
+ *  pushed body's own `key_id` (door-verified against the announced peer key),
+ *  the door's `received_from` endpoint id, and a mesh node id only when a
+ *  record actually names one. Each field is evidence-backed or null -- the UI
+ *  renders these as aliases on one row, never as extra peers. Absent on an
+ *  older payload; degrades to no alias line, never a fabricated identity. */
+export type PaneBPeerIdentity = {
+  signing_key_id?: string | null
+  endpoint_id?: string | null
+  node_id?: string | null
+}
+
 export type PaneBRow = {
   peer_id: string | null
+  /** See `PaneBPeerIdentity`. */
+  identity?: PaneBPeerIdentity | null
   node: PaneBNodeCell
   rung: PaneBRungCell
   role: PaneBRoleCell
@@ -209,6 +224,14 @@ export type TwinComparison = {
 export type PaneCRow = {
   exchange_key: string
   role_tag: string
+  /** [mesh-citing-record-shots-four-defects] D4(a) -- the peer this row's own
+   *  evidence names, using the SAME row key Pane B's peer rows use
+   *  (`capsule_panes_native.rs::PeerAttribution`): the pushed sibling's
+   *  identity, or -- on a requester-side row -- the server this node's own
+   *  record routed to (`served_by_node_id`). Naming whom we asked is not a
+   *  claim to hold their half; the right cell still derives independently.
+   *  `null`/absent when no record names a peer -- never invented. */
+  counterparty?: string | null
   header_state: string
   properties: AssuranceProperties | null
   has_issue: boolean

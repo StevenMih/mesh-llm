@@ -182,9 +182,8 @@ describe('ExchangeStreamRow — L-A/L-B alarm styling', () => {
   })
 })
 
-describe('ExchangeStreamRow — six states render distinct text/status/action', () => {
+describe('ExchangeStreamRow — the states render distinct text/status/action', () => {
   const cases: Array<{ kind: RightCellStateKind; text: string; status: string; action: string | null }> = [
-    { kind: 'closed', text: '✓ cites your half by digest', status: 'CLOSED', action: null },
     { kind: 'contradicted', text: '⚠ differs', status: 'CONTRADICTED', action: 'Compare' },
     {
       kind: 'open_refused',
@@ -232,6 +231,27 @@ describe('ExchangeStreamRow — six states render distinct text/status/action', 
       unmount()
     })
   }
+
+  it('[mesh-citing-record-shots-four-defects] D4(d): CLOSED renders compact per-property cells fed from the gate inputs, not one sentence', () => {
+    render(<ExchangeStreamRow onAction={vi.fn()} {...toggleProps()} rail={NO_RAIL} row={makeRow('closed')} />)
+    expect(screen.getByText('CLOSED')).toBeInTheDocument()
+    // The four cells: their id · signature ✓ · request digest = · response
+    // digest = -- each restating a fact the gate's own inputs established.
+    expect(screen.getByText(`their id ${'a'.repeat(12)}…`)).toBeInTheDocument()
+    expect(screen.getByText('signature ✓')).toBeInTheDocument()
+    expect(screen.getByText('request digest =')).toBeInTheDocument()
+    expect(screen.getByText('response digest =')).toBeInTheDocument()
+    // The old single sentence is gone; no action button on a closed row --
+    // only the two disclosure toggles.
+    expect(screen.queryByText('✓ cites your half by digest')).not.toBeInTheDocument()
+    expect(screen.getAllByRole('button')).toHaveLength(2)
+  })
+
+  it('D4(d) ADVERSARIAL: the per-property cells render ONLY on a gate-closed row — an OPEN row never borrows them', () => {
+    render(<ExchangeStreamRow onAction={vi.fn()} {...toggleProps()} rail={NO_RAIL} row={makeRow('open_not_held')} />)
+    expect(screen.queryByText('signature ✓')).not.toBeInTheDocument()
+    expect(screen.queryByText('request digest =')).not.toBeInTheDocument()
+  })
 
   it('LOAD-BEARING: not-asked and unanswered render visibly distinct text on the row', () => {
     const { unmount: unmountA } = render(
@@ -507,8 +527,8 @@ describe('ExchangeStreamRow — [mesh-ledger-b3-paging] focus/highlight/checks t
   })
 })
 
-describe('ExchangeStreamRow — L-O served rows carry no rail and a distinct marker', () => {
-  it('renders the served marker (◐) and "you served", never a rail bar regardless of rail prop', () => {
+describe('ExchangeStreamRow — [mesh-citing-record-shots-four-defects] D4(b): the glyph draws the exchange STATE; the role is stated in words', () => {
+  it('an OPEN served row renders the half glyph (◐) and "you served" in words', () => {
     render(
       <ExchangeStreamRow
         onAction={vi.fn()}
@@ -521,10 +541,65 @@ describe('ExchangeStreamRow — L-O served rows carry no rail and a distinct mar
     expect(screen.getByText('you served')).toBeInTheDocument()
   })
 
-  it('renders the asked marker (●) and "you asked" for an asked row', () => {
+  it('a CLOSED row renders the filled glyph (●) — both halves held', () => {
     render(<ExchangeStreamRow onAction={vi.fn()} {...toggleProps()} rail={NO_RAIL} row={makeRow('closed')} />)
     expect(screen.getByText('●')).toBeInTheDocument()
     expect(screen.getByText('you asked')).toBeInTheDocument()
+  })
+
+  it('MUTANT (glyph orientation): a CLOSED served row is ●, an OPEN asked row is ◐ — the glyphs follow state, never role', () => {
+    // Under the old role-marker semantics these two would render exactly
+    // inverted (SERVED -> ◐, ASKED -> ●): the live shots' defect.
+    const { unmount } = render(
+      <ExchangeStreamRow
+        onAction={vi.fn()}
+        {...toggleProps()}
+        rail={NO_RAIL}
+        row={makeRow('closed', { roleTag: 'SERVED' })}
+      />
+    )
+    expect(screen.getByText('●')).toBeInTheDocument()
+    expect(screen.queryByText('◐')).not.toBeInTheDocument()
+    unmount()
+
+    render(
+      <ExchangeStreamRow
+        onAction={vi.fn()}
+        {...toggleProps()}
+        rail={NO_RAIL}
+        row={makeRow('open_not_asked', { roleTag: 'ASKED' })}
+      />
+    )
+    expect(screen.getByText('◐')).toBeInTheDocument()
+    expect(screen.queryByText('●')).not.toBeInTheDocument()
+  })
+})
+
+describe('ExchangeStreamRow — D4(b): the bracket strip (double-entry design §7) draws the state on the row', () => {
+  it('CLOSED: both brackets solid, handshake arrow', () => {
+    render(<ExchangeStreamRow onAction={vi.fn()} {...toggleProps()} rail={NO_RAIL} row={makeRow('closed')} />)
+    expect(screen.getByText('{ yours ● } ⟷ { theirs ● }')).toBeInTheDocument()
+  })
+
+  it('OPEN · not held: their id is known but bytes are not held — the ◔ glyph, never a solid bracket', () => {
+    render(<ExchangeStreamRow onAction={vi.fn()} {...toggleProps()} rail={NO_RAIL} row={makeRow('open_not_held')} />)
+    expect(screen.getByText('{ yours ● } → { theirs ◔ }')).toBeInTheDocument()
+  })
+
+  it('refused / asked / contradicted each draw their own strip', () => {
+    const cases: Array<[RightCellStateKind, string]> = [
+      ['open_refused', '{ yours ● } ⇥ { theirs ⊘ }'],
+      ['open_asked', '{ yours ● } ⇢ { theirs ◌ }'],
+      ['contradicted', '{ yours ● } ⇄≠ { theirs ● }'],
+      ['open_not_asked', '{ yours ● } → { theirs ◌ }']
+    ]
+    for (const [kind, strip] of cases) {
+      const { unmount } = render(
+        <ExchangeStreamRow onAction={vi.fn()} {...toggleProps()} rail={NO_RAIL} row={makeRow(kind)} />
+      )
+      expect(screen.getByText(strip)).toBeInTheDocument()
+      unmount()
+    }
   })
 })
 

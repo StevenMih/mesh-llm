@@ -30,6 +30,45 @@ function ownerBound(owner: StatusOwner | null | undefined): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// Checkpoint registration -- THE one fact ([mesh-citing-record-shots-four-
+// defects] D1). A local checkpoint is NOT registration: registration means a
+// witness this node doesn't run holds the checkpoint. Rung 1, the witness
+// line, and the Exchanges headline all derive from this ONE derivation so
+// they can never disagree (the live shot had rung 1 say "registered" while
+// the same pane said "Registered with 0 witnesses" and Exchanges said "not
+// registered" -- the exact §7 overclaim class).
+// ---------------------------------------------------------------------------
+
+export type CheckpointRegistration = {
+  /** The host reported a checkpoint count at all (`null` card = not
+   *  reported -- distinct from a real zero, see `buildSetupSteps`). */
+  reported: boolean
+  checkpointCount: number | null
+  witnessCount: number
+  /** At least one checkpoint exists on disk -- a LOCAL fact only. */
+  checkpointedLocally: boolean
+  /** THE registration fact: a checkpoint held by at least one witness.
+   *  Only this may ever render the word "registered". */
+  registered: boolean
+}
+
+export function checkpointRegistration(card: JsonRecord | null | undefined): CheckpointRegistration {
+  const checkpointCount = typeof card?.checkpoint_count === 'number' ? card.checkpoint_count : null
+  const witnesses = Array.isArray(card?.witnesses) ? (card.witnesses as unknown[]) : []
+  const checkpointedLocally = checkpointCount !== null && checkpointCount > 0
+  return {
+    reported: checkpointCount !== null,
+    checkpointCount,
+    witnessCount: witnesses.length,
+    checkpointedLocally,
+    registered: checkpointedLocally && witnesses.length > 0
+  }
+}
+
+/** The honest rung-1/witness-line copy for a checkpoint no witness holds. */
+export const CHECKPOINTED_NOT_REGISTERED_STATUS = 'checkpointed locally · not registered (witness: off)'
+
+// ---------------------------------------------------------------------------
 // Setup checklist (ledger-ux-from-the-user-2026-09-09 §6) -- three steps in
 // value order, each stating what it buys and what it does not. Never a
 // muted "getting started" tip -- this IS the honest state of a node with
@@ -61,13 +100,13 @@ export function buildSetupSteps(
    *  reads CLOSED. Defaults to 0 (the pre-push-path behaviour). */
   closedByOtherSideCount = 0
 ): SetupStep[] {
-  const checkpointCount = typeof card?.checkpoint_count === 'number' ? card.checkpoint_count : null
-  // Three honest states, never two: `null` = the host did not REPORT a count
-  // (not evidence of absence -- distinct from a real zero); `0` = reported, and
-  // genuinely none yet; `> 0` = registered. Collapsing null into "not set up"
-  // is a false absence, the costliest kind on the Integrity tab.
-  const checkpointReported = checkpointCount !== null
-  const registered = checkpointCount !== null && checkpointCount > 0
+  // Four honest states, never two ([mesh-citing-record-shots-four-defects]
+  // D1): `null` = the host did not REPORT a count (not evidence of absence
+  // -- distinct from a real zero); `0` = reported, and genuinely none yet;
+  // `> 0` with NO witness = checkpointed LOCALLY, which is NOT registration;
+  // witnessed = registered. Only the last may say "registered" -- the same
+  // ONE fact `buildRegistrationCopy` and the Exchanges headline derive from.
+  const registration = checkpointRegistration(card)
   const bound = ownerBound(owner)
   const askedPeerAt = typeof card?.asked_peer_at === 'string' ? card.asked_peer_at : null
 
@@ -75,11 +114,17 @@ export function buildSetupSteps(
     {
       key: 'checkpoints',
       title: 'Register your checkpoints',
-      done: registered,
-      status: registered ? 'registered' : checkpointReported ? 'not set up' : 'status not reported',
-      body: registered
+      done: registration.registered,
+      status: registration.registered
+        ? 'registered'
+        : registration.checkpointedLocally
+          ? CHECKPOINTED_NOT_REGISTERED_STATUS
+          : registration.reported
+            ? 'not set up'
+            : 'status not reported',
+      body: registration.registered
         ? null
-        : checkpointReported
+        : registration.reported
           ? 'Right now your records are checkable only against themselves. Registering a checkpoint with a service you don’t run is what makes a later rewrite detectable by someone else. It does not make your records true.'
           : 'This node did not report its checkpoint status. That is not the same as having none — the status was not reported, so nothing can be concluded either way.'
     },
@@ -114,7 +159,10 @@ export function buildSetupSteps(
 
 // ---------------------------------------------------------------------------
 // Registration copy -- only renders once a checkpoint exists (v2 §4:
-// "registered at N witnesses (M not operated by the producer)").
+// "registered at N witnesses (M not operated by the producer)"). Derives
+// from the SAME `checkpointRegistration` fact as rung 1 and the Exchanges
+// headline: an unwitnessed checkpoint reads "checkpointed locally", never
+// "Registered with 0 witnesses".
 // ---------------------------------------------------------------------------
 
 export type RegistrationCopy = {
@@ -134,18 +182,48 @@ function nonProducerWitnessCount(witnesses: readonly unknown[]): number {
 }
 
 export function buildRegistrationCopy(card: JsonRecord | null | undefined): RegistrationCopy | null {
-  const checkpointCount = typeof card?.checkpoint_count === 'number' ? card.checkpoint_count : null
-  if (checkpointCount === null || checkpointCount <= 0) return null
+  const registration = checkpointRegistration(card)
+  if (!registration.checkpointedLocally) return null
 
   const witnesses: unknown[] = Array.isArray(card?.witnesses) ? (card.witnesses as unknown[]) : []
   const nonProducerCount = nonProducerWitnessCount(witnesses)
-  const registeredNoLaterThan =
-    typeof card?.registered_no_later_than === 'string' ? card.registered_no_later_than : null
+  const timestamp = typeof card?.registered_no_later_than === 'string' ? card.registered_no_later_than : null
+
+  // An unwitnessed checkpoint is a LOCAL fact -- "registered" (and
+  // "registered no later than") would claim a witness holds it. Same ONE
+  // fact rung 1 renders ([mesh-citing-record-shots-four-defects] D1).
+  if (!registration.registered) {
+    return {
+      witnessSummary: 'Checkpointed locally · not registered (witness: off)',
+      registeredNoLaterThan: timestamp ? `checkpointed no later than ${timestamp}` : null
+    }
+  }
 
   return {
     witnessSummary: `Registered with ${witnesses.length} witness${witnesses.length === 1 ? '' : 'es'} (${nonProducerCount} not operated by this node)`,
-    registeredNoLaterThan: registeredNoLaterThan ? `registered no later than ${registeredNoLaterThan}` : null
+    registeredNoLaterThan: timestamp ? `registered no later than ${timestamp}` : null
   }
+}
+
+// ---------------------------------------------------------------------------
+// Chain strip caption -- pulled out of `LedgerPage.tsx`'s ChainStrip so the
+// three-state absence handling and the leaf pluralization are unit-testable.
+// ---------------------------------------------------------------------------
+
+export function chainStripCaption(sealedCount: number, checkpointCount: number | null): string {
+  if (checkpointCount !== null && checkpointCount > 0) {
+    // "1 leaf" / "N leaves" -- never "1 leaves" ([mesh-citing-record-shots-
+    // four-defects] D1 minor).
+    return `covered by checkpoint (${checkpointCount} ${checkpointCount === 1 ? 'leaf' : 'leaves'}) · after the last checkpoint is unshaded`
+  }
+  const entries = `${sealedCount} entr${sealedCount === 1 ? 'y' : 'ies'}, all sealed`
+  // Not reported by the host -- NEVER a false "none exists". A null count
+  // (host did not compute/report a checkpoint_count) must not read as "no
+  // checkpoint yet"; that conflation is the bug the three states guard
+  // against -- Integrity is the highest-cost tab for a false absence.
+  return checkpointCount === null
+    ? `${entries} · checkpoint status not reported`
+    : `${entries} · no checkpoint yet · nothing here is registered`
 }
 
 // ---------------------------------------------------------------------------

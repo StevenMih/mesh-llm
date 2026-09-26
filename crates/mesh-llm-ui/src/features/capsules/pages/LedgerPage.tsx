@@ -61,6 +61,8 @@ import {
   buildRegistrationCopy,
   buildSetupSteps,
   CAPTURE_BOUNDARY_FACT,
+  chainStripCaption,
+  checkpointRegistration,
   CONTINUITY_NOT_ESTABLISHED,
   identityFact,
   RETENTION_FACT,
@@ -578,10 +580,10 @@ function ExchangesSection({
   // today, so that read was always 0 by coincidence, not by evidence).
   const total = query.data.row_count
   const confirmed = query.data.rows.filter((r) => deriveRightCellState(r).kind === 'closed').length
-  const witnessCount = Array.isArray(balanceQuery.data?.card?.witnesses)
-    ? (balanceQuery.data.card.witnesses as unknown[]).length
-    : 0
-  const registered = witnessCount > 0
+  // THE one registration fact ([mesh-citing-record-shots-four-defects] D1):
+  // same `checkpointRegistration` derivation rung 1 and the witness line use,
+  // so this headline can never disagree with the Integrity tab.
+  const registered = checkpointRegistration(balanceQuery.data?.card ?? null).registered
 
   const roleOptions: FilterValueOption[] = ALL_ROLE_VALUES.map((value) => ({
     value,
@@ -619,11 +621,11 @@ function ExchangesSection({
         {exceptionsFirstLine(exceptionsFirstTally(allRows), allRowsRangeText, registered)}
       </p>
 
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border-soft pb-2">
-        <p className="type-caption font-mono text-fg-dim">
-          {visibleRows.length === allRows.length ? visibleRows.length : `${visibleRows.length} of ${allRows.length}`}{' '}
-          shown
-        </p>
+      {/* [mesh-citing-record-shots-four-defects] D4(c): no "N shown" counter
+         here -- the window banner below already states "Showing X of Y
+         exchanges"; the same counter twice is noise, not information. The
+         filter popover still reports visible/total while filtering. */}
+      <div className="flex flex-wrap items-center justify-end gap-2 border-b border-border-soft pb-2">
         <div className="flex flex-wrap items-center gap-2">
           <div className="relative">
             <SearchIcon
@@ -874,18 +876,9 @@ function ChainStrip({ sealedCount, checkpointCount }: { sealedCount: number; che
         </div>
         <span className="font-mono text-xs text-fg-faint">{sealedCount}</span>
       </div>
-      <p className="type-caption text-fg-dim">
-        {hasCheckpoint
-          ? `covered by checkpoint (${checkpointCount} leaves) · after the last checkpoint is unshaded`
-          : checkpointCount === null
-            ? // Not reported by the host -- NEVER a false "none exists". A null
-              // card (host did not compute/report a checkpoint_count) must not
-              // read as "no checkpoint yet"; that conflation is the bug this
-              // three-state guards against -- Integrity is the highest-cost tab
-              // for a false absence.
-              `${sealedCount} entr${sealedCount === 1 ? 'y' : 'ies'}, all sealed · checkpoint status not reported`
-            : `${sealedCount} entr${sealedCount === 1 ? 'y' : 'ies'}, all sealed · no checkpoint yet · nothing here is registered`}
-      </p>
+      {/* Three-state absence handling + leaf pluralization live in
+         `chainStripCaption` (integrity-view.ts) so both are unit-tested. */}
+      <p className="type-caption text-fg-dim">{chainStripCaption(sealedCount, checkpointCount)}</p>
     </div>
   )
 }

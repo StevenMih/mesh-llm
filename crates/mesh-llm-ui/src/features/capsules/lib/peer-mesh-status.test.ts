@@ -64,6 +64,50 @@ describe('advertisedOnlyPeers', () => {
     const unused = peer({ id: 'ff99ee88dd77cc66', shortId: 'ff99ee88', hostname: 'unused.local' })
     expect(advertisedOnlyPeers([], [self, unused])).toEqual([unused])
   })
+
+  // -------------------------------------------------------------------
+  // [mesh-citing-record-shots-four-defects] D3: a mesh peer that aliases a
+  // dealt-with row (by the row's identity evidence -- FULL node id,
+  // endpoint id, signing key) never re-appears as "advertised but unused".
+  // The live shot showed the same peer three times: two dealt-with rows
+  // plus an advertised entry that aliased one of them.
+  // -------------------------------------------------------------------
+
+  it("excludes a mesh peer whose FULL id matches a dealt-with row's identity.node_id — exact, no prefix heuristic needed", () => {
+    const fullNodeId = `a70d3967bea3b22f${'4'.repeat(48)}`
+    const meshEntry = peer({ id: fullNodeId, shortId: 'a70d3967' })
+    // The display id truncates to 16 chars; the identity carries the exact id.
+    const row = paneBRow('node:a70d3967bea3b22f')
+    row.identity = { signing_key_id: null, endpoint_id: null, node_id: fullNodeId }
+
+    expect(advertisedOnlyPeers([row], [meshEntry])).toEqual([])
+  })
+
+  it("excludes a mesh peer aliased by a signing-key row's node evidence (the bridged case), keeps a genuinely unused peer", () => {
+    const fullNodeId = `a70d3967bea3b22f${'4'.repeat(48)}`
+    const bridged = peer({ id: fullNodeId, shortId: 'a70d3967' })
+    const unused = peer({ id: 'ff99ee88dd77cc66', shortId: 'ff99ee88', hostname: 'unused.local' })
+    const row = paneBRow('key:71eb26f8e583ccc9')
+    row.identity = {
+      signing_key_id: '71eb26f8e583ccc99e0ae72e1eee88ead06a81159d8e721ba98eeffe5c30550d',
+      endpoint_id: 'e5ba9d1001',
+      node_id: fullNodeId
+    }
+
+    expect(advertisedOnlyPeers([row], [bridged, unused])).toEqual([unused])
+  })
+
+  it('never fabricates a match: a key-only row (no node evidence) does not exclude an unrelated mesh peer', () => {
+    const unrelated = peer({ id: `a70d3967bea3b22f${'4'.repeat(48)}`, shortId: 'a70d3967' })
+    const row = paneBRow('key:71eb26f8e583ccc9')
+    row.identity = {
+      signing_key_id: '71eb26f8e583ccc99e0ae72e1eee88ead06a81159d8e721ba98eeffe5c30550d',
+      endpoint_id: 'e5ba9d1001',
+      node_id: null
+    }
+
+    expect(advertisedOnlyPeers([row], [unrelated])).toEqual([unrelated])
+  })
 })
 
 describe('deriveMeshStatus — carries latency provenance through the join', () => {

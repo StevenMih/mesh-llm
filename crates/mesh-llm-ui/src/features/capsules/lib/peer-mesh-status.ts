@@ -14,7 +14,7 @@ import { useStatusQuery } from '@/features/network/api/use-status-query'
 import { LatencySource } from '@/lib/api/types'
 import type { ModelSummary, Peer } from '@/features/app-tabs/types'
 import type { PaneBRow } from '@/features/capsules/api/sidecarTypes'
-import { peerDisplayId } from '@/features/capsules/lib/peer-row-view'
+import { peerDisplayId, peerIdentityAliases } from '@/features/capsules/lib/peer-row-view'
 
 export type PeerMeshStatus = {
   modelName: string | null
@@ -45,7 +45,11 @@ export function findMeshPeer(peerId: string, peers: readonly Peer[]): Peer | und
     peers.find((peer) => peer.id === peerId) ??
     peers.find((peer) => peer.id === bare) ??
     peers.find((peer) => peer.shortId === bare) ??
-    (bare.length >= 6 ? peers.find((peer) => peer.id.startsWith(bare)) : undefined)
+    (bare.length >= 6 ? peers.find((peer) => peer.id.startsWith(bare)) : undefined) ??
+    // The reverse: a FULL id alias (e.g. the row's 64-hex node id,
+    // [mesh-citing-record-shots-four-defects] D3) against a mesh entry that
+    // only carries a truncated id -- same >= 6-char guard on both sides.
+    (bare.length >= 6 ? peers.find((peer) => peer.id.length >= 6 && bare.startsWith(peer.id)) : undefined)
   )
 }
 
@@ -68,17 +72,33 @@ export function deriveMeshStatus(
   }
 }
 
+/** Every id string a Pane B row is known by: its display id plus the alias
+ *  evidence ([mesh-citing-record-shots-four-defects] D3 -- signing key,
+ *  endpoint id, FULL node id). The full node id matters here: the display id
+ *  truncates to 16 chars, and a truncation-vs-full prefix heuristic is
+ *  exactly how the same peer showed up a THIRD time under "advertised but
+ *  unused" in the live shots. */
+function rowAliasCandidates(row: PaneBRow): string[] {
+  const { signingKeyId, endpointId, nodeId } = peerIdentityAliases(row)
+  return [peerDisplayId(row), nodeId, endpointId, signingKeyId].filter((value): value is string => Boolean(value))
+}
+
 /** T7 §3-F -- the Peers table's second row group ("advertised but unused")
  *  is every mesh-known peer that Pane B carries no row for at all, i.e. no
  *  exchange has ever happened. Reuses `findMeshPeer`'s own best-effort
- *  matching (the same logic `deriveMeshStatus` already applies per row) so
- *  the group split can never disagree with what a row's own mesh-status
- *  lookup found. Excludes this node's own self entry (`status-adapter`'s
- *  `adaptSelfPeer`, `role: 'you'`) -- a node never exchanges with itself,
- *  so it can never be "unused" in the counterparty sense this group means. */
+ *  matching (the same logic `deriveMeshStatus` already applies per row),
+ *  widened over every alias a row carries, so a mesh peer that aliases a
+ *  dealt-with row can never re-appear as "advertised but unused" -- one
+ *  peer, one appearance. Excludes this node's own self entry
+ *  (`status-adapter`'s `adaptSelfPeer`, `role: 'you'`) -- a node never
+ *  exchanges with itself, so it can never be "unused" in the counterparty
+ *  sense this group means. */
 export function advertisedOnlyPeers(paneBRows: readonly PaneBRow[], peers: readonly Peer[]): Peer[] {
   const dealtWithMeshIds = new Set(
-    paneBRows.map((row) => findMeshPeer(peerDisplayId(row) ?? '', peers)?.id).filter((id): id is string => Boolean(id))
+    paneBRows
+      .flatMap((row) => rowAliasCandidates(row))
+      .map((candidate) => findMeshPeer(candidate, peers)?.id)
+      .filter((id): id is string => Boolean(id))
   )
   return peers.filter((peer) => peer.role !== 'you' && !dealtWithMeshIds.has(peer.id))
 }

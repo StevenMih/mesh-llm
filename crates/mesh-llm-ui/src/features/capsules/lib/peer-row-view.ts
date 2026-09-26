@@ -36,6 +36,48 @@ export function unattributedExchangesLine(count: number): string {
   return `${count} ${subject} no counterparty recorded yet. They appear under Exchanges.`
 }
 
+// ---------------------------------------------------------------------------
+// Peer identity aliases ([mesh-citing-record-shots-four-defects] D3) -- one
+// row per peer, joined on the signing key, with the other id spaces shown as
+// ALIASES on that row. Only evidence-backed aliases render; a node-id-only
+// row (no signing key linked by any evidence yet) says so instead of
+// pretending the spaces are one.
+// ---------------------------------------------------------------------------
+
+export type PeerIdentityAliases = { signingKeyId: string | null; endpointId: string | null; nodeId: string | null }
+
+function nonEmpty(value: unknown): string | null {
+  return typeof value === 'string' && value.length > 0 ? value : null
+}
+
+export function peerIdentityAliases(row: PaneBRow): PeerIdentityAliases {
+  const identity = row.identity ?? null
+  return {
+    signingKeyId: nonEmpty(identity?.signing_key_id),
+    endpointId: nonEmpty(identity?.endpoint_id),
+    nodeId: nonEmpty(identity?.node_id)
+  }
+}
+
+/** The one alias line under a peer row's id: "signed by <key16> · node
+ *  <id16>… · endpoint <id>" for a key-joined peer (only the aliases the
+ *  evidence carries), the honest unlinked note for a node-id-only row, and
+ *  `null` when the row carries no identity evidence at all. */
+export function peerAliasLine(row: PaneBRow): string | null {
+  const { signingKeyId, endpointId, nodeId } = peerIdentityAliases(row)
+  if (!signingKeyId) {
+    // The unlinked case: the id came from this node's own records (a
+    // requester half naming the server it routed to); no pushed,
+    // door-verified half links it to a signing key yet.
+    if (nodeId && !endpointId) return 'node id from your own records — no signing key linked yet'
+    return null
+  }
+  const parts = [`signed by ${signingKeyId.slice(0, 16)}`]
+  if (nodeId) parts.push(`node ${nodeId.slice(0, 16)}…`)
+  if (endpointId) parts.push(`endpoint ${endpointId}`)
+  return parts.join(' · ')
+}
+
 /** Used by the modal's Overview tab (`PeerInspector`) for the self-reported
  *  model/quant/context line -- the summary table no longer renders this
  *  (accountability, not operational-announcement, per [a18-evidence-peers-
@@ -58,14 +100,17 @@ export function meshMetaLine(meshStatus: PeerMeshStatus | null): string | null {
 export type WithYouCounts = { requested: number; served: number; confirmed: number }
 
 /** `requested`/`served` from `role_and_count_cell` (direction of exchange,
- *  never a trust signal); `confirmed` from `pair_cell.verified` -- the
- *  count of exchange_ids where both halves' digests actually reconciled,
- *  the one real "both sides agree" fact this row carries. */
+ *  never a trust signal); `confirmed` from the ONE gate
+ *  (`confirmedByOtherSide`, the same figure the Peers table's Confirmed
+ *  column renders) -- NEVER `pair_cell.verified`, which no native payload
+ *  populates (always 0 live), so the inspector Overview used to contradict
+ *  the table on the same peer ([mesh-citing-record-shots-four-defects]
+ *  fold-in finding 1). One predicate, one number, two surfaces. */
 export function withYouCounts(row: PaneBRow): WithYouCounts {
   return {
     requested: row.role?.you_to_them_count ?? 0,
     served: row.role?.them_to_you_count ?? 0,
-    confirmed: row.pair?.verified ?? 0
+    confirmed: confirmedByOtherSide(row).confirmed
   }
 }
 
@@ -380,6 +425,10 @@ export type PeerTableRowView = {
   key: string
   displayId: string
   hasDealings: boolean
+  /** The row's alias evidence, one line (`peerAliasLine`): the other id
+   *  spaces this ONE peer is known by -- never rendered as extra peers.
+   *  `null` when the row carries no identity evidence. */
+  aliasLine: string | null
   /** One honesty caveat under the identity, stated once (chooser-v2 §3
    *  discipline carried over): `SELF_REPORTED_NOTE` for a dealt-with peer,
    *  "no exchanges yet" for one only advertised. */
@@ -407,6 +456,7 @@ export function dealtWithRowView(
     key: row.peer_id ?? displayId,
     displayId,
     hasDealings: true,
+    aliasLine: peerAliasLine(row),
     identityNote: SELF_REPORTED_NOTE,
     exchangeCount: row.exchange_count ?? 0,
     confirmedByOtherSide: confirmedByOtherSideText(confirmedByOtherSide(row)),
@@ -446,6 +496,7 @@ export function advertisedOnlyRowView(displayId: string): PeerTableRowView {
     key: displayId,
     displayId,
     hasDealings: false,
+    aliasLine: null,
     identityNote: 'no exchanges yet',
     exchangeCount: 0,
     confirmedByOtherSide: '—',
