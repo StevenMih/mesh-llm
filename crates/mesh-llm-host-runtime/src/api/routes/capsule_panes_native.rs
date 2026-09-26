@@ -417,13 +417,12 @@ fn effective_ledger(ledger_dir: &Path) -> EffectiveLedger {
             // exactly as an inline foreign body used to.
             if let (Some(cited_id), Some(prov)) =
                 (cited_counterparty_capsule_id(&record), received_half_provenance(&record))
+                && let Some(body) = artifacts.get(cited_id)
             {
-                if let Some(body) = artifacts.get(cited_id) {
-                    received_provenance.insert(cited_id.to_string(), prov);
-                    resolved_foreign
-                        .entry(cited_id.to_string())
-                        .or_insert_with(|| body.clone());
-                }
+                received_provenance.insert(cited_id.to_string(), prov);
+                resolved_foreign
+                    .entry(cited_id.to_string())
+                    .or_insert_with(|| body.clone());
             }
             citing_records.push(record);
         } else {
@@ -807,10 +806,9 @@ fn counterparty_peer_label(record: &Value) -> Option<String> {
             .get("served_by_node_id")
             .and_then(Value::as_str)
             .filter(|s| !s.is_empty() && *s != "unknown")
+            && poc.get("role").and_then(Value::as_str) == Some("requested")
         {
-            if poc.get("role").and_then(Value::as_str) == Some("requested") {
-                return Some(format!("node:{}", short_id(served_by, 16)));
-            }
+            return Some(format!("node:{}", short_id(served_by, 16)));
         }
         // Tier 3: requesting_party -- who originated, when this node served.
         if let Some(rp) = sp
