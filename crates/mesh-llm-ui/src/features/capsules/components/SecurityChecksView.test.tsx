@@ -268,7 +268,7 @@ describe('[ledger-T4-inline-inspector] SecurityChecksView — per-row "Save evid
     expect(screen.getByRole('button', { name: 'open in Logs' })).toBeInTheDocument()
     expect(
       screen.getByText(
-        'A file: what you asked, what you got, which machine and model answered, when it was registered, plus your own copy. Anyone can check it, no account needed. Not included: the text, a score, or proof the answer was right.'
+        'A file: what you asked, what you got, which machine and model answered, when it was registered, plus your own copy. Anyone can check it, no account needed. Not included: the text, or proof the answer was right.'
       )
     ).toBeInTheDocument()
   })

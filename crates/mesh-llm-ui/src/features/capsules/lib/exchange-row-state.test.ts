@@ -378,12 +378,16 @@ describe('rightCellText — the load-bearing distinction', () => {
   })
 
   it('renders the exact copy from v3 §2 for each state', () => {
-    expect(rightCellText(stateOf('closed'))).toBe('✓ cites your half by digest')
+    expect(rightCellText(stateOf('closed'))).toBe('✓ same request and answer as yours')
     expect(rightCellText(stateOf('contradicted'))).toBe('⚠ differs')
     expect(rightCellText(stateOf('open_refused', '4 Sep'))).toBe('They declined, and signed the refusal — 4 Sep')
     expect(rightCellText(stateOf('open_absent', '4 Sep'))).toBe('They say they have no record of this — 4 Sep')
     expect(rightCellText(stateOf('open_asked', '3 Sep'))).toBe('Asked 3 Sep. No reply yet.')
-    expect(rightCellText(stateOf('open_not_asked'))).toBe("You haven't asked for their half.")
+    expect(rightCellText(stateOf('open_not_asked'))).toBe('You haven’t asked for their record.')
+    // UX §7 ruling: "not held" and "id not given" share one face; the (i)
+    // tells them apart.
+    expect(rightCellText(stateOf('open_not_held'))).toBe('Their record hasn’t arrived yet.')
+    expect(rightCellText(stateOf('open_not_given'))).toBe('Their record hasn’t arrived yet.')
   })
 
   it('never invents a date when none is carried', () => {
@@ -398,15 +402,23 @@ describe('rightCellDetail — Item 4: the fuller story behind each state, moved 
     for (const detail of details) expect(detail.length).toBeGreaterThan(0)
   })
 
-  it('CLOSED names the digest evidence and refuses the score reading', () => {
-    const closed = rightCellDetail(stateOf('closed'))
-    expect(closed).toContain('recomputes to cite your half')
-    expect(closed).toContain('not a reputation signal')
+  it('CLOSED says what was checked -- their signed record, the same request and answer -- in plain words', () => {
+    expect(rightCellDetail(stateOf('closed'))).toBe(
+      'They sent their own signed record of this exchange. It checks out on this machine, and it has the same request and answer as yours.'
+    )
   })
 
-  it('the not-held states name that their half is not held, never a fabricated recompute', () => {
-    expect(rightCellDetail(stateOf('open_not_held'))).toContain('their half is not held here')
-    expect(rightCellDetail(stateOf('open_not_given'))).toContain('their half is not held')
+  it('the not-held states say their record has not arrived; "id not given" adds why it cannot be asked for', () => {
+    expect(rightCellDetail(stateOf('open_not_held'))).toBe(
+      'Their record of this exchange hasn’t arrived yet. It usually comes when the exchange finishes.'
+    )
+    expect(rightCellDetail(stateOf('open_not_given'))).toContain('they didn’t send an id to ask for it by')
+  })
+
+  it('never names a banned word, even to deny it, and none of the engineer’s words', () => {
+    for (const kind of ALL_KINDS) {
+      expect(rightCellDetail(stateOf(kind))).not.toMatch(/\b(reputation|judgement|capsule id|half|halves|recomputed?)\b/i)
+    }
   })
 
   it('never uses a score/rating/proven word', () => {
@@ -450,7 +462,7 @@ describe('rightCellAction', () => {
     expect(rightCellAction(stateOf('open_refused'))).toBe('View refusal')
     expect(rightCellAction(stateOf('open_absent'))).toBe('View statement')
     expect(rightCellAction(stateOf('open_asked'))).toBe('Ask again')
-    expect(rightCellAction(stateOf('open_not_asked'))).toBe('Ask them for their half')
+    expect(rightCellAction(stateOf('open_not_asked'))).toBe('Ask them for their record')
   })
 })
 

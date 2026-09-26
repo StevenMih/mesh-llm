@@ -24,6 +24,7 @@ import {
   type PeerTableRowView
 } from '@/features/capsules/lib/peer-row-view'
 import { InfoHover } from '@/features/capsules/components/InfoHover'
+import { HoverChip } from '@/features/capsules/components/HoverChip'
 
 export type PeerTableRowProps = {
   view: PeerTableRowView
@@ -87,18 +88,25 @@ export function PeerTableRow({
                  stays on the face; the fuller honest sentence moves behind the
                  (i). Only the self-reported note carries the detail hover. */}
               {view.identityNote === SELF_REPORTED_NOTE ? (
-                <InfoHover describes="the self-reported note" label={SELF_REPORTED_DETAIL} />
+                <InfoHover
+                  census="peer:self_reported"
+                  describes="the self-reported note"
+                  label={SELF_REPORTED_DETAIL}
+                />
               ) : null}
             </span>
-            {/* Always rendered, whether or not the inspector is open --
-               chooser-v2 §3-F: "⚠ alarm chip visible while collapsed". The
-               modal enumerates every alarm in full; this chip is the ONLY
-               place the fact renders on the row, never doubled. */}
-            {view.alarm.present ? (
-              <StatusBadge size="caption" tone={view.alarm.tone}>
-                ⚠ {view.alarm.text}
-              </StatusBadge>
-            ) : null}
+            {/* Visible while collapsed (chooser-v2 §3-F), but as the specific
+               thing, counted, with one sentence on hover -- never a generic
+               warning glyph (UX §8). */}
+            {view.attention.map((item) => (
+              <HoverChip census={`peer_attention:${item.key}`} key={item.key} label={item.tooltip}>
+                <span>
+                  <StatusBadge size="caption" tone={item.tone}>
+                    {item.label}
+                  </StatusBadge>
+                </span>
+              </HoverChip>
+            ))}
           </div>
         </TableCell>
         {visibleColumns.has('exchanges') ? (

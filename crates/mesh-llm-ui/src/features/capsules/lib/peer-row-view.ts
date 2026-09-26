@@ -6,6 +6,7 @@
 import type { PaneBConfirmedSibling, PaneBRow, PaneCRow } from '@/features/capsules/api/sidecarTypes'
 import { deriveRightCellState } from '@/features/capsules/lib/exchange-row-state'
 import type { PeerMeshStatus } from '@/features/capsules/lib/peer-mesh-status'
+import { PEER_ATTENTION, PEER_COLUMN_TOOLTIPS, SELF_REPORTED_TOOLTIP } from '@/features/capsules/lib/tooltip-copy'
 
 export const STATE_NOT_CHECKED = 'NOT_CHECKED'
 export const STATE_CONTRADICTED = 'contradicted'
@@ -334,6 +335,52 @@ export function alarmSignal(row: PaneBRow, resolveTimestamp?: (capsuleId: string
   return { present: false, text: '', tone: 'warn' }
 }
 
+/** When the contradicting verdict was sealed, if the local ledger holds it. */
+function adjudicationDate(row: PaneBRow, resolveTimestamp?: (capsuleId: string) => string | null): string | null {
+  const capsuleId = row.verdicts?.adjudication_capsule_id
+  return capsuleId ? (resolveTimestamp?.(capsuleId) ?? null) : null
+}
+
+export type PeerAttentionKey = keyof typeof PEER_ATTENTION
+export type PeerAttentionItem = { key: PeerAttentionKey; label: string; tooltip: string; tone: 'bad' | 'warn' }
+
+/** The specific things on a peer row that need a look, each counted from the
+ *  payload -- never a number the payload doesn't carry. `disagreements` are the
+ *  exchanges the ONE gate reads as CONTRADICTED; `differingAnswers` the sealed
+ *  comparisons that found a contradiction. A failed log check and a refusal are
+ *  states with no count, so they are named, not numbered. */
+export function peerAttention(
+  row: PaneBRow,
+  resolveTimestamp?: (capsuleId: string) => string | null
+): PeerAttentionItem[] {
+  const items: PeerAttentionItem[] = []
+  const disagreements = matchTally(row).mismatch
+  if (disagreements > 0) {
+    items.push({
+      key: 'disagreements',
+      label: PEER_ATTENTION.disagreements.label(disagreements),
+      tooltip: PEER_ATTENTION.disagreements.tooltip(disagreements),
+      tone: 'bad'
+    })
+  }
+  const differing = row.verdicts?.state === STATE_CONTRADICTED ? (row.verdicts.tally?.contradicted ?? 0) : 0
+  if (differing > 0) {
+    items.push({
+      key: 'differingAnswers',
+      label: PEER_ATTENTION.differingAnswers.label(differing),
+      tooltip: PEER_ATTENTION.differingAnswers.tooltip(differing, adjudicationDate(row, resolveTimestamp)),
+      tone: 'bad'
+    })
+  }
+  if (row.history?.state === STATE_FAILED) {
+    items.push({ key: 'logFailed', label: PEER_ATTENTION.logFailed.label(), tooltip: PEER_ATTENTION.logFailed.tooltip(), tone: 'bad' })
+  }
+  if (row.history?.state === STATE_REFUSED || row.served?.state === STATE_REFUSED) {
+    items.push({ key: 'refused', label: PEER_ATTENTION.refused.label(), tooltip: PEER_ATTENTION.refused.tooltip(), tone: 'warn' })
+  }
+  return items
+}
+
 // ---------------------------------------------------------------------------
 // Sort -- closest-first, alarms float to top. Never a trust ordering.
 // ---------------------------------------------------------------------------
@@ -356,8 +403,7 @@ export const SELF_REPORTED_NOTE = 'self-reported — not independently attested'
 
 /** The full sentence behind the `self-reported` chip's (i) -- the terse chip
  *  on the row's face, the fuller honest statement on hover. */
-export const SELF_REPORTED_DETAIL =
-  'This identity is self-reported by the peer. Nothing here independently attests it — only the halves they signed and you recomputed are evidence.'
+export const SELF_REPORTED_DETAIL = SELF_REPORTED_TOOLTIP
 
 // ---------------------------------------------------------------------------
 // Witness -- no pane exposes a peer-scoped witness registration count today
@@ -445,6 +491,9 @@ export type PeerTableRowView = {
   witnessCompact: string
   period: string
   alarm: AlarmSignal
+  /** What needs a look, each named and counted -- replaces the old generic
+   *  ⚠ chip on the face (UX §8). Empty when nothing does. */
+  attention: PeerAttentionItem[]
   row: PaneBRow | null
 }
 
@@ -470,6 +519,7 @@ export function dealtWithRowView(
     witnessCompact: WITNESS_COVERAGE_COMPACT_TEXT,
     period: periodRangeText(row.first_seen, row.last_seen),
     alarm: alarmSignal(row, resolveTimestamp),
+    attention: peerAttention(row, resolveTimestamp),
     row
   }
 }
@@ -501,19 +551,7 @@ export const ALL_PEER_TABLE_COLUMNS: ReadonlySet<PeerTableColumnKey> = new Set<P
 // never a reputation/score reading (the three-sharer-answers framing: what it
 // is, what backs it, what it does NOT establish). The `confirmed` line is the
 // task's blessed wording verbatim.
-export const PEER_COLUMN_INFO: Record<PeerTableColumnKey, string> = {
-  exchanges:
-    'Distinct exchanges with this peer, counted by the request each side signed over — the two halves of one exchange count once, not twice.',
-  confirmed:
-    'their signed half of this exchange, held here and recomputed — not a reputation signal',
-  match:
-    'Whether the half they sent cites your half by the same digest (clean) or disagrees (mismatch) — recomputed here, not taken on their word.',
-  adjudication:
-    'Sealed adjudications naming this peer, with a denominator so an unchecked exchange is never a silent pass — never a judgement of the peer.',
-  witness:
-    'Whether a witness this node does not run holds a checkpoint covering these records. Not available here yet — this view has no peer-scoped witness count.',
-  period: 'The first-to-last date window of the exchanges on screen — the real span, not a ranking.'
-}
+export const PEER_COLUMN_INFO: Record<PeerTableColumnKey, string> = PEER_COLUMN_TOOLTIPS
 
 export function advertisedOnlyRowView(displayId: string): PeerTableRowView {
   return {
@@ -529,6 +567,7 @@ export function advertisedOnlyRowView(displayId: string): PeerTableRowView {
     witnessCompact: '—',
     period: '—',
     alarm: { present: false, text: '', tone: 'warn' },
+    attention: [],
     row: null
   }
 }

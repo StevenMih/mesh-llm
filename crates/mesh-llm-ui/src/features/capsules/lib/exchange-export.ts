@@ -45,7 +45,7 @@ export function exchangeEvidenceBundle(rows: readonly PaneCRow[]): string {
  *  Never paraphrased: the plain sentence that goes with every evidence file,
  *  per row and per range alike. */
 export const EVIDENCE_FILE_SENTENCE =
-  'A file: what you asked, what you got, which machine and model answered, when it was registered, plus your own copy. Anyone can check it, no account needed. Not included: the text, a score, or proof the answer was right.'
+  'A file: what you asked, what you got, which machine and model answered, when it was registered, plus your own copy. Anyone can check it, no account needed. Not included: the text, or proof the answer was right.'
 
 /** Integrity's own "Save evidence file" ([ledger-T6-integrity-completion],
  *  ledger-ux-from-the-user §7) -- covers the RANGE, not one exchange: this

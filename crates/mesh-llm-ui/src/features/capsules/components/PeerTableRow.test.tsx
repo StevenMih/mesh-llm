@@ -65,24 +65,35 @@ describe('PeerTableRow — dealt-with peers', () => {
     expect(description).toHaveTextContent(SELF_REPORTED_DETAIL)
   })
 
-  it('shows a visible alarm chip for an alarmed peer, and honestly reports the contradiction through the gate', () => {
+  it('names what needs a look on an alarmed peer, counted, with no generic ⚠ glyph -- and the counts agree with the gate', () => {
     const view = dealtWithRowView(ALARMED_ROW)
-    renderInTable(<PeerTableRow meshStatus={null} view={view} />)
+    const { container } = renderInTable(<PeerTableRow meshStatus={null} view={view} />)
 
-    expect(screen.getByText(/⚠ Contradiction found/)).toBeInTheDocument()
+    // UX §8: the specific thing, counted -- never a generic warning glyph.
+    expect(screen.getByText('1 disagreement')).toBeInTheDocument()
+    expect(screen.getByText('1 differing answer')).toBeInTheDocument()
+    expect(container.textContent).not.toContain('⚠')
+    // Each badge explains itself in one sentence (hover + aria-describedby).
+    const badge = screen.getByText('1 disagreement').closest('[aria-describedby]') as HTMLElement
+    expect(document.getElementById(badge.getAttribute('aria-describedby') as string)).toHaveTextContent(
+      '1 exchange where your record and theirs disagree.'
+    )
     // 9 of 14 confirmed, 1 pushed half the gate reads as CONTRADICTED.
     expect(screen.getByText('9 / 14 (1 contradicted)')).toBeInTheDocument()
     expect(screen.getByText('9 clean · 1 mismatch · 1 contradicted')).toBeInTheDocument()
     expect(screen.getByText('7 of 14 · 6 corroborated · 1 contradicted')).toBeInTheDocument()
   })
 
-  it('resolves an alarm date from the local ledger lookup when provided', () => {
+  it('keeps the verdict date: the differing-answer badge’s sentence names when it was sealed, from the local ledger', () => {
     const resolveTimestamp = vi.fn(() => '2026-09-08')
     const view = dealtWithRowView(ALARMED_ROW, resolveTimestamp)
     renderInTable(<PeerTableRow meshStatus={null} view={view} />)
 
     expect(resolveTimestamp).toHaveBeenCalledWith('cap-alarmed-adjudication-0007')
-    expect(screen.getByText(/⚠ Contradiction found 2026-09-08/)).toBeInTheDocument()
+    const badge = screen.getByText('1 differing answer').closest('[aria-describedby]') as HTMLElement
+    expect(document.getElementById(badge.getAttribute('aria-describedby') as string)).toHaveTextContent(
+      'Latest: 2026-09-08.'
+    )
   })
 
   it('never renders online status, latency, or a Route here control (Network tab job)', () => {

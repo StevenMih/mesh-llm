@@ -35,6 +35,7 @@ import {
   withYouCountsText
 } from '@/features/capsules/lib/peer-row-view'
 import { PeerExchangeInspector } from '@/features/capsules/components/PeerExchangeInspector'
+import { PEER_INSPECTOR_HEADER } from '@/features/capsules/lib/tooltip-copy'
 import { PeerTimeline } from '@/features/capsules/components/PeerTimeline'
 
 export type PeerInspectorProps = {
@@ -130,7 +131,7 @@ export function PeerInspector({ open, onClose, row, meshStatus, points }: PeerIn
           <SharedModalContent className="flex max-h-[min(calc(100dvh-4rem),44rem)] max-w-2xl flex-col overflow-hidden">
             <SharedModalHeader className="relative shrink-0">
               <SharedModalTitle className="font-mono">{peerDisplayId(row)}</SharedModalTitle>
-              <SharedModalDescription>What this peer has shown you, over time and per exchange.</SharedModalDescription>
+              <SharedModalDescription>{PEER_INSPECTOR_HEADER}</SharedModalDescription>
               <DialogPrimitive.Close asChild>
                 <Button
                   aria-label="Close peer inspector"

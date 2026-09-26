@@ -142,11 +142,11 @@ describe('LedgerPeersTable — toolbar', () => {
     const props = buildFixtureProps()
     render(<LedgerPeersTable {...props} />)
 
-    // The Confirmed header's (i) carries the blessed evidence sentence verbatim.
+    // The Confirmed header's (i) carries the UX §8 sentence verbatim.
     const confirmedGlyph = screen.getByRole('button', { name: 'About Confirmed by the other side' })
     const confirmedDesc = document.getElementById(confirmedGlyph.getAttribute('aria-describedby') as string)
     expect(confirmedDesc).toHaveTextContent(PEER_COLUMN_INFO.confirmed)
-    expect(PEER_COLUMN_INFO.confirmed).toContain('not a reputation signal')
+    expect(PEER_COLUMN_INFO.confirmed).toContain('confirmed by their own signed record, checked on this machine')
 
     // Every visible accountability column header has its own (i) glyph.
     for (const label of ['Exchanges', 'Confirmed by the other side', 'Match', 'Adjudication', 'Witness']) {

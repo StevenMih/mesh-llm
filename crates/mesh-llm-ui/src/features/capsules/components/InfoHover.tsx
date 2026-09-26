@@ -12,8 +12,7 @@
 // the glyph is reachable, not only mid-hover. The page already mounts a
 // `TooltipProvider` (LedgerPage), so the shared `Tooltip` works here directly.
 //
-// The tooltip copy is the EXISTING honest sentence MOVED off the face -- never
-// rewritten, never a score, never an overclaim.
+// The tooltip copy lives in `tooltip-copy.ts`, one sentence per chip type.
 import { useId } from 'react'
 import { Info } from 'lucide-react'
 import { Tooltip } from '@/components/ui/tooltip'
@@ -28,12 +27,15 @@ export type InfoHoverProps = {
   /** Optional tooltip side; defaults to the shared primitive's "top". */
   side?: 'top' | 'right' | 'bottom' | 'left'
   className?: string
+  /** The chip type this (i) explains, for the tooltip census
+   *  (`tooltip-census.test.tsx`). */
+  census?: string
 }
 
-export function InfoHover({ label, describes, side = 'top', className }: InfoHoverProps) {
+export function InfoHover({ label, describes, side = 'top', className, census }: InfoHoverProps) {
   const descriptionId = useId()
   return (
-    <span className={`inline-flex items-center ${className ?? ''}`}>
+    <span className={`inline-flex items-center ${className ?? ''}`} data-census-chip={census}>
       <Tooltip content={label} side={side}>
         <button
           aria-describedby={descriptionId}

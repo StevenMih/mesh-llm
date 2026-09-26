@@ -15,6 +15,8 @@ import {
 } from '@/features/capsules/lib/entry-row-chips'
 import type { EntryRowChipMark } from '@/features/capsules/lib/entry-row-chips'
 import type { PaneCRow } from '@/features/capsules/api/sidecarTypes'
+import { HoverChip } from '@/features/capsules/components/HoverChip'
+import { ENTRY_CHIP_TOOLTIPS } from '@/features/capsules/lib/tooltip-copy'
 
 const MARK_COLOR: Record<EntryRowChipMark, string> = {
   '✓': 'var(--color-good-text)',
@@ -36,23 +38,25 @@ export function ExchangeRowChips({
       {ENTRY_ROW_CHIP_ORDER.map((chip) => {
         const mark = entryRowChipMark(raw, chip)
         const propertyKey = entryRowChipPropertyKey(chip)
+        // Hover for the meaning, click for the full check (UX §8 rule 2).
         return (
-          <span
-            aria-label={`${chip}: jump to the ${chip} check`}
-            className="ui-control-ghost inline-flex cursor-pointer items-center gap-1 font-mono text-xs"
-            key={chip}
-            onClick={() => onChipActivate(propertyKey)}
-            onKeyDown={(event) => {
-              if (event.key !== 'Enter' && event.key !== ' ') return
-              event.preventDefault()
-              onChipActivate(propertyKey)
-            }}
-            role="link"
-            tabIndex={0}
-          >
-            <span className="text-fg-dim">{chip}</span>
-            <span style={{ color: MARK_COLOR[mark] }}>{mark}</span>
-          </span>
+          <HoverChip census={`entry_chip:${chip}`} key={chip} label={ENTRY_CHIP_TOOLTIPS[chip]}>
+            <span
+              aria-label={`${chip}: jump to the ${chip} check`}
+              className="ui-control-ghost inline-flex cursor-pointer items-center gap-1 font-mono text-xs"
+              onClick={() => onChipActivate(propertyKey)}
+              onKeyDown={(event) => {
+                if (event.key !== 'Enter' && event.key !== ' ') return
+                event.preventDefault()
+                onChipActivate(propertyKey)
+              }}
+              role="link"
+              tabIndex={0}
+            >
+              <span className="text-fg-dim">{chip}</span>
+              <span style={{ color: MARK_COLOR[mark] }}>{mark}</span>
+            </span>
+          </HoverChip>
         )
       })}
     </div>

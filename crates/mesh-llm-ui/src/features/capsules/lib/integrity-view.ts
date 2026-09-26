@@ -18,6 +18,7 @@
 // same field `status-adapter.ts`'s `resolveOwner` reads for the Network
 // dashboard), so that one fact is real today, not aspirational.
 import type { JsonRecord } from '@/features/capsules/api/types'
+import { CHAIN_STRIP_TOOLTIP, INTEGRITY_TILE_TOOLTIPS } from '@/features/capsules/lib/tooltip-copy'
 
 /** `StatusPayload.owner` / `PeerInfo['owner']` verbatim (`lib/api/
  *  types.ts`) -- deliberately not re-typed narrower than the wire shape. */
@@ -139,7 +140,7 @@ export function buildSetupSteps(
     },
     {
       key: 'ask_peer',
-      title: 'Get the other side’s half',
+      title: 'Get the other side’s record',
       // A half that arrived by push and closed through the gate corroborates
       // just as an asked-for half does -- the step is done either way.
       done: closedByOtherSideCount > 0 || askedPeerAt !== null,
@@ -152,7 +153,7 @@ export function buildSetupSteps(
       body:
         closedByOtherSideCount > 0 || askedPeerAt !== null
           ? null
-          : 'Corroboration cannot come from you. It arrives when a peer pushes their half, or when you ask for it.'
+          : 'Their record usually arrives on its own when an exchange finishes; you can also ask them for it.'
     }
   ]
 }
@@ -226,9 +227,9 @@ export function chainStripCaption(
     // four-defects] D1 minor). If it did not, say so honestly rather than
     // reprint the checkpoint-line count as if it were leaves.
     if (coveredLeafCount !== null) {
-      return `covered by checkpoint (${coveredLeafCount} ${coveredLeafCount === 1 ? 'leaf' : 'leaves'}) · after the last checkpoint is unshaded`
+      return `${coveredLeafCount} ${coveredLeafCount === 1 ? 'record' : 'records'} sealed into a checkpoint · records since the last checkpoint are unshaded`
     }
-    return 'covered by checkpoint (covered leaf count not reported) · after the last checkpoint is unshaded'
+    return 'records sealed into a checkpoint (count not reported) · records since the last checkpoint are unshaded'
   }
   const entries = `${sealedCount} entr${sealedCount === 1 ? 'y' : 'ies'}, all sealed`
   // Not reported by the host -- NEVER a false "none exists". A null count
@@ -248,18 +249,9 @@ export function chainStripCaption(
 // hover so the caption on the face can stay terse.
 // ---------------------------------------------------------------------------
 
-export const INTEGRITY_TILE_INFO = {
-  sealed: 'Records this node has sealed into its own chain — recomputed from those records, not a claim about their contents.',
-  registered:
-    'Checkpoints a witness this node does not run holds. A local-only checkpoint is not registration — only a witness holding it counts here.',
-  closedByOtherSide:
-    'Exchanges where the other side’s signed half is held here and recomputes to cite your half by digest — through the one gate, not a reputation signal.',
-  contradicted:
-    'Exchanges where a held half disagrees with yours by digest — a recomputed disagreement, surfaced, never a silent zero.'
-} as const
+export const INTEGRITY_TILE_INFO = INTEGRITY_TILE_TOOLTIPS
 
-export const CHAIN_BAR_INFO =
-  'The shaded range is the leaves a checkpoint covers; everything after the last checkpoint is unshaded. Registration means a witness this node does not run holds that checkpoint.'
+export const CHAIN_BAR_INFO = CHAIN_STRIP_TOOLTIP
 
 // ---------------------------------------------------------------------------
 // Once-per-node facts -- retention, capture boundary + rule, identity.

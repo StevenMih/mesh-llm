@@ -17,6 +17,8 @@ import { Button } from '@/components/ui/button'
 import { StatusBadge } from '@/components/ui/StatusBadge'
 import type { ExchangeLedgerRow } from '@/features/capsules/lib/exchange-ledger'
 import { saveTextFile } from '@/features/capsules/lib/exchange-export'
+import { InfoHover } from '@/features/capsules/components/InfoHover'
+import { TWIN_NO_VERDICT_TOOLTIP } from '@/features/capsules/lib/tooltip-copy'
 import { twinComparisonParametersLine, twinDisclosureSentence, twinResponseTexts } from '@/features/capsules/lib/twin-bracket'
 
 const diffViewerStyles = {
@@ -66,9 +68,12 @@ export function TwinBracket({ bracketId, rows, twinSampleRateDenominator, childr
     >
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border-soft bg-panel-strong/60 px-3 py-1.5">
         <p className="type-caption font-mono font-medium text-fg-dim">TWIN · {bracketId} · same request, two peers</p>
-        <StatusBadge size="caption" tone="muted">
-          no verdict
-        </StatusBadge>
+        <span className="inline-flex items-center gap-1">
+          <StatusBadge size="caption" tone="muted">
+            no verdict
+          </StatusBadge>
+          <InfoHover census="twin:no_verdict" describes="the no verdict badge" label={TWIN_NO_VERDICT_TOOLTIP} />
+        </span>
       </div>
 
       <div className="flex flex-col divide-y divide-border-soft">{children}</div>

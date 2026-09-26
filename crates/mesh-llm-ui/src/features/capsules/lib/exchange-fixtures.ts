@@ -51,7 +51,7 @@ export const HARNESS_PANE_A_PAYLOAD: PaneAJson = {
         },
         adjudications_received: { value: 8, source: 'self_held', note: 'verdicts received about served exchanges' },
         no_requester_identifiers: 'this summary reads and reports no requester-identity field',
-        not_a_score: 'An account of facts + a witness handle to verify them, not a score or routing recommendation.'
+        not_a_score: 'An account of facts, with a witness handle to verify them.'
       }
     }
   }

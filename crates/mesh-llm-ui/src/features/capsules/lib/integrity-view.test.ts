@@ -21,7 +21,7 @@ describe('buildSetupSteps — ledger-ux-from-the-user §6, three steps in value 
     expect(steps.map((step) => step.title)).toEqual([
       'Register your checkpoints',
       'Bind an owner identity',
-      'Get the other side’s half'
+      'Get the other side’s record'
     ])
     expect(steps.every((step) => !step.done)).toBe(true)
     expect(steps[0].status).toBe('not set up')
@@ -30,7 +30,8 @@ describe('buildSetupSteps — ledger-ux-from-the-user §6, three steps in value 
     // Each explains what it buys and what it does not.
     expect(steps[0].body).toMatch(/does not make your records true/)
     expect(steps[1].body).toMatch(/does not prove who you are/)
-    expect(steps[2].body).toMatch(/Corroboration cannot come from you/)
+    expect(steps[2].body).toMatch(/usually arrives on its own/)
+    expect(steps[2].body).not.toMatch(/corroboration|half/i)
     // The retired "never asked" framing is gone -- a half can arrive by push.
     expect(steps[2].status).not.toMatch(/never asked/)
   })
@@ -167,25 +168,23 @@ describe('buildRegistrationCopy — only renders once a checkpoint exists', () =
 })
 
 describe('chainStripCaption — leaf pluralization + the three absence states', () => {
-  it('pluralizes correctly off the COVERED-LEAF count: "1 leaf", never "1 leaves"', () => {
+  it('pluralizes correctly off the COVERED-LEAF count, in records: "1 record", never "1 records" (and never "leaves")', () => {
     // 3rd arg is the covered-leaf count; 2nd is the checkpoint-LINE count.
-    expect(chainStripCaption(5, 1, 1)).toBe('covered by checkpoint (1 leaf) · after the last checkpoint is unshaded')
-    expect(chainStripCaption(5, 1, 3)).toBe('covered by checkpoint (3 leaves) · after the last checkpoint is unshaded')
+    expect(chainStripCaption(5, 1, 1)).toBe('1 record sealed into a checkpoint · records since the last checkpoint are unshaded')
+    expect(chainStripCaption(5, 1, 3)).toBe('3 records sealed into a checkpoint · records since the last checkpoint are unshaded')
   })
 
   it('renders the covered-leaf count, NOT the checkpoint-line count', () => {
     // The bug: a SINGLE checkpoint line covering 8 leaves read "1 leaves"
     // because the caption printed checkpoint_count. It must print the covered
     // leaf count (8), against the live-ledger reshoot: mmr_size 15 -> 8 leaves.
-    expect(chainStripCaption(8, 1, 8)).toBe(
-      'covered by checkpoint (8 leaves) · after the last checkpoint is unshaded'
-    )
+    expect(chainStripCaption(8, 1, 8)).toBe('8 records sealed into a checkpoint · records since the last checkpoint are unshaded')
   })
 
   it('says so honestly when a checkpoint exists but no covered-leaf count was reported', () => {
     // Never reprint the checkpoint-line count as if it were a leaf count.
     expect(chainStripCaption(5, 2, null)).toBe(
-      'covered by checkpoint (covered leaf count not reported) · after the last checkpoint is unshaded'
+      'records sealed into a checkpoint (count not reported) · records since the last checkpoint are unshaded'
     )
   })
 
@@ -199,18 +198,19 @@ describe('Item 4 — Integrity tile + chain-bar (i) copy: evidence, never a scor
   it('names an evidence source in every tile line and refuses the score reading', () => {
     for (const info of Object.values(INTEGRITY_TILE_INFO)) {
       expect(info.length).toBeGreaterThan(0)
-      // The forbidden words themselves -- "not a reputation signal" is an
-      // honest refusal, not an overclaim, so only score/rating/proven are banned.
-      expect(info).not.toMatch(/\b(score|rating|proven)\b/i)
+      // UX §8 rule 4: a banned word stays off the screen even to deny it.
+      expect(info).not.toMatch(/\b(score|rating|proven|reputation|judgement)\b/i)
     }
-    // The two witness-bearing tiles state the registration/witness distinction.
+    // The witness tile names the witness; the closed tile names their signed
+    // record, checked on this machine.
     expect(INTEGRITY_TILE_INFO.registered).toMatch(/witness/i)
-    expect(INTEGRITY_TILE_INFO.closedByOtherSide).toMatch(/held here|recompute/i)
+    expect(INTEGRITY_TILE_INFO.closedByOtherSide).toMatch(/their own signed record, checked on this machine/)
   })
 
   it('the chain-bar (i) carries the checkpoint-coverage explanation (moved off the caption)', () => {
-    expect(CHAIN_BAR_INFO).toMatch(/leaves a checkpoint covers/i)
-    expect(CHAIN_BAR_INFO).toMatch(/witness this node does not run/i)
+    expect(CHAIN_BAR_INFO).toBe(
+      'Shaded: records sealed into a checkpoint. Unshaded: records sealed since the last checkpoint.'
+    )
   })
 })
 

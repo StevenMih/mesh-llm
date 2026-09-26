@@ -119,7 +119,7 @@ describe('LedgerPageContent', () => {
     render(<LedgerPageContent />, { wrapper: makeWrapper() })
 
     expect(
-      screen.getByText('Everything here is recomputed from sealed records. Nothing is a score.')
+      screen.getByText('Everything here is checked on this machine, from sealed records.')
     ).toBeInTheDocument()
   })
 
@@ -128,14 +128,14 @@ describe('LedgerPageContent', () => {
 
     // The load-bearing banner is still on the face -- hovers do not replace it.
     expect(
-      screen.getByText('Everything here is recomputed from sealed records. Nothing is a score.')
+      screen.getByText('Everything here is checked on this machine, from sealed records.')
     ).toBeInTheDocument()
 
     // The Live/Local + "This node's copy" chips each carry an (i) whose
     // aria-describedby holds the moved honest sentence.
     const copyGlyph = screen.getByRole('button', { name: "About the This node's copy chip" })
     const copyDesc = document.getElementById(copyGlyph.getAttribute('aria-describedby') as string)
-    expect(copyDesc).toHaveTextContent('Their halves appear here as they give them to you.')
+    expect(copyDesc).toHaveTextContent('The records this node keeps, sealed and checkpointed.')
 
     // The connectivity chip's (i) is present too (Live or Local depending on
     // the harness's sidecar-connected state).
@@ -412,7 +412,7 @@ describe('LedgerPageContent', () => {
     expect(await screen.findByText(/^\d+ sealed by you/)).toBeInTheDocument()
   })
 
-  it('[mesh-evidence-ui-headlines-and-empty-states] "Get the other side’s half" and "Register a checkpoint" beside the Exchanges headline both open Integrity — the one place either setup step exists today', async () => {
+  it('[mesh-evidence-ui-headlines-and-empty-states] "Get the other side’s record" and "Register a checkpoint" beside the Exchanges headline both open Integrity — the one place either setup step exists today', async () => {
     const { fetchPaneCList } = await import('@/features/capsules/api/sidecarClient')
     vi.mocked(fetchPaneCList).mockResolvedValue({
       rows: [
@@ -440,7 +440,7 @@ describe('LedgerPageContent', () => {
     await user.click(screen.getByRole('tab', { name: /exchanges/i }))
     await screen.findByText(/confirmed by the other side/i)
 
-    await user.click(screen.getByRole('button', { name: 'Get the other side’s half' }))
+    await user.click(screen.getByRole('button', { name: 'Get the other side’s record' }))
     expect(await screen.findByText('Chain integrity')).toBeInTheDocument()
 
     await user.click(screen.getByRole('tab', { name: /exchanges/i }))
@@ -546,16 +546,14 @@ describe('LedgerPageContent', () => {
     expect(screen.queryByText(/Nothing needs your attention/)).not.toBeInTheDocument()
   })
 
-  it('Ledger badge reads "This node\'s copy" with the two-sided-provenance subtext behind its (i), never the retired "Local only"', () => {
+  it('Ledger badge reads "This node\'s copy" with its one-sentence meaning behind its (i), never the retired "Local only"', () => {
     render(<LedgerPageContent />, { wrapper: makeWrapper() })
 
     expect(screen.getByText("This node's copy")).toBeInTheDocument()
-    // The two-sided-provenance sentence moved off the face and behind the
-    // chip's (i) glyph -- carried by the glyph's aria-describedby copy, still
-    // present in the DOM, never deleted.
-    expect(
-      screen.getByText(/Their halves appear here as they give them to you\./)
-    ).toBeInTheDocument()
+    // The pill's meaning sits behind its (i), carried by the glyph's
+    // aria-describedby copy (UX §8 rewrite; the pill's rename to "Your
+    // records" lands with the plain-language pass).
+    expect(screen.getByText('The records this node keeps, sealed and checkpointed.')).toBeInTheDocument()
     expect(screen.queryByText('Local only')).not.toBeInTheDocument()
   })
 })
@@ -628,8 +626,8 @@ describe('LedgerPageContent — Part 3: Exchanges two-sided stream + row inspect
     // exchange whose peer is unrecorded), so the gated text names that truth.
     expect(screen.getByText('Other side: not known')).toBeInTheDocument()
     expect(screen.queryByText('nothing to ask yet')).not.toBeInTheDocument()
-    expect(screen.queryByText("You haven't asked for their half.")).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Ask them for their half' })).not.toBeInTheDocument()
+    expect(screen.queryByText("You haven’t asked for their record.")).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Ask them for their record' })).not.toBeInTheDocument()
 
     // `▸ checks` expands the full nine-property detail inline, under the
     // row -- never a dialog.
@@ -712,8 +710,8 @@ describe('LedgerPageContent — Part 3: Exchanges two-sided stream + row inspect
     render(<LedgerPageContent />, { wrapper: makeWrapper() })
     await user.click(screen.getByRole('tab', { name: /exchanges/i }))
 
-    expect(await screen.findByText("You haven't asked for their half.")).toBeInTheDocument()
-    const askButton = screen.getByRole('button', { name: 'Ask them for their half' })
+    expect(await screen.findByText("You haven’t asked for their record.")).toBeInTheDocument()
+    const askButton = screen.getByRole('button', { name: 'Ask them for their record' })
 
     await user.click(askButton)
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
@@ -1002,8 +1000,8 @@ describe('LedgerPageContent — Part T6: Integrity section completion', () => {
 
     await screen.findByText(/Register your checkpoints/)
     expect(screen.getByText(/Bind an owner identity/)).toBeInTheDocument()
-    expect(screen.getByText(/Get the other side’s half/)).toBeInTheDocument()
-    expect(screen.getByText(/Corroboration cannot come from you/)).toBeInTheDocument()
+    expect(screen.getByText(/Get the other side’s record/)).toBeInTheDocument()
+    expect(screen.getByText(/Their record usually arrives on its own/)).toBeInTheDocument()
     expect(screen.getByText(/does not make your records true/)).toBeInTheDocument()
     expect(screen.getByText(/does not prove who you are/)).toBeInTheDocument()
   })

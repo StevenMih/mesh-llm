@@ -8,6 +8,7 @@
 import type { PaneCRow } from '@/features/capsules/api/sidecarTypes'
 import type { CapsuleRecord } from '@/features/capsules/api/types'
 import { isDigestShaped } from '@/features/capsules/lib/canonical'
+import { CLOSED_CELL_TOOLTIPS, ROW_STATE_TOOLTIPS } from '@/features/capsules/lib/tooltip-copy'
 import type { PeerRecomputeState } from '@/features/capsules/lib/recompute-identity'
 
 export type RightCellStateKind =
@@ -289,14 +290,21 @@ export function bracketStripText(strip: BracketStrip): string {
  *  `closed`, i.e. each cell restates a fact the gate's own inputs
  *  established (`signatureOk === true`, both digests cite our half) -- no
  *  second predicate, no re-derivation. */
-export function closedPropertyCells(row: PaneCRow): string[] {
+export type ClosedPropertyCell = { key: keyof typeof CLOSED_CELL_TOOLTIPS; label: string; tooltip: string }
+
+/** The CLOSED row's per-property cells, each with its own one-sentence (i). */
+export function closedPropertyCellItems(row: PaneCRow): ClosedPropertyCell[] {
   const theirId = row.theirs.capsule_id
   return [
-    theirId ? `their id ${theirId.slice(0, 12)}…` : 'their id —',
-    'signature ✓',
-    'request digest =',
-    'response digest ='
+    { key: 'their_id', label: theirId ? `their id ${theirId.slice(0, 12)}…` : 'their id —', tooltip: CLOSED_CELL_TOOLTIPS.their_id },
+    { key: 'signature', label: 'signature ✓', tooltip: CLOSED_CELL_TOOLTIPS.signature },
+    { key: 'request', label: 'request =', tooltip: CLOSED_CELL_TOOLTIPS.request },
+    { key: 'response', label: 'response =', tooltip: CLOSED_CELL_TOOLTIPS.response }
   ]
+}
+
+export function closedPropertyCells(row: PaneCRow): string[] {
+  return closedPropertyCellItems(row).map((cell) => cell.label)
 }
 
 /** The right cell's rendered sentence. Every OPEN variant reads as a
@@ -305,7 +313,7 @@ export function closedPropertyCells(row: PaneCRow): string[] {
 export function rightCellText(state: RightCellState): string {
   switch (state.kind) {
     case 'closed':
-      return '✓ cites your half by digest'
+      return '✓ same request and answer as yours'
     case 'contradicted':
       return '⚠ differs'
     case 'open_refused':
@@ -315,11 +323,11 @@ export function rightCellText(state: RightCellState): string {
     case 'open_asked':
       return `Asked ${dateOrFallback(state.date)}. No reply yet.`
     case 'open_not_held':
-      return 'A peer capsule is known but their half is not held — expand checks to fetch it.'
+      return 'Their record hasn’t arrived yet.'
     case 'open_not_given':
-      return 'No fetchable capsule id from them — their half is not held.'
+      return 'Their record hasn’t arrived yet.'
     case 'open_not_asked':
-      return "You haven't asked for their half."
+      return 'You haven’t asked for their record.'
     default: {
       const exhaustiveCheck: never = state.kind
       return exhaustiveCheck
@@ -333,28 +341,7 @@ export function rightCellText(state: RightCellState): string {
  *  not-held cases are the ones Item 4 calls out; the rest carry the same
  *  discipline so every state's (i) has an honest sentence. */
 export function rightCellDetail(state: RightCellState): string {
-  switch (state.kind) {
-    case 'closed':
-      return 'Their signed half is held here and recomputes to cite your half by the same request and response digests — through the one gate, not a reputation signal. The per-property cells restate exactly those gate inputs.'
-    case 'contradicted':
-      return 'A held half disagrees with yours by digest — a recomputed disagreement, surfaced here, not a judgement of the peer.'
-    case 'open_refused':
-      return 'The peer declined to share their half and signed the refusal. The signed refusal is the evidence; the exchange stays open.'
-    case 'open_absent':
-      return 'The peer says they hold no record of this exchange. That is their statement, held here — nothing here recomputes their half.'
-    case 'open_asked':
-      return 'You asked for their half and no reply has arrived. The exchange stays open until a held half can be recomputed.'
-    case 'open_not_held':
-      return 'A peer capsule id is known but their half is not held here, so nothing can be recomputed against yours yet. Expand checks to fetch it.'
-    case 'open_not_given':
-      return 'The peer’s capsule id was not given, so their half is not held and nothing can be recomputed against yours.'
-    case 'open_not_asked':
-      return 'You have not asked for their half. Corroboration cannot come from you — it needs their signed half, held and recomputed here.'
-    default: {
-      const exhaustiveCheck: never = state.kind
-      return exhaustiveCheck
-    }
-  }
+  return ROW_STATE_TOOLTIPS[state.kind]
 }
 
 export function rightCellStatusLabel(state: RightCellState): string {
@@ -405,7 +392,7 @@ export function rightCellAction(state: RightCellState): string | null {
     case 'open_not_given':
       return null
     case 'open_not_asked':
-      return 'Ask them for their half'
+      return 'Ask them for their record'
     default: {
       const exhaustiveCheck: never = state.kind
       return exhaustiveCheck

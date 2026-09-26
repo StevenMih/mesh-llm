@@ -284,7 +284,11 @@ export function LedgerPeersTable({
                     {column === 'period' ? peersWindowText(visibleRows) : COLUMN_LABELS[column]}
                     {/* Terse header on the face; what the column means and what
                        evidence backs it live behind the (i). */}
-                    <InfoHover describes={COLUMN_LABELS[column]} label={PEER_COLUMN_INFO[column]} />
+                    <InfoHover
+                      census={`peer_column:${column}`}
+                      describes={COLUMN_LABELS[column]}
+                      label={PEER_COLUMN_INFO[column]}
+                    />
                   </span>
                 </TableHead>
               ) : null

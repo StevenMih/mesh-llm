@@ -198,15 +198,15 @@ describe('ExchangeStreamRow — the states render distinct text/status/action', 
     { kind: 'open_asked', text: 'Asked 4 Sep. No reply yet.', status: 'OPEN · asked', action: 'Ask again' },
     {
       kind: 'open_not_given',
-      text: 'No fetchable capsule id from them — their half is not held.',
+      text: 'Their record hasn’t arrived yet.',
       status: 'OPEN',
       action: null
     },
     {
       kind: 'open_not_asked',
-      text: "You haven't asked for their half.",
+      text: 'You haven’t asked for their record.',
       status: 'OPEN',
-      action: 'Ask them for their half'
+      action: 'Ask them for their record'
     }
   ]
 
@@ -234,22 +234,35 @@ describe('ExchangeStreamRow — the states render distinct text/status/action', 
   it('[mesh-citing-record-shots-four-defects] D4(d): CLOSED renders compact per-property cells fed from the gate inputs, not one sentence', () => {
     render(<ExchangeStreamRow onAction={vi.fn()} {...toggleProps()} rail={NO_RAIL} row={makeRow('closed')} />)
     expect(screen.getByText('CLOSED')).toBeInTheDocument()
-    // The four cells: their id · signature ✓ · request digest = · response
-    // digest = -- each restating a fact the gate's own inputs established.
+    // The four cells: their id · signature ✓ · request = · response = --
+    // each restating a fact the gate's own inputs established.
     expect(screen.getByText(`their id ${'a'.repeat(12)}…`)).toBeInTheDocument()
     expect(screen.getByText('signature ✓')).toBeInTheDocument()
-    expect(screen.getByText('request digest =')).toBeInTheDocument()
-    expect(screen.getByText('response digest =')).toBeInTheDocument()
-    // The old single sentence is gone; no action button on a closed row --
-    // the two disclosure toggles + the state (i) info glyph.
-    expect(screen.queryByText('✓ cites your half by digest')).not.toBeInTheDocument()
-    expect(screen.getAllByRole('button')).toHaveLength(3)
+    expect(screen.getByText('request =')).toBeInTheDocument()
+    expect(screen.getByText('response =')).toBeInTheDocument()
+    // No action button on a closed row -- the two disclosure toggles, the
+    // state (i), and one (i) per property cell (UX §8).
+    expect(screen.getAllByRole('button')).toHaveLength(7)
+  })
+
+  it('UX §8: each CLOSED property cell carries its own one-sentence (i)', () => {
+    render(<ExchangeStreamRow onAction={vi.fn()} {...toggleProps()} rail={NO_RAIL} row={makeRow('closed')} />)
+    const expected: Array<[string, string]> = [
+      [`their id ${'a'.repeat(12)}…`, 'The id of their record; it’s a fingerprint of the record itself.'],
+      ['signature ✓', 'Signed with the key this peer announces.'],
+      ['request =', 'The same request as in your record.'],
+      ['response =', 'The same answer as in your record.']
+    ]
+    for (const [label, sentence] of expected) {
+      const glyph = screen.getByRole('button', { name: `About ${label}` })
+      expect(document.getElementById(glyph.getAttribute('aria-describedby') as string)).toHaveTextContent(sentence)
+    }
   })
 
   it('D4(d) ADVERSARIAL: the per-property cells render ONLY on a gate-closed row — an OPEN row never borrows them', () => {
     render(<ExchangeStreamRow onAction={vi.fn()} {...toggleProps()} rail={NO_RAIL} row={makeRow('open_not_held')} />)
     expect(screen.queryByText('signature ✓')).not.toBeInTheDocument()
-    expect(screen.queryByText('request digest =')).not.toBeInTheDocument()
+    expect(screen.queryByText('request =')).not.toBeInTheDocument()
   })
 
   it('Item 4: the state carries an (i) whose aria-describedby holds the fuller story (terse cell on the face)', () => {
@@ -259,22 +272,22 @@ describe('ExchangeStreamRow — the states render distinct text/status/action', 
     // The (i), wired to the fuller CLOSED story.
     const glyph = screen.getByRole('button', { name: 'About the CLOSED state' })
     const description = document.getElementById(glyph.getAttribute('aria-describedby') as string)
-    expect(description).toHaveTextContent('cite your half by the same request and response digests')
-    expect(description).toHaveTextContent('not a reputation signal')
+    expect(description).toHaveTextContent('They sent their own signed record of this exchange.')
+    expect(description).toHaveTextContent('same request and answer as yours')
   })
 
-  it('Item 4: an OPEN · not held state carries the "their half is not held" fuller story behind its (i)', () => {
+  it('Item 4: an OPEN · not held state says their record has not arrived yet, behind its (i)', () => {
     render(<ExchangeStreamRow onAction={vi.fn()} {...toggleProps()} rail={NO_RAIL} row={makeRow('open_not_held')} />)
     const glyph = screen.getByRole('button', { name: 'About the OPEN · not held state' })
     const description = document.getElementById(glyph.getAttribute('aria-describedby') as string)
-    expect(description).toHaveTextContent('their half is not held here')
+    expect(description).toHaveTextContent('Their record of this exchange hasn’t arrived yet.')
   })
 
   it('LOAD-BEARING: not-asked and unanswered render visibly distinct text on the row', () => {
     const { unmount: unmountA } = render(
       <ExchangeStreamRow onAction={vi.fn()} {...toggleProps()} rail={NO_RAIL} row={makeRow('open_not_asked')} />
     )
-    const notAskedText = screen.getByText("You haven't asked for their half.").textContent
+    const notAskedText = screen.getByText('You haven’t asked for their record.').textContent
     unmountA()
     const { unmount: unmountB } = render(
       <ExchangeStreamRow onAction={vi.fn()} {...toggleProps()} rail={NO_RAIL} row={makeRow('open_asked')} />
@@ -370,8 +383,8 @@ describe('ExchangeStreamRow — [ledger-T1-ask-half-action] counterparty gating 
     // side, we just don't know it. Never the old "nothing to ask yet".
     expect(screen.getByText('Other side: not known')).toBeInTheDocument()
     expect(screen.queryByText('nothing to ask yet')).not.toBeInTheDocument()
-    expect(screen.queryByText("You haven't asked for their half.")).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Ask them for their half' })).not.toBeInTheDocument()
+    expect(screen.queryByText('You haven’t asked for their record.')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Ask them for their record' })).not.toBeInTheDocument()
     // The two disclosure toggles still render -- only the ask action is gated.
     expect(screen.getByRole('button', { name: '▸ content' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '▸ checks' })).toBeInTheDocument()
@@ -482,7 +495,7 @@ describe('[ledger-T4-inline-inspector] ExchangeStreamRow — the two row toggles
 
   it('the ask/compare action cell button and the two toggles are independent siblings, never nested', () => {
     render(<ExchangeStreamRow onAction={vi.fn()} {...toggleProps()} rail={NO_RAIL} row={makeRow('open_not_asked')} />)
-    const actionButton = screen.getByRole('button', { name: 'Ask them for their half' })
+    const actionButton = screen.getByRole('button', { name: 'Ask them for their record' })
     const contentToggle = screen.getByRole('button', { name: '▸ content' })
     const checksToggle = screen.getByRole('button', { name: '▸ checks' })
     expect(actionButton.contains(contentToggle)).toBe(false)
@@ -503,7 +516,7 @@ describe('[ledger-T4-inline-inspector] ExchangeStreamRow — the two row toggles
         row={makeRow('open_not_asked')}
       />
     )
-    await user.click(screen.getByRole('button', { name: 'Ask them for their half' }))
+    await user.click(screen.getByRole('button', { name: 'Ask them for their record' }))
     expect(onToggleContent).not.toHaveBeenCalled()
     expect(onToggleChecks).not.toHaveBeenCalled()
   })
@@ -768,8 +781,8 @@ describe('ExchangeStreamRow — [mesh-evidence-ui-entry-row-and-chips] §3A one 
     const { container } = render(
       <ExchangeStreamRow onAction={vi.fn()} {...toggleProps()} rail={NO_RAIL} row={makeRow('open_not_asked')} />
     )
-    expect(screen.getByText("You haven't asked for their half.")).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Ask them for their half' })).toBeInTheDocument()
+    expect(screen.getByText('You haven’t asked for their record.')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Ask them for their record' })).toBeInTheDocument()
     // Exactly one tone marker on the row, and it's muted -- no colour.
     const toneEls = container.querySelectorAll('[data-row-tone]')
     expect(toneEls).toHaveLength(1)

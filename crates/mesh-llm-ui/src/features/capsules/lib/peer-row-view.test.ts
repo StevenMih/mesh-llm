@@ -525,9 +525,9 @@ describe('dealtWithRowView / advertisedOnlyRowView — one shape, honest degrada
 })
 
 describe('Item 4 — Peers column (i) copy + self-reported detail: evidence, never a score', () => {
-  it('Confirmed carries the blessed evidence sentence verbatim', () => {
+  it('Confirmed carries the UX §8 sentence verbatim', () => {
     expect(PEER_COLUMN_INFO.confirmed).toBe(
-      'their signed half of this exchange, held here and recomputed — not a reputation signal'
+      'How many of your exchanges with them are confirmed by their own signed record, checked on this machine.'
     )
   })
 
@@ -535,13 +535,13 @@ describe('Item 4 — Peers column (i) copy + self-reported detail: evidence, nev
     for (const key of ['exchanges', 'confirmed', 'match', 'adjudication', 'witness', 'period'] as const) {
       const info = PEER_COLUMN_INFO[key]
       expect(info.length).toBeGreaterThan(0)
-      expect(info).not.toMatch(/\b(score|rating|proven)\b/i)
+      expect(info).not.toMatch(/\b(score|rating|proven|reputation|judgement|ranking)\b/i)
     }
   })
 
   it('the self-reported detail states the identity is self-reported and not independently attested', () => {
     expect(SELF_REPORTED_DETAIL).toMatch(/self-reported/i)
-    expect(SELF_REPORTED_DETAIL).toMatch(/independently attests/i)
-    expect(SELF_REPORTED_DETAIL).not.toMatch(/\b(score|rating|proven)\b/i)
+    expect(SELF_REPORTED_DETAIL).toMatch(/only the records they signed, checked on this machine, count as evidence/i)
+    expect(SELF_REPORTED_DETAIL).not.toMatch(/\b(score|rating|proven|halves|recomputed)\b/i)
   })
 })

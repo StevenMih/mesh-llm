@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 
 const RETIRED_PHRASES = [
-  // -> "Get the other side’s half" (7bc96e8a4)
+  // -> "Get the other side’s record" (7bc96e8a4)
   'Ask a peer',
   // -> "not held" (7bc96e8a4: the banned word "pending" left the on-screen state)
   'pending fetch',
@@ -19,8 +19,23 @@ const RETIRED_PHRASES = [
   'Nothing needs your attention',
   // the duplicate headline; the ruled vocabulary is "confirmed by the other side"
   'confirmed by anyone else',
-  // -> "No fetchable capsule id from them — their half is not held."
-  'Their capsule id: not given'
+  // -> "Their record hasn’t arrived yet."
+  'Their capsule id: not given',
+  // [mesh-evidence-tooltips-complete] UX §8 -- rule 4: a banned word stays off
+  // the screen even to deny it; rule 3: plain words; rule 5: never ask for
+  // what isn't needed.
+  'not a reputation signal',
+  'reputation',
+  'judgement of the peer',
+  'Nothing is a score',
+  'a score',
+  'xpand checks to fetch it', // both "Expand…" and "expand…"
+  'Corroboration cannot come from you',
+  'Their halves appear here',
+  'cites your half by digest',
+  'Ask them for their half',
+  'Get the other side’s half',
+  'covered by checkpoint ('
 ] as const
 
 const HERE = dirname(fileURLToPath(import.meta.url))

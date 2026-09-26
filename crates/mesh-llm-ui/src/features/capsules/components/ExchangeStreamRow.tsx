@@ -25,7 +25,7 @@ import { checkRowDomId, exchangeRowDomId } from '@/features/capsules/lib/exchang
 import {
   bracketStrip,
   bracketStripText,
-  closedPropertyCells,
+  closedPropertyCellItems,
   deriveRightCellState,
   isAlarmState,
   isAskAction,
@@ -294,7 +294,12 @@ export function ExchangeStreamRow({
             {/* Terse state on the face; the fuller story (their half not held,
                ✓ cites your half by digest, the CLOSED property cells) behind
                the (i). */}
-            <InfoHover describes={`the ${rightCellStatusLabel(state)} state`} label={rightCellDetail(state)} side="left" />
+            <InfoHover
+              census={`row_state:${state.kind}`}
+              describes={`the ${rightCellStatusLabel(state)} state`}
+              label={rightCellDetail(state)}
+              side="left"
+            />
           </span>
         </div>
         <div className="grid grid-cols-2 gap-0 rounded border border-border-soft">
@@ -320,12 +325,13 @@ export function ExchangeStreamRow({
               // D4(d): CLOSED renders per-property cells, not one sentence --
               // each cell restates a fact the gate's own inputs established.
               <div className="flex flex-wrap gap-1" data-closed-property-cells="true">
-                {closedPropertyCells(row.raw).map((cell) => (
+                {closedPropertyCellItems(row.raw).map((cell) => (
                   <span
-                    className="rounded border border-border-soft px-1.5 py-0.5 font-mono text-[11px] text-fg-dim"
-                    key={cell}
+                    className="inline-flex items-center gap-1 rounded border border-border-soft px-1.5 py-0.5 font-mono text-[11px] text-fg-dim"
+                    key={cell.key}
                   >
-                    {cell}
+                    {cell.label}
+                    <InfoHover census={`closed_cell:${cell.key}`} describes={cell.label} label={cell.tooltip} />
                   </span>
                 ))}
               </div>

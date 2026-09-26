@@ -99,6 +99,7 @@ import {
 } from '@/features/capsules/lib/peer-row-view'
 import { useStatusQuery } from '@/features/network/api/use-status-query'
 import { useDataMode } from '@/lib/data-mode'
+import { HERO_DESCRIPTION, HERO_TOOLTIPS } from '@/features/capsules/lib/tooltip-copy'
 
 // ---------------------------------------------------------------------------
 // Error helper — honest fetch-failure messages, never "set the URL"
@@ -330,7 +331,7 @@ function ExchangesSection({
 }: {
   recordsById: Map<string, CapsuleRecord>
   nodePubKeyPem: string | null
-  /** [mesh-evidence-ui-headlines-and-empty-states] §3E -- "Get the other side’s half" and
+  /** [mesh-evidence-ui-headlines-and-empty-states] §3E -- "Get the other side’s record" and
    *  "Register a checkpoint" beside the headline both land on the Integrity
    *  tab's setup checklist, the one place either step actually exists today
    *  (`SetupChecklist` — neither has a wired end-to-end action yet, same
@@ -625,7 +626,7 @@ function ExchangesSection({
       <div className="flex flex-col gap-2">
         {balanceHeader}
         <EmptyState
-          description="Once you ask another node for an answer, or serve one to a peer, each exchange appears here as a two-sided record — your sealed half and theirs, as they give it to you."
+          description="Once you ask another node for an answer, or serve one to a peer, each exchange appears here as a two-sided record — your sealed record and theirs, as they send it."
           hint={
             <div className="flex flex-col items-center gap-2">
               <Button
@@ -686,7 +687,7 @@ function ExchangesSection({
         Each exchange is a pair of sealed records — yours and theirs. Both sides keep a copy.
       </p>
       {/* L3.8/§3E — Two counts plus registration, no ratio, with the one
-         action that changes each ("Get the other side’s half" / "Register a checkpoint"
+         action that changes each ("Get the other side’s record" / "Register a checkpoint"
          both land on Integrity's setup checklist — see `onGoToIntegrity`'s
          doc comment above). */}
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -705,7 +706,7 @@ function ExchangesSection({
             type="button"
             variant="outline"
           >
-            Get the other side’s half
+            Get the other side’s record
           </Button>
           <Button
             className="ui-control h-8 gap-1.5 rounded-[var(--radius)] px-2.5 text-[length:var(--density-type-caption)]"
@@ -991,7 +992,7 @@ function ChainStrip({
         Your chain
         {/* The full checkpoint-coverage explanation moves behind the (i); the
            caption below stays terse. */}
-        <InfoHover describes="the chain coverage bar" label={CHAIN_BAR_INFO} />
+        <InfoHover census="integrity:chain_strip" describes="the chain coverage bar" label={CHAIN_BAR_INFO} />
       </p>
       <div className="flex items-center gap-2">
         <span className="font-mono text-xs text-fg-faint">1</span>
@@ -1034,7 +1035,7 @@ function IntegrityStatCard({ label, value, tone = 'default', info }: IntegritySt
     <div className="panel-shell min-w-0 rounded-[var(--radius-lg)] border border-border bg-panel px-[var(--panel-x)] py-[var(--panel-y)]">
       <span className="type-label inline-flex min-w-0 items-center gap-1 text-fg-faint">
         <span className="truncate">{label}</span>
-        <InfoHover describes={label} label={info} />
+        <InfoHover census={`integrity_tile:${label}`} describes={label} label={info} />
       </span>
       <div
         className="mt-[var(--panel-y,12px)] font-mono text-[length:var(--density-type-headline)] font-semibold leading-none tracking-tight"
@@ -1251,7 +1252,7 @@ export function LedgerPageContent({ focusExchangeKey }: { focusExchangeKey?: str
     <TooltipProvider delayDuration={250} skipDelayDuration={120}>
       <div className="mx-auto flex w-full max-w-[1440px] flex-col gap-[calc(var(--shell-normal)*2)]">
         <InfoBanner
-          description="Everything here is recomputed from sealed records. Nothing is a score."
+          description={HERO_DESCRIPTION}
           leadingIcon={<ShieldCheck aria-hidden="true" className="size-4" />}
           status={
             <div className="flex flex-wrap items-center gap-2">
@@ -1260,24 +1261,16 @@ export function LedgerPageContent({ focusExchangeKey }: { focusExchangeKey?: str
                   {sidecarConnected ? 'Live' : 'Local'}
                 </StatusBadge>
                 <InfoHover
+                  census={sidecarConnected ? 'hero:live' : 'hero:local'}
                   describes={sidecarConnected ? 'the Live chip' : 'the Local chip'}
-                  label={
-                    sidecarConnected
-                      ? 'Reading this node’s ledger over its running local API — the records update as this node seals them.'
-                      : 'Reading a static local copy — this node’s API is not connected, so the ledger is not updating live.'
-                  }
+                  label={sidecarConnected ? HERO_TOOLTIPS.live : HERO_TOOLTIPS.local}
                 />
               </span>
               <span className="inline-flex items-center gap-1">
                 <StatusBadge tone="muted" size="caption">
                   This node's copy
                 </StatusBadge>
-                {/* The full sentence ("Their halves appear here as they give
-                   them to you.") moves behind the chip's (i). */}
-                <InfoHover
-                  describes="the This node's copy chip"
-                  label="This is this node’s own copy of the records. Their halves appear here as they give them to you."
-                />
+                <InfoHover census="hero:your_records" describes="the This node's copy chip" label={HERO_TOOLTIPS.yourRecords} />
               </span>
             </div>
           }
