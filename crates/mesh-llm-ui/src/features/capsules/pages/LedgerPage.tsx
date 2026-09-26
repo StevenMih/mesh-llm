@@ -721,7 +721,7 @@ function ExchangesSection({
       {/* Exceptions-first line — leads with what needs attention, range
          stated, never a flat count that buries a failure below it. */}
       <p className="text-sm text-fg-dim">
-        {exceptionsFirstLine(exceptionsFirstTally(allRows), allRowsRangeText, registered)}
+        {exceptionsFirstLine(exceptionsFirstTally(allRows), allRowsRangeText)}
       </p>
 
       {/* [mesh-citing-record-shots-four-defects] D4(c): no "N shown" counter

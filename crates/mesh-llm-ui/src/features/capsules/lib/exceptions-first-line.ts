@@ -55,30 +55,30 @@ export function exceptionsFirstTally(rows: readonly ExchangeLedgerRow[]): Except
  *  timestamp, never fabricated.
  *
  * **Finding 7 (2026-09-23 assessment) -- corrected.** The zero-exceptions
- * branch used to read "Nothing needs your attention... all sealed, all
+ * branch used to read as an all-clear ("...all sealed, all
  * recomputed clean" over 135 rows with zero counterparties confirmed and
  * zero checkpoints registered -- true only of THIS node's own self-checks,
  * placed where it reads as a verdict on the whole exchange. The 10-second
  * rule (`ledger-ux-from-the-user`) wants the role-aware truth stated
- * up front instead: what this node sealed, what anyone else actually
- * confirmed, and whether any of it is registered -- in both branches, not
- * just the calm one, so a reader scanning past an exception list still
- * gets the same two honest facts. */
-export function exceptionsFirstLine(
-  tally: ExceptionsFirstTally,
-  rangeLabel: string | null,
-  registered: boolean
-): string {
-  const { total, needingAttention, failed, mismatched, askedUnanswered, confirmedByAnyoneElse } = tally
+ * up front instead: what this node sealed, what the other side actually
+ * confirmed, and whether any of it is registered.
+ *
+ * [mesh-closed-restack-not-merge] The last two facts now live in the
+ * Exchanges headline directly above this line ("You sealed N · M confirmed
+ * by the other side · registered/not registered"), in the ruled vocabulary.
+ * Repeating them here in the retired "... by anyone else" wording was the duplicate
+ * headline, so this line carries only what it adds: the range and the
+ * exception breakdown. */
+export function exceptionsFirstLine(tally: ExceptionsFirstTally, rangeLabel: string | null): string {
+  const { total, needingAttention, failed, mismatched, askedUnanswered } = tally
   const noun = total === 1 ? 'exchange' : 'exchanges'
   const rangeSuffix = rangeLabel ? `, ${rangeLabel}` : ''
   const breakdown = `${failed} failed · ${mismatched} mismatched · ${askedUnanswered} asked-and-unanswered`
-  const registrationWord = registered ? 'registered' : 'not registered'
 
   if (needingAttention === 0) {
-    return `${total} sealed by you${rangeSuffix} · ${confirmedByAnyoneElse} confirmed by anyone else · ${registrationWord}.`
+    return `${total} sealed by you${rangeSuffix}.`
   }
 
   const needNoun = needingAttention === 1 ? 'exchange needs' : 'exchanges need'
-  return `${needingAttention} ${needNoun} your attention — ${total} ${noun}${rangeSuffix}. ${breakdown}. ${confirmedByAnyoneElse} confirmed by anyone else · ${registrationWord}.`
+  return `${needingAttention} ${needNoun} your attention — ${total} ${noun}${rangeSuffix}. ${breakdown}.`
 }

@@ -131,40 +131,41 @@ describe('exceptionsFirstLine', () => {
   it('clean state states the role-aware truth, never "Nothing needs your attention"', () => {
     const line = exceptionsFirstLine(
       { total: 5, needingAttention: 0, failed: 0, mismatched: 0, askedUnanswered: 0, confirmedByAnyoneElse: 0 },
-      '3 Sep – 11 Sep',
-      false
+      '3 Sep – 11 Sep'
     )
-    expect(line).toBe('5 sealed by you, 3 Sep – 11 Sep · 0 confirmed by anyone else · not registered.')
+    expect(line).toBe('5 sealed by you, 3 Sep – 11 Sep.')
     expect(line).not.toMatch(/Nothing needs your attention/)
     expect(line).not.toMatch(/recomputed clean/)
   })
 
-  it('registered flips the trailing word, nothing else', () => {
+  it('never repeats the headline above it: no "confirmed by anyone else", no registration word', () => {
+    // [mesh-closed-restack-not-merge] the Exchanges headline carries
+    // "M confirmed by the other side · registered/not registered"; this line
+    // restating it was the retired duplicate.
     const line = exceptionsFirstLine(
       { total: 5, needingAttention: 0, failed: 0, mismatched: 0, askedUnanswered: 0, confirmedByAnyoneElse: 2 },
-      null,
-      true
+      null
     )
-    expect(line).toBe('5 sealed by you · 2 confirmed by anyone else · registered.')
+    expect(line).toBe('5 sealed by you.')
+    expect(line).not.toMatch(/confirmed by anyone else/)
+    expect(line).not.toMatch(/registered/)
   })
 
-  it('non-clean state leads with the failing count, not "Nothing needs your attention", and still states confirmed/registered', () => {
+  it('non-clean state leads with the failing count, not "Nothing needs your attention", and leaves confirmed/registered to the headline', () => {
     const line = exceptionsFirstLine(
       { total: 5, needingAttention: 2, failed: 1, mismatched: 1, askedUnanswered: 0, confirmedByAnyoneElse: 1 },
-      '3 Sep – 11 Sep',
-      false
+      '3 Sep – 11 Sep'
     )
     expect(line.startsWith('2 exchanges need your attention')).toBe(true)
     expect(line).not.toMatch(/Nothing needs your attention/)
     expect(line).toMatch(/1 failed · 1 mismatched · 0 asked-and-unanswered/)
-    expect(line).toMatch(/1 confirmed by anyone else · not registered/)
+    expect(line).not.toMatch(/confirmed by anyone else/)
   })
 
   it('singular phrasing for exactly one exchange needing attention', () => {
     const line = exceptionsFirstLine(
       { total: 3, needingAttention: 1, failed: 1, mismatched: 0, askedUnanswered: 0, confirmedByAnyoneElse: 0 },
-      null,
-      false
+      null
     )
     expect(line.startsWith('1 exchange needs your attention')).toBe(true)
   })
@@ -172,25 +173,22 @@ describe('exceptionsFirstLine', () => {
   it('states the range when available, omits it honestly when not', () => {
     const withRange = exceptionsFirstLine(
       { total: 1, needingAttention: 0, failed: 0, mismatched: 0, askedUnanswered: 0, confirmedByAnyoneElse: 0 },
-      '3 Sep',
-      false
+      '3 Sep'
     )
     expect(withRange).toContain('1 sealed by you, 3 Sep')
 
     const withoutRange = exceptionsFirstLine(
       { total: 1, needingAttention: 0, failed: 0, mismatched: 0, askedUnanswered: 0, confirmedByAnyoneElse: 0 },
-      null,
-      false
+      null
     )
-    expect(withoutRange).toContain('1 sealed by you ·')
+    expect(withoutRange).toBe('1 sealed by you.')
     expect(withoutRange).not.toContain('null')
   })
 
   it('never renders a fraction/ratio for the tally', () => {
     const line = exceptionsFirstLine(
       { total: 5, needingAttention: 2, failed: 1, mismatched: 1, askedUnanswered: 0, confirmedByAnyoneElse: 0 },
-      null,
-      false
+      null
     )
     expect(line).not.toMatch(/\d+\/\d+/)
   })

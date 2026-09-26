@@ -200,7 +200,7 @@ describe('ExchangeStreamRow — the states render distinct text/status/action', 
     { kind: 'open_asked', text: 'Asked 4 Sep. No reply yet.', status: 'OPEN · asked', action: 'Ask again' },
     {
       kind: 'open_not_given',
-      text: 'Their capsule id: not given — their half is not held.',
+      text: 'No fetchable capsule id from them — their half is not held.',
       status: 'OPEN',
       action: null
     },

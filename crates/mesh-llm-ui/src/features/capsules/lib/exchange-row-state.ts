@@ -184,7 +184,7 @@ export function deriveRightCellState(
   // No confirmed fetch yet. A peer id is "known but not fetched" (fetchable)
   // ONLY when it is digest-shaped; a self-minted correlation marker
   // (`capsule-chatcmpl-…`) is not fetchable, so the honest state is "not
-  // given", not a pending fetch that can only fail.
+  // given", not a fetch waiting to happen that can only fail.
   if (!capsuleIdIsDigestShaped(row.theirs.capsule_id)) {
     return { kind: 'open_not_given', date: null }
   }
@@ -281,7 +281,7 @@ export function rightCellText(state: RightCellState): string {
     case 'open_not_held':
       return 'A peer capsule is known but their half is not held — expand checks to fetch it.'
     case 'open_not_given':
-      return 'Their capsule id: not given — their half is not held.'
+      return 'No fetchable capsule id from them — their half is not held.'
     case 'open_not_asked':
       return "You haven't asked for their half."
     default: {
