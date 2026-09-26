@@ -211,9 +211,9 @@ export function rightCellText(state: RightCellState): string {
     case 'open_asked':
       return `Asked ${dateOrFallback(state.date)}. No reply yet.`
     case 'open_pending_fetch':
-      return 'A peer capsule is known but not fetched — expand checks to fetch it.'
+      return 'A peer capsule is known but their half is not held — expand checks to fetch it.'
     case 'open_not_given':
-      return 'Their capsule id: not given — nothing to fetch yet.'
+      return 'Their capsule id: not given — their half is not held.'
     case 'open_not_asked':
       return "You haven't asked for their half."
     default: {
@@ -236,7 +236,7 @@ export function rightCellStatusLabel(state: RightCellState): string {
     case 'open_asked':
       return 'OPEN · asked'
     case 'open_pending_fetch':
-      return 'OPEN · pending fetch'
+      return 'OPEN · not held'
     case 'open_not_given':
       return 'OPEN'
     case 'open_not_asked':

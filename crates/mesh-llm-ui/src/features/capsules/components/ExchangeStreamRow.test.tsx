@@ -201,7 +201,7 @@ describe('ExchangeStreamRow — six states render distinct text/status/action', 
     { kind: 'open_asked', text: 'Asked 4 Sep. No reply yet.', status: 'OPEN · asked', action: 'Ask again' },
     {
       kind: 'open_not_given',
-      text: 'Their capsule id: not given — nothing to fetch yet.',
+      text: 'Their capsule id: not given — their half is not held.',
       status: 'OPEN',
       action: null
     },
@@ -249,7 +249,7 @@ describe('ExchangeStreamRow — six states render distinct text/status/action', 
 })
 
 describe('ExchangeStreamRow — bilateral-retention-decay-property (agent-action-capsule @7f8a78d8, Steven-ratified 2026-09-23): one-half-unavailable renders the honest OPEN sub-state, never CONTRADICTED, never CLOSED/"attested by both"', () => {
-  it('not_found (peer legitimately holds nothing -- retention decay or never held) renders OPEN · pending fetch', () => {
+  it('not_found (peer legitimately holds nothing -- retention decay or never held) renders OPEN · not held', () => {
     const row = makeRow('open_pending_fetch')
     vi.mocked(usePeerLedgerRecompute).mockReturnValue({
       status: 'not_found',
@@ -259,12 +259,12 @@ describe('ExchangeStreamRow — bilateral-retention-decay-property (agent-action
       fetch: vi.fn()
     })
     render(<ExchangeStreamRow onAction={vi.fn()} {...toggleProps()} rail={NO_RAIL} row={row} />)
-    expect(screen.getByText('OPEN · pending fetch')).toBeInTheDocument()
+    expect(screen.getByText('OPEN · not held')).toBeInTheDocument()
     expect(screen.queryByText('CONTRADICTED')).not.toBeInTheDocument()
     expect(screen.queryByText('CLOSED')).not.toBeInTheDocument()
   })
 
-  it('error (transport/verification failure -- not a disagreement) renders OPEN · pending fetch, never CONTRADICTED', () => {
+  it('error (transport/verification failure -- not a disagreement) renders OPEN · not held, never CONTRADICTED', () => {
     const row = makeRow('open_pending_fetch')
     vi.mocked(usePeerLedgerRecompute).mockReturnValue({
       status: 'error',
@@ -275,7 +275,7 @@ describe('ExchangeStreamRow — bilateral-retention-decay-property (agent-action
       fetch: vi.fn()
     })
     render(<ExchangeStreamRow onAction={vi.fn()} {...toggleProps()} rail={NO_RAIL} row={row} />)
-    expect(screen.getByText('OPEN · pending fetch')).toBeInTheDocument()
+    expect(screen.getByText('OPEN · not held')).toBeInTheDocument()
     expect(screen.queryByText('CONTRADICTED')).not.toBeInTheDocument()
   })
 

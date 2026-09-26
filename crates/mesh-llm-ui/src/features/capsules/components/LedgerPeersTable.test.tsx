@@ -111,6 +111,10 @@ describe('LedgerPeersTable — toolbar', () => {
     render(<LedgerPeersTable {...props} />)
 
     expect(screen.getByRole('columnheader', { name: 'Match' })).toBeInTheDocument()
+    // RULED VOCAB copy-pin: "confirmed by THE other side" (never "by other
+    // side") -- consistent with LedgerPage's own count line and the Integrity
+    // rung status.
+    expect(screen.getByRole('columnheader', { name: 'Confirmed by the other side' })).toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: /columns/i }))
     await user.click(screen.getByRole('menuitemcheckbox', { name: 'Match' }))

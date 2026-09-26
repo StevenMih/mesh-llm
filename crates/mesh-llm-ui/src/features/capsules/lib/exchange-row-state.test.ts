@@ -385,7 +385,7 @@ describe('rightCellStatusLabel', () => {
       'OPEN · refused',
       'OPEN · absent',
       'OPEN · asked',
-      'OPEN · pending fetch',
+      'OPEN · not held',
       'OPEN',
       'OPEN'
     ])

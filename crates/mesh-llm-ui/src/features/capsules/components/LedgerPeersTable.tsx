@@ -43,7 +43,7 @@ import type { Peer } from '@/features/app-tabs/types'
 
 const COLUMN_LABELS: Record<PeerTableColumnKey, string> = {
   exchanges: 'Exchanges',
-  confirmed: 'Confirmed by other side',
+  confirmed: 'Confirmed by the other side',
   match: 'Match',
   adjudication: 'Adjudication',
   witness: 'Witness',

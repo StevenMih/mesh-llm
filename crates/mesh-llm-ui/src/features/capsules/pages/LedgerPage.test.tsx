@@ -358,9 +358,9 @@ describe('LedgerPageContent — Part 3: Exchanges two-sided stream + row inspect
     vi.clearAllMocks()
   })
 
-  it('[ledger-T4-inline-inspector] renders a two-sided row per exchange (OPEN · pending fetch for a peer-asserted id with no bytes held, OPEN for a unilateral one), the `▸ checks` toggle expands full detail inline', async () => {
+  it('[ledger-T4-inline-inspector] renders a two-sided row per exchange (OPEN · not held for a peer-asserted id with no bytes held, OPEN for a unilateral one), the `▸ checks` toggle expands full detail inline', async () => {
     // [mesh-console-evidence-tab-honesty-defects] finding 1: a peer-
-    // asserted id with no held bytes is OPEN · pending fetch, never CLOSED
+    // asserted id with no held bytes is OPEN · not held, never CLOSED
     // -- this fixture used to read `theirs: { state: 'present', ... }` and
     // assert CLOSED off nothing but that presence, exactly the bug the
     // 2026-09-23 assessment found live on 110 of 135 rows.
@@ -405,13 +405,13 @@ describe('LedgerPageContent — Part 3: Exchanges two-sided stream + row inspect
     render(<LedgerPageContent />, { wrapper: makeWrapper() })
     await user.click(screen.getByRole('tab', { name: /exchanges/i }))
 
-    // Both rows load — one OPEN · pending fetch (a peer-asserted id, no
+    // Both rows load — one OPEN · not held (a peer-asserted id, no
     // bytes held or fetched), one OPEN (never asked, per L-C -- an absent
     // theirs record with no evidence_outcome carried can only honestly
     // resolve to "not asked").
     expect(await screen.findByText('mine-clean')).toBeInTheDocument()
     expect(screen.getByText('mine-alarm')).toBeInTheDocument()
-    expect(screen.getByText('OPEN · pending fetch')).toBeInTheDocument()
+    expect(screen.getByText('OPEN · not held')).toBeInTheDocument()
     expect(screen.queryByText('CLOSED')).not.toBeInTheDocument()
     expect(screen.getAllByText('OPEN').length).toBeGreaterThan(0)
     // [ledger-T1-ask-half-action]: neither row carries a counterparty (the
