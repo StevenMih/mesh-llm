@@ -3,7 +3,7 @@
 // `exchange-row-state.test.ts` / `exchange-stream.test.ts`.
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ExchangeStreamRow } from '@/features/capsules/components/ExchangeStreamRow'
 import { exchangeRowDomId } from '@/features/capsules/lib/exchange-pages'
 import type { ExchangeLedgerRow } from '@/features/capsules/lib/exchange-ledger'
@@ -762,5 +762,186 @@ describe('ExchangeStreamRow — [mesh-ledger-b4-toggle-content] toggle ① conte
     const theirVoice = screen.getByText(/They state they hold no payload/).textContent
 
     expect(yourVoice).not.toBe(theirVoice)
+  })
+})
+
+describe('ExchangeStreamRow — [mesh-evidence-ui-entry-row-and-chips] §3A one colour per state', () => {
+  it('a row with no held bytes (OPEN) renders no colour and the invitation to act', () => {
+    const { container } = render(
+      <ExchangeStreamRow onAction={vi.fn()} {...toggleProps()} rail={NO_RAIL} row={makeRow('open_not_asked')} />
+    )
+    expect(screen.getByText("You haven't asked for their half.")).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Ask them for their half' })).toBeInTheDocument()
+    // Exactly one tone marker on the row, and it's muted -- no colour.
+    const toneEls = container.querySelectorAll('[data-row-tone]')
+    expect(toneEls).toHaveLength(1)
+    expect(toneEls[0]).toHaveAttribute('data-row-tone', 'muted')
+  })
+
+  it('MUTANT: every OPEN state (not just open_not_asked) renders the muted/no-colour tone', () => {
+    const openKinds: RightCellStateKind[] = [
+      'open_refused',
+      'open_absent',
+      'open_asked',
+      'open_not_held',
+      'open_not_given',
+      'open_not_asked'
+    ]
+    for (const kind of openKinds) {
+      const { container, unmount } = render(
+        <ExchangeStreamRow onAction={vi.fn()} {...toggleProps()} rail={NO_RAIL} row={makeRow(kind)} />
+      )
+      const tone = container.querySelector('[data-row-tone]')?.getAttribute('data-row-tone')
+      expect(tone === 'good' || tone === 'bad', `${kind} rendered tone "${tone}"`).toBe(false)
+      unmount()
+    }
+  })
+
+  it('a CONTRADICTED row renders the bad/red tone exactly once', () => {
+    const { container } = render(
+      <ExchangeStreamRow onAction={vi.fn()} {...toggleProps()} rail={NO_RAIL} row={makeRow('contradicted')} />
+    )
+    const toneEls = container.querySelectorAll('[data-row-tone]')
+    expect(toneEls).toHaveLength(1)
+    expect(container.querySelectorAll('[data-row-tone="bad"]')).toHaveLength(1)
+  })
+
+  it('a CLOSED row renders the good/green tone, not muted, not bad', () => {
+    const { container } = render(
+      <ExchangeStreamRow onAction={vi.fn()} {...toggleProps()} rail={NO_RAIL} row={makeRow('closed')} />
+    )
+    expect(container.querySelectorAll('[data-row-tone="good"]')).toHaveLength(1)
+    expect(container.querySelectorAll('[data-row-tone="bad"], [data-row-tone="muted"]')).toHaveLength(0)
+  })
+})
+
+describe('ExchangeStreamRow — [mesh-evidence-ui-entry-row-and-chips] §3A chip strip -> checks jump', () => {
+  it('renders the five chips content · sig · inclusion · registered · theirs', () => {
+    render(<ExchangeStreamRow onAction={vi.fn()} {...toggleProps()} rail={NO_RAIL} row={makeRow('open_not_asked')} />)
+    for (const chip of ['content', 'sig', 'inclusion', 'registered', 'theirs']) {
+      expect(screen.getByLabelText(`${chip}: jump to the ${chip} check`)).toBeInTheDocument()
+    }
+  })
+
+  it('a chip is a link, never counted among the row action buttons', () => {
+    render(<ExchangeStreamRow onAction={vi.fn()} {...toggleProps()} rail={NO_RAIL} row={makeRow('open_not_asked')} />)
+    // Two toggles + one ask action + the state's (i) InfoHover == 4,
+    // unchanged by the chip strip ([ledger-T4-inline-inspector] "the two
+    // toggles are the entire detail surface" -- chips jump to detail already
+    // on the page, they don't add a row action).
+    expect(screen.getAllByRole('button')).toHaveLength(4)
+    expect(screen.getByLabelText('sig: jump to the sig check')).toHaveAttribute('role', 'link')
+  })
+
+  it('a chip click on a collapsed panel expands checks, then scrolls to and highlights the matching property once it mounts', async () => {
+    const user = userEvent.setup()
+    const onToggleChecks = vi.fn()
+    const row = makeRow('open_not_asked')
+    const scrollSpy = vi.spyOn(HTMLElement.prototype, 'scrollIntoView')
+
+    const { rerender } = render(
+      <ExchangeStreamRow
+        onAction={vi.fn()}
+        {...toggleProps()}
+        onToggleChecks={onToggleChecks}
+        rail={NO_RAIL}
+        row={row}
+      />
+    )
+    await user.click(screen.getByLabelText('sig: jump to the sig check'))
+    expect(onToggleChecks).toHaveBeenCalledWith(row)
+    expect(scrollSpy).not.toHaveBeenCalled()
+
+    // The parent (LedgerPage) honors the toggle -- checksExpanded flips true.
+    rerender(
+      <ExchangeStreamRow
+        checksExpanded
+        onAction={vi.fn()}
+        {...toggleProps()}
+        onToggleChecks={onToggleChecks}
+        rail={NO_RAIL}
+        row={row}
+      />
+    )
+    expect(await screen.findByRole('region', { name: /Security checks/ })).toBeInTheDocument()
+    expect(scrollSpy).toHaveBeenCalled()
+    scrollSpy.mockRestore()
+  })
+
+  it('a chip click while the panel is already expanded scrolls immediately, without re-toggling', async () => {
+    const user = userEvent.setup()
+    const onToggleChecks = vi.fn()
+    const scrollSpy = vi.spyOn(HTMLElement.prototype, 'scrollIntoView')
+
+    render(
+      <ExchangeStreamRow
+        checksExpanded
+        onAction={vi.fn()}
+        {...toggleProps()}
+        onToggleChecks={onToggleChecks}
+        rail={NO_RAIL}
+        row={makeRow('open_not_asked')}
+      />
+    )
+    await user.click(screen.getByLabelText('content: jump to the content check'))
+    expect(onToggleChecks).not.toHaveBeenCalled()
+    expect(scrollSpy).toHaveBeenCalled()
+    scrollSpy.mockRestore()
+  })
+})
+
+describe('ExchangeStreamRow — [mesh-evidence-ui-entry-row-and-chips] §3A model identity + short/copyable ids', () => {
+  afterEach(() => {
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined })
+  })
+
+  it('renders the model as family/short-digest… with the full ref on hover, when the record carries one', () => {
+    const row = makeRow('closed')
+    render(
+      <ExchangeStreamRow
+        onAction={vi.fn()}
+        {...toggleProps()}
+        localRecord={{
+          capsule_id: 'mine-1',
+          effect: { request_digest: REQUEST_DIGEST, response_digest: RESPONSE_DIGEST },
+          model_attestation: { model_id: 'local-gguf/7089c7abcdef0123456789' }
+        }}
+        rail={NO_RAIL}
+        row={row}
+      />
+    )
+    const modelEl = screen.getByText('local-gguf/7089c7…')
+    expect(modelEl).toHaveAttribute('title', 'local-gguf/7089c7abcdef0123456789')
+  })
+
+  it('renders nothing for the model when the record carries no model ref -- never a placeholder', () => {
+    render(<ExchangeStreamRow onAction={vi.fn()} {...toggleProps()} rail={NO_RAIL} row={makeRow('closed')} />)
+    expect(screen.queryByText(/local-gguf/)).not.toBeInTheDocument()
+  })
+
+  it('a short exchange key/record id renders unchanged (never truncated for an already-short id)', () => {
+    render(<ExchangeStreamRow onAction={vi.fn()} {...toggleProps()} rail={NO_RAIL} row={makeRow('closed')} />)
+    expect(screen.getByText('exch-closed')).toBeInTheDocument()
+    expect(screen.getByText('mine-1')).toBeInTheDocument()
+  })
+
+  it('a long (real digest-shaped) exchange key renders short, with the full string on hover and copy', async () => {
+    const user = userEvent.setup()
+    const longKey = 'e'.repeat(64)
+    const writeText = vi.fn<(text: string) => Promise<void>>().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+    render(
+      <ExchangeStreamRow
+        onAction={vi.fn()}
+        {...toggleProps()}
+        rail={NO_RAIL}
+        row={makeRow('closed', { exchangeKey: longKey })}
+      />
+    )
+    expect(screen.queryByText(longKey)).not.toBeInTheDocument()
+    const shortEl = screen.getByText('eeee…eeee')
+    expect(shortEl).toHaveAttribute('title', longKey)
+    await user.click(shortEl)
+    expect(writeText).toHaveBeenCalledWith(longKey)
   })
 })

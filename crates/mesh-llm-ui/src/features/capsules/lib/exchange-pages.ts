@@ -13,6 +13,14 @@ export function exchangeRowDomId(exchangeKey: string): string {
   return `exchange-row-${exchangeKey}`
 }
 
+/** Stable DOM id for one `▸ checks` panel property row -- the entry row's
+ *  chip strip ([mesh-evidence-ui-entry-row-and-chips]) scrolls to this once
+ *  the panel is expanded, keyed by the same property key
+ *  (`security-checks-view.ts`'s `ChecksRow.key`) the chip names. */
+export function checkRowDomId(exchangeKey: string, propertyKey: string): string {
+  return `check-row-${exchangeKey}-${propertyKey}`
+}
+
 export type ExchangeRowGroup = {
   /** Stable identity for the group -- a lone row's own exchangeKey, or
    *  `twin-bracket:<id>` for a real multi-row twin bracket ([ledger-T11-

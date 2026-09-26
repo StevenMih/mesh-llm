@@ -1,0 +1,60 @@
+// The entry row's chip strip ([mesh-evidence-ui-entry-row-and-chips], design
+// §3A) -- `content · sig · inclusion · registered · theirs`, each a link
+// into the `▸ checks` panel's matching property row. `role="link"` (not
+// `button`) deliberately: every existing row test counts the row's ACTION
+// buttons (`getAllByRole('button')`) as a load-bearing invariant
+// ([ledger-T4-inline-inspector] "no whole-row click target... the two
+// toggles are the entire detail surface"); a chip jumps to detail already on
+// the page rather than performing an action, which is the same "link vs.
+// button" distinction the design doc's own words ("a chip is a link into the
+// expansion") draw.
+import {
+  entryRowChipMark,
+  entryRowChipPropertyKey,
+  ENTRY_ROW_CHIP_ORDER
+} from '@/features/capsules/lib/entry-row-chips'
+import type { EntryRowChipMark } from '@/features/capsules/lib/entry-row-chips'
+import type { PaneCRow } from '@/features/capsules/api/sidecarTypes'
+
+const MARK_COLOR: Record<EntryRowChipMark, string> = {
+  '✓': 'var(--color-good-text)',
+  '✗': 'var(--color-bad-text)',
+  '–': 'var(--color-fg-faint)'
+}
+
+export function ExchangeRowChips({
+  raw,
+  onChipActivate
+}: {
+  raw: PaneCRow
+  /** The property key (`security-checks-view.ts`'s `ChecksRow.key`) this
+   *  chip links to, not the chip's own short label. */
+  onChipActivate: (propertyKey: string) => void
+}) {
+  return (
+    <div aria-label="checks summary" className="flex flex-wrap items-center gap-2.5" role="group">
+      {ENTRY_ROW_CHIP_ORDER.map((chip) => {
+        const mark = entryRowChipMark(raw, chip)
+        const propertyKey = entryRowChipPropertyKey(chip)
+        return (
+          <span
+            aria-label={`${chip}: jump to the ${chip} check`}
+            className="ui-control-ghost inline-flex cursor-pointer items-center gap-1 font-mono text-xs"
+            key={chip}
+            onClick={() => onChipActivate(propertyKey)}
+            onKeyDown={(event) => {
+              if (event.key !== 'Enter' && event.key !== ' ') return
+              event.preventDefault()
+              onChipActivate(propertyKey)
+            }}
+            role="link"
+            tabIndex={0}
+          >
+            <span className="text-fg-dim">{chip}</span>
+            <span style={{ color: MARK_COLOR[mark] }}>{mark}</span>
+          </span>
+        )
+      })}
+    </div>
+  )
+}

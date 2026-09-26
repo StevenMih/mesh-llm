@@ -8,10 +8,12 @@
 // explicit toggles, `▸/▾ content` and `▸/▾ checks`, right below the summary
 // row. There is no modal and no whole-row click target: the two toggles are
 // the entire detail surface.
+import { useEffect, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
-import { StatusBadge } from '@/components/ui/StatusBadge'
+import { StatusBadge, type StatusBadgeTone } from '@/components/ui/StatusBadge'
 import { cn } from '@/lib/cn'
 import type { CapsuleRecord } from '@/features/capsules/api/types'
+import { ExchangeRowChips } from '@/features/capsules/components/ExchangeRowChips'
 import { SecurityChecksView } from '@/features/capsules/components/SecurityChecksView'
 import {
   theirContentAction,
@@ -19,7 +21,7 @@ import {
   yourContentFixedText
 } from '@/features/capsules/lib/exchange-content-state'
 import type { ExchangeLedgerRow } from '@/features/capsules/lib/exchange-ledger'
-import { exchangeRowDomId } from '@/features/capsules/lib/exchange-pages'
+import { checkRowDomId, exchangeRowDomId } from '@/features/capsules/lib/exchange-pages'
 import {
   bracketStrip,
   bracketStripText,
@@ -29,6 +31,7 @@ import {
   isAskAction,
   rightCellAction,
   rightCellDetail,
+  type RightCellStateKind,
   rightCellStatusLabel,
   rightCellText,
   rowStateMarker
@@ -36,6 +39,10 @@ import {
 import { InfoHover } from '@/features/capsules/components/InfoHover'
 import type { RailSegment } from '@/features/capsules/lib/exchange-stream'
 import { useRecomputedIdentity, usePeerLedgerRecompute } from '@/features/capsules/lib/recompute-identity'
+import { formatModelIdentity, servingProvenance } from '@/features/capsules/lib/serving-provenance'
+import { shortId } from '@/features/capsules/lib/short-id'
+import { copyStateLabel } from '@/lib/copyStateLabel'
+import { useClipboardCopy } from '@/lib/useClipboardCopy'
 
 /** The gated cell text ([ledger-T1-ask-half-action] Do (2)) when an ask
  *  action's row carries no recorded counterparty. This splits by which of two
@@ -60,6 +67,59 @@ function roleText(roleTag: string): string {
   // `you served`/`you asked` are stated in words on every row -- never
   // inferred from position or colour alone (v3 §2).
   return roleTag === 'SERVED' ? 'you served' : 'you asked'
+}
+
+/** Design §3A: "one colour per state ... taken from the console palette,
+ *  nowhere else." CLOSED gets the Logs card's COMPLETED green, CONTRADICTED
+ *  its FAILED red, refused/absent the `Local only` amber -- every other OPEN
+ *  variant stays muted/no colour (L-A: "an open row is never styled as a
+ *  problem"). Distinct from `isAlarmState`, which only gates the dot. */
+function rowStateTone(kind: RightCellStateKind): StatusBadgeTone {
+  switch (kind) {
+    case 'closed':
+      return 'good'
+    case 'contradicted':
+      return 'bad'
+    case 'open_refused':
+    case 'open_absent':
+      return 'warn'
+    default:
+      return 'muted'
+  }
+}
+
+/** A short/copyable identifier ([mesh-evidence-ui-entry-row-and-chips]
+ *  design §3A) -- `role="link"`, not `button`, for the same reason
+ *  `ExchangeRowChips` isn't: this jumps/copies rather than performing a row
+ *  action, so it doesn't inflate the row's `getAllByRole('button')` count.
+ *  Copy state via `useClipboardCopy` (`CopyInstructionRow`'s own hook) --
+ *  never a second, hand-rolled clipboard try/catch. */
+function CopyableId({ label, value }: { label: string; value: string }) {
+  const { copyState, copyText } = useClipboardCopy()
+  function copy() {
+    void copyText(value)
+  }
+  return (
+    <span className="inline-flex items-center gap-1">
+      <span className="text-fg-faint">{label}</span>
+      <span
+        aria-label={`${copyStateLabel(copyState)} ${label} id ${value}`}
+        className="ui-control-ghost cursor-pointer text-foreground"
+        onClick={copy}
+        onKeyDown={(event) => {
+          if (event.key !== 'Enter' && event.key !== ' ') return
+          event.preventDefault()
+          copy()
+        }}
+        role="link"
+        tabIndex={0}
+        title={value}
+      >
+        {shortId(value)}
+      </span>
+      {copyState === 'copied' ? <span className="text-fg-faint">copied</span> : null}
+    </span>
+  )
 }
 
 export type ExchangeStreamRowProps = {
@@ -138,6 +198,48 @@ export function ExchangeStreamRow({
   // The design's bracket strip (double-entry design §7) -- how the state is
   // drawn: `{ yours ● } ⟷ { theirs ● }`. Same state the badge renders.
   const strip = bracketStripText(bracketStrip(row.raw, state))
+  // Design §3A: "model as `family/short-digest…` (full on hover/copy)" --
+  // this row's own record, same `localRecord` the checks panel recomputes
+  // against; `null` when the record hasn't been fetched or carries no model
+  // ref, never a placeholder.
+  const modelRef = localRecord ? servingProvenance(localRecord).model : null
+  const modelIdentity = formatModelIdentity(modelRef)
+  const tone = rowStateTone(state.kind)
+
+  // Chip-strip -> checks-panel jump ([mesh-evidence-ui-entry-row-and-chips]
+  // §3A "each chip a link into the expansion's matching check"). A chip
+  // click on an already-collapsed panel must expand it first and wait for
+  // `SecurityChecksView` to actually mount before a `getElementById` lookup
+  // can find anything -- `pendingScrollKeyRef` carries the target across
+  // that one render; a chip click while already expanded scrolls straight
+  // away.
+  const pendingScrollKeyRef = useRef<string | null>(null)
+  const [highlightedCheckKey, setHighlightedCheckKey] = useState<string | null>(null)
+
+  function scrollToCheck(propertyKey: string) {
+    document.getElementById(checkRowDomId(row.exchangeKey, propertyKey))?.scrollIntoView({ block: 'nearest' })
+    setHighlightedCheckKey(propertyKey)
+    window.setTimeout(() => {
+      setHighlightedCheckKey((prev) => (prev === propertyKey ? null : prev))
+    }, 1500)
+  }
+
+  function handleChipActivate(propertyKey: string) {
+    if (checksExpanded) {
+      scrollToCheck(propertyKey)
+      return
+    }
+    pendingScrollKeyRef.current = propertyKey
+    onToggleChecks(row)
+  }
+
+  useEffect(() => {
+    if (!checksExpanded || !pendingScrollKeyRef.current) return
+    const propertyKey = pendingScrollKeyRef.current
+    pendingScrollKeyRef.current = null
+    scrollToCheck(propertyKey)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- scrollToCheck closes over this render's row/state; re-running on checksExpanded alone is the intended trigger
+  }, [checksExpanded])
 
   return (
     <div className="flex flex-col" id={exchangeRowDomId(row.exchangeKey)}>
@@ -165,15 +267,22 @@ export function ExchangeStreamRow({
             {formatExchangeTimestamp(row.timestamp)}
           </time>
           <span>{roleText(row.roleTag)}</span>
+          {modelIdentity ? (
+            <span className="font-mono" title={modelRef ?? undefined}>
+              {modelIdentity}
+            </span>
+          ) : null}
+          <span aria-hidden="true">→</span>
           {row.counterparty ? (
             <span className="font-mono">{row.counterparty}</span>
           ) : (
             <span>counterparty not recorded</span>
           )}
-          <span className="ml-auto inline-flex items-center gap-1">
-            {/* L-A/L-B: only CONTRADICTED gets alarm styling; every OPEN
-               state renders the same neutral 'muted' tone as CLOSED. */}
-            <StatusBadge dot={alarm} size="caption" tone={alarm ? 'bad' : 'muted'}>
+          <span className="ml-auto inline-flex items-center gap-1" data-row-tone={tone}>
+            {/* L-A/L-B: only CONTRADICTED gets the alarm dot; the tone
+               (§3A "one colour per state") still varies with CLOSED/
+               refused/absent, never just alarm-vs-muted. */}
+            <StatusBadge dot={alarm} size="caption" tone={tone}>
               {rightCellStatusLabel(state)}
             </StatusBadge>
             {/* Terse state on the face; the fuller story (their half not held,
@@ -184,8 +293,17 @@ export function ExchangeStreamRow({
         </div>
         <div className="grid grid-cols-2 gap-0 rounded border border-border-soft">
           <div className="flex flex-col gap-1 border-r border-border-soft px-3 py-2">
-            <p className="font-mono text-xs text-foreground">
-              <span>{row.exchangeKey}</span> · <span>{row.raw.mine.capsule_id ?? row.raw.mine.text ?? '—'}</span>
+            <p className="flex flex-wrap items-center gap-1.5 font-mono text-xs text-foreground">
+              <CopyableId label="exch" value={row.exchangeKey} />
+              <span className="text-fg-faint">·</span>
+              {(row.raw.mine.capsule_id ?? row.raw.mine.text) ? (
+                <CopyableId label="rec" value={(row.raw.mine.capsule_id ?? row.raw.mine.text) as string} />
+              ) : (
+                <span className="inline-flex items-center gap-1">
+                  <span className="text-fg-faint">rec</span>
+                  <span>—</span>
+                </span>
+              )}
             </p>
           </div>
           <div className="flex flex-col gap-1.5 px-3 py-2">
@@ -221,6 +339,7 @@ export function ExchangeStreamRow({
             ) : null}
           </div>
         </div>
+        <ExchangeRowChips onChipActivate={handleChipActivate} raw={row.raw} />
         {/* [ledger-T4-inline-inspector] v3 §2's row footer: two independent
            disclosure toggles, never a modal. Always present, regardless of
            the right-cell state. */}
@@ -287,6 +406,7 @@ export function ExchangeStreamRow({
         ) : null}
         {checksExpanded ? (
           <SecurityChecksView
+            highlightedPropertyKey={highlightedCheckKey}
             identity={identity}
             localRecord={localRecord}
             row={row}

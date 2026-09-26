@@ -151,6 +151,24 @@ const ARCH_FAMILY: Record<string, string> = {
   phi: 'Phi'
 }
 
+/** The entry row's own model identity ([mesh-evidence-ui-entry-row-and-
+ *  chips], design §3A: "model as `family/short-digest…` (full on hover/
+ *  copy)") -- deliberately the RAW `family/digest` ref this record itself
+ *  carries, unlike `friendlyModelName` below: this row already truncates
+ *  every other id the same way (`short-id.ts`), so the raw ref reads as one
+ *  more short/copyable identifier here, not the opaque string
+ *  `friendlyModelName` exists to hide from a plain-language summary. `null`
+ *  when the record carries no model ref at all -- never a placeholder. */
+export function formatModelIdentity(modelRef: string | null): string | null {
+  if (!modelRef) return null
+  const slashIndex = modelRef.indexOf('/')
+  if (slashIndex === -1) return modelRef
+  const family = modelRef.slice(0, slashIndex)
+  const digest = modelRef.slice(slashIndex + 1)
+  const shortDigest = digest.length > 8 ? `${digest.slice(0, 6)}…` : digest
+  return `${family}/${shortDigest}`
+}
+
 /** A human model name derived from architecture + parameter_size (+ quant) --
  * NEVER the raw local-gguf/sha256 id or model_identity_hash. */
 export function friendlyModelName(sp: ServingProvenance): string {

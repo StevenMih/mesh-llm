@@ -7,7 +7,7 @@
 //
 // Security boundary: NO user-visible strings may name internal tooling,
 // internal item IDs, or any branded service name. Comments are exempt.
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
 import { ArrowLeftRight, Search as SearchIcon, ShieldCheck, Users } from 'lucide-react'
@@ -34,6 +34,12 @@ import {
   type ExchangeLedgerRow
 } from '@/features/capsules/lib/exchange-ledger'
 import { buildRailSegments, sortStreamByTime } from '@/features/capsules/lib/exchange-stream'
+import {
+  dayHeaderIndices,
+  dayKeyForRow,
+  dayTalliesByKey,
+  dayTallyLine
+} from '@/features/capsules/lib/exchange-day-groups'
 import { exceptionsFirstLine, exceptionsFirstTally } from '@/features/capsules/lib/exceptions-first-line'
 import {
   LEDGER_PAGE_SIZE,
@@ -433,6 +439,10 @@ function ExchangesSection({
   // (v3 §2a "a rail crossing a boundary shows '…session continues' on both
   // pages") can be detected -- see `pageBoundaryContinuity`.
   const railSegments = useMemo(() => buildRailSegments(streamRows), [streamRows])
+  // Design §3A sticky day headers -- tallies always over the full filtered
+  // stream (never a page fragment), so a header states the whole day's
+  // count even when that day's rows straddle a page boundary.
+  const dayTallies = useMemo(() => dayTalliesByKey(streamRows), [streamRows])
 
   // v3 §2a: "twin brackets never split" -- adjacent rows sharing a real
   // twin-bracket id become one atomic group ([ledger-T11-twins-visible]);
@@ -444,6 +454,11 @@ function ExchangesSection({
   const currentPage = useMemo(() => pages[safePageIndex] ?? [], [pages, safePageIndex])
   const currentPageRows = useMemo(() => flattenPage(currentPage), [currentPage])
   const indexedGroups = useMemo(() => indexGroupsWithinPage(currentPage), [currentPage])
+  // Boundary indices computed over THIS page's rows -- a day that started on
+  // the previous page still gets a header here (the boundary is "differs
+  // from the row before it", and index 0 always differs from "no previous
+  // row").
+  const dayHeaderAt = useMemo(() => dayHeaderIndices(currentPageRows), [currentPageRows])
   // [ledger-T11-twins-visible] item 3 -- the LIVE configured rate for the
   // bracket's disclosure sentence; `null` (never a hardcoded 50) until a
   // sidecar actually emits it.
@@ -882,21 +897,35 @@ function ExchangesSection({
               {indexedGroups.map(({ group, startIndex }) => {
                 const rowElements = group.rows.map((row, offset) => {
                   const index = startIndex + offset
+                  // Design §3A sticky day headers -- rendered right before
+                  // the first row of each calendar day this page shows.
+                  const dayTally = dayHeaderAt.has(index) ? dayTallies.get(dayKeyForRow(row)) : undefined
                   return (
-                    <ExchangeStreamRow
-                      checksExpanded={checksExpandedKey === row.exchangeKey}
-                      contentExpanded={contentExpandedKey === row.exchangeKey}
-                      focused={index === focusedRowIndex}
-                      highlighted={highlightedKey === row.exchangeKey}
-                      key={row.exchangeKey}
-                      localRecord={row.raw.mine.capsule_id ? (recordsById.get(row.raw.mine.capsule_id) ?? null) : null}
-                      nodePubKeyPem={nodePubKeyPem}
-                      onAction={handleAskForHalf}
-                      onToggleChecks={handleToggleChecks}
-                      onToggleContent={handleToggleContent}
-                      rail={railSegments[pageStart + index]}
-                      row={row}
-                    />
+                    <Fragment key={row.exchangeKey}>
+                      {dayTally ? (
+                        <div
+                          className="sticky top-8 z-[5] border-b border-border-soft bg-panel px-3 py-1 type-caption font-mono text-fg-dim"
+                          data-day-header={dayKeyForRow(row)}
+                        >
+                          {dayTallyLine(dayTally)}
+                        </div>
+                      ) : null}
+                      <ExchangeStreamRow
+                        checksExpanded={checksExpandedKey === row.exchangeKey}
+                        contentExpanded={contentExpandedKey === row.exchangeKey}
+                        focused={index === focusedRowIndex}
+                        highlighted={highlightedKey === row.exchangeKey}
+                        localRecord={
+                          row.raw.mine.capsule_id ? (recordsById.get(row.raw.mine.capsule_id) ?? null) : null
+                        }
+                        nodePubKeyPem={nodePubKeyPem}
+                        onAction={handleAskForHalf}
+                        onToggleChecks={handleToggleChecks}
+                        onToggleContent={handleToggleContent}
+                        rail={railSegments[pageStart + index]}
+                        row={row}
+                      />
+                    </Fragment>
                   )
                 })
                 if (isTwinBracketGroup(group)) {

@@ -8,6 +8,7 @@ import { StatusBadge, type StatusBadgeTone } from '@/components/ui/StatusBadge'
 import { cn } from '@/lib/cn'
 import type { CapsuleRecord } from '@/features/capsules/api/types'
 import type { ExchangeLedgerRow } from '@/features/capsules/lib/exchange-ledger'
+import { checkRowDomId } from '@/features/capsules/lib/exchange-pages'
 import type { PeerRecomputeState, RecomputedIdentity } from '@/features/capsules/lib/recompute-identity'
 import { toneForState } from '@/features/capsules/lib/assurance-tone'
 import { WHAT_ACTUALLY_HAPPENED_GROUP, WHAT_NODE_SAID_GROUP } from '@/features/capsules/lib/nine-properties'
@@ -90,6 +91,11 @@ export type SecurityChecksViewProps = {
    *  caller that hasn't wired a live fetch degrades to "not fetched" (never
    *  a fabricated match) -- `ExchangeStreamRow` always supplies a real one. */
   theirsRecompute?: PeerRecomputeState
+  /** The property key the row's chip strip just jumped to
+   *  ([mesh-evidence-ui-entry-row-and-chips]) -- briefly rings the matching
+   *  block so the jump is visible, not just scrolled-to. `null`/absent when
+   *  no chip jump is pending (the panel opened some other way). */
+  highlightedPropertyKey?: string | null
 }
 
 const NOT_FETCHED_DEFAULT: PeerRecomputeState = {
@@ -104,7 +110,8 @@ export function SecurityChecksView({
   row,
   identity,
   localRecord,
-  theirsRecompute = NOT_FETCHED_DEFAULT
+  theirsRecompute = NOT_FETCHED_DEFAULT,
+  highlightedPropertyKey = null
 }: SecurityChecksViewProps) {
   const [rawMode, setRawMode] = useState(false)
   const canFetchTheirs = theirsFetchable(row.raw) !== null
@@ -272,7 +279,14 @@ export function SecurityChecksView({
               {WHAT_NODE_SAID_GROUP}
             </p>
             {nodeSaidRows.map((checkRow) => (
-              <div className="flex flex-col gap-0.5" key={checkRow.key}>
+              <div
+                className={cn(
+                  'flex flex-col gap-0.5 rounded',
+                  highlightedPropertyKey === checkRow.key && 'ring-1 ring-accent/60 bg-accent/10'
+                )}
+                id={checkRowDomId(row.exchangeKey, checkRow.key)}
+                key={checkRow.key}
+              >
                 <p className="type-caption text-fg-faint">{checkRow.label}</p>
                 {checkRow.facts ? (
                   <div className="flex flex-col gap-0.5">
@@ -308,7 +322,14 @@ export function SecurityChecksView({
               {WHAT_ACTUALLY_HAPPENED_GROUP}
             </p>
             {actuallyHappenedRows.map((checkRow) => (
-              <div className="flex flex-col gap-0.5" key={checkRow.key}>
+              <div
+                className={cn(
+                  'flex flex-col gap-0.5 rounded',
+                  highlightedPropertyKey === checkRow.key && 'ring-1 ring-accent/60 bg-accent/10'
+                )}
+                id={checkRowDomId(row.exchangeKey, checkRow.key)}
+                key={checkRow.key}
+              >
                 <p className="type-caption text-fg-faint">{checkRow.label}</p>
                 <TwoCol
                   theirs={checkRow.theirs ? <ChecksCell cell={checkRow.theirs} propertyKey={checkRow.key} /> : null}

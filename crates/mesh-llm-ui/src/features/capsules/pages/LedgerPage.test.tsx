@@ -760,6 +760,62 @@ describe('LedgerPageContent — Part 3: Exchanges two-sided stream + row inspect
     expect(evidenceButton).toBeInTheDocument()
     expect(exportButton).not.toBe(evidenceButton)
   })
+
+  it('[mesh-evidence-ui-entry-row-and-chips] §3A sticky day headers: one per calendar day, tallying the whole day', async () => {
+    const { fetchPaneCList } = await import('@/features/capsules/api/sidecarClient')
+    vi.mocked(fetchPaneCList).mockResolvedValue({
+      rows: [
+        {
+          exchange_key: 'exch-day2-a',
+          role_tag: 'ASKED',
+          header_state: 'ok',
+          properties: { outcome_corroboration: { state: 'PASS' } },
+          has_issue: false,
+          mine: { state: 'present', capsule_id: 'mine-day2-a' },
+          theirs: { state: 'NOT_CHECKED', capsule_id: 'a'.repeat(64), peer_id: 'peer-1' },
+          unilateral: false,
+          timestamp: '2026-09-23T09:00:00Z'
+        },
+        {
+          exchange_key: 'exch-day1-a',
+          role_tag: 'ASKED',
+          header_state: 'ok',
+          properties: null,
+          has_issue: false,
+          mine: { state: 'present', capsule_id: 'mine-day1-a' },
+          theirs: { state: 'absent', capsule_id: null },
+          unilateral: true,
+          timestamp: '2026-09-22T09:00:00Z'
+        },
+        {
+          exchange_key: 'exch-day1-b',
+          role_tag: 'ASKED',
+          header_state: 'ok',
+          properties: null,
+          has_issue: false,
+          mine: { state: 'present', capsule_id: 'mine-day1-b' },
+          theirs: { state: 'absent', capsule_id: null },
+          unilateral: true,
+          timestamp: '2026-09-22T08:00:00Z'
+        }
+      ],
+      row_count: 3,
+      default_sort: '',
+      filters: [],
+      next_after_seq: null,
+      archived_segments: []
+    })
+
+    const user = userEvent.setup()
+    render(<LedgerPageContent />, { wrapper: makeWrapper() })
+    await user.click(screen.getByRole('tab', { name: /exchanges/i }))
+    await screen.findByText('mine-day2-a')
+
+    // One header for the newer day (1 exchange, unconfirmed) and one for
+    // the older day (2 exchanges, unconfirmed) -- never a header per row.
+    expect(screen.getByText('Wednesday 23 Sep · 1 exchange · 0 confirmed')).toBeInTheDocument()
+    expect(screen.getByText('Tuesday 22 Sep · 2 exchanges · 0 confirmed')).toBeInTheDocument()
+  })
 })
 
 describe('LedgerPageContent — Part B1: Integrity chain strip', () => {
