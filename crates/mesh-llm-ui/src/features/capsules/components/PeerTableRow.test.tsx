@@ -30,12 +30,13 @@ function renderInTable(ui: React.ReactElement) {
 }
 
 describe('PeerTableRow — dealt-with peers', () => {
-  it('renders the accountability columns and no alarm chip for a clean peer whose chain was peer-fetch verified', () => {
+  it('renders the accountability columns and no alarm chip for a clean peer whose pushed halves closed through the gate', () => {
     const view = dealtWithRowView(CLEAN_ROW)
     renderInTable(<PeerTableRow meshStatus={null} view={view} />)
 
     expect(screen.getByText('24')).toBeInTheDocument()
-    expect(screen.getByText('24 / 24')).toBeInTheDocument()
+    // 16 of the 24 exchanges have a pushed half that closed through the gate.
+    expect(screen.getByText('16 / 24')).toBeInTheDocument()
     expect(screen.getByText('16 clean · 0 mismatch')).toBeInTheDocument()
     expect(screen.getByText('8 of 24 · 8 corroborated')).toBeInTheDocument()
     expect(screen.getByText('not available')).toBeInTheDocument()
@@ -46,12 +47,13 @@ describe('PeerTableRow — dealt-with peers', () => {
     expect(screen.queryByRole('button', { name: 'Route here' })).not.toBeInTheDocument()
   })
 
-  it('shows a visible alarm chip for an alarmed peer, and honestly reports the peer-fetch failure and the contradiction', () => {
+  it('shows a visible alarm chip for an alarmed peer, and honestly reports the contradiction through the gate', () => {
     const view = dealtWithRowView(ALARMED_ROW)
     renderInTable(<PeerTableRow meshStatus={null} view={view} />)
 
     expect(screen.getByText(/⚠ Contradiction found/)).toBeInTheDocument()
-    expect(screen.getByText('0 / 14 (peer-fetch failed)')).toBeInTheDocument()
+    // 9 of 14 confirmed, 1 pushed half the gate reads as CONTRADICTED.
+    expect(screen.getByText('9 / 14 (1 contradicted)')).toBeInTheDocument()
     expect(screen.getByText('9 clean · 1 mismatch · 1 contradicted')).toBeInTheDocument()
     expect(screen.getByText('7 of 14 · 6 corroborated · 1 contradicted')).toBeInTheDocument()
   })

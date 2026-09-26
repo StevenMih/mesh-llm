@@ -7,7 +7,7 @@
 // would try to break, so they're asserted directly against the pure
 // view-model functions rather than only through component snapshots.
 import { describe, expect, it } from 'vitest'
-import type { PaneBRow } from '@/features/capsules/api/sidecarTypes'
+import type { PaneBConfirmedSibling, PaneBRow } from '@/features/capsules/api/sidecarTypes'
 import { LatencySource } from '@/lib/api/types'
 import type { PeerMeshStatus } from '@/features/capsules/lib/peer-mesh-status'
 import {
@@ -50,6 +50,26 @@ function baseRow(overrides: Partial<PaneBRow> = {}): PaneBRow {
     first_seen: null,
     last_seen: null,
     ...overrides
+  }
+}
+
+/** A pushed counterparty half as the Rust pane supplies it -- the two inputs
+ *  the ONE gate reads. A digest-shaped, signature-verified, `verified`
+ *  digest_match sibling closes; a `failed` digest_match contradicts; anything
+ *  else (no signature, no match) is not confirmed. Mirrors the Pane C sibling
+ *  fixtures so the two panes are pinned against the SAME gate. */
+function confirmedSibling(overrides: Partial<PaneBConfirmedSibling['theirs']> & { matchState?: 'verified' | 'failed' | 'absent' } = {}): PaneBConfirmedSibling {
+  const { matchState = 'verified', ...theirs } = overrides
+  return {
+    theirs: {
+      state: 'present-unverified',
+      capsule_id: 'a'.repeat(64),
+      received_from: 'node:m3',
+      via: 'push',
+      signature_ok: true,
+      ...theirs
+    },
+    digest_match: { state: matchState }
   }
 }
 
@@ -162,45 +182,55 @@ describe('theirChainSummary — never presents your own chain as theirs', () => 
   })
 })
 
-describe('confirmedByOtherSide — the on-demand peer-fetch mechanism, distinct from local match', () => {
-  it('is honestly 0/total with "peer-fetch pending" when no peer-fetch has ever run (the common case today)', () => {
-    const row = baseRow({ exchange_count: 11, history: { state: 'NOT_CHECKED', text: null } })
+describe('confirmedByOtherSide — routed through the ONE gate, the same predicate Pane C uses', () => {
+  it('states "none received yet" as a fact (never "pending" work) when no half has arrived from the other side', () => {
+    const row = baseRow({ exchange_count: 11, confirmed_siblings: [] })
     const summary = confirmedByOtherSide(row)
-    expect(summary).toEqual({ confirmed: 0, total: 11, note: 'peer-fetch pending' })
-    expect(confirmedByOtherSideText(summary)).toBe('0 / 11 (peer-fetch pending)')
+    expect(summary).toEqual({ confirmed: 0, total: 11, note: 'none confirmed yet' })
+    expect(confirmedByOtherSideText(summary)).toBe('0 / 11 (none confirmed yet)')
+    // ADVERSARIAL: never resurrect the retired browser-peer-fetch framing.
+    expect(confirmedByOtherSideText(summary)).not.toMatch(/pending|fetch/i)
   })
 
-  it('counts every exchange confirmed only when the peer-fetch actually verified their chain -- never invented partial credit', () => {
+  it('counts a half confirmed only when the ONE gate closes it (signature_ok + verified digest_match) -- never a fetch predicate', () => {
     const row = baseRow({
-      exchange_count: 24,
-      history: { state: 'verified', text: '', history_summary: { verified_bundles: 5, checkpoint_count: 41 } }
+      exchange_count: 3,
+      confirmed_siblings: [confirmedSibling(), confirmedSibling(), confirmedSibling()]
     })
     const summary = confirmedByOtherSide(row)
-    expect(summary).toEqual({ confirmed: 24, total: 24, note: null })
-    expect(confirmedByOtherSideText(summary)).toBe('24 / 24')
+    expect(summary).toEqual({ confirmed: 3, total: 3, note: null })
+    expect(confirmedByOtherSideText(summary)).toBe('3 / 3')
   })
 
-  it('reports a failed peer-fetch as 0, never as unbroken', () => {
-    const row = baseRow({ exchange_count: 14, history: { state: 'failed', text: 'chain diverged' } })
-    expect(confirmedByOtherSideText(confirmedByOtherSide(row))).toBe('0 / 14 (peer-fetch failed)')
+  it('never closes a sibling the gate does not close (no signature, or no digest match)', () => {
+    const row = baseRow({
+      exchange_count: 2,
+      confirmed_siblings: [confirmedSibling({ signature_ok: false }), confirmedSibling({ matchState: 'absent' })]
+    })
+    expect(confirmedByOtherSide(row)).toEqual({ confirmed: 0, total: 2, note: 'none confirmed yet' })
   })
 
-  it('reports a refused peer-fetch distinctly from a failed one', () => {
-    const row = baseRow({ exchange_count: 3, history: { state: 'refused', text: 'refused' } })
-    expect(confirmedByOtherSideText(confirmedByOtherSide(row))).toBe('0 / 3 (peer refused)')
+  it('names a contradicted half distinctly, so the count and the alarm can never diverge', () => {
+    const row = baseRow({
+      exchange_count: 4,
+      confirmed_siblings: [confirmedSibling(), confirmedSibling({ matchState: 'failed' })]
+    })
+    const summary = confirmedByOtherSide(row)
+    expect(summary).toEqual({ confirmed: 1, total: 4, note: '1 contradicted' })
+    expect(confirmedByOtherSideText(summary)).toBe('1 / 4 (1 contradicted)')
   })
 })
 
-describe('matchTally — local two-sided-capture reconciliation, distinct from confirmedByOtherSide', () => {
+describe('matchTally — clean/mismatch of the halves the other side sent, via the SAME ONE gate', () => {
   it('always shows clean/mismatch even at zero, omits contradicted when zero', () => {
-    const row = baseRow({ pair: { state: 'verified', text: '', verified: 11, failed: 0, missing: 0, details: [] } })
+    const row = baseRow({ confirmed_siblings: Array.from({ length: 11 }, () => confirmedSibling()) })
     expect(matchTally(row)).toEqual({ clean: 11, mismatch: 0, contradicted: 0 })
     expect(matchTallyText(matchTally(row))).toBe('11 clean · 0 mismatch')
   })
 
-  it('appends the contradicted count from the adjudication tally when nonzero', () => {
+  it('counts a gate-contradicted sibling as a mismatch, and appends the adjudication contradicted count when nonzero', () => {
     const row = baseRow({
-      pair: { state: 'failed', text: '', verified: 9, failed: 1, missing: 0, details: [] },
+      confirmed_siblings: [...Array.from({ length: 9 }, () => confirmedSibling()), confirmedSibling({ matchState: 'failed' })],
       verdicts: { state: 'contradicted', text: '', tally: { corroborated: 6, contradicted: 1, inconclusive: 0 } }
     })
     expect(matchTallyText(matchTally(row))).toBe('9 clean · 1 mismatch · 1 contradicted')
@@ -345,7 +375,7 @@ describe('dealtWithRowView / advertisedOnlyRowView — one shape, honest degrada
   it('a dealt-with row carries the real Pane B row, exchange count, and every accountability column', () => {
     const row = baseRow({
       peer_id: 'node:abc',
-      pair: { state: 'verified', text: '', verified: 16, failed: 0, missing: 0, details: [] },
+      confirmed_siblings: Array.from({ length: 16 }, () => confirmedSibling()),
       exchange_count: 24,
       first_seen: '2026-09-01T00:00:00Z',
       last_seen: '2026-09-03T00:00:00Z',
@@ -360,7 +390,8 @@ describe('dealtWithRowView / advertisedOnlyRowView — one shape, honest degrada
     expect(view.adjudicationCompact).toBe('8 of 24 · 8 corroborated')
     expect(view.witnessCompact).toBe(WITNESS_COVERAGE_COMPACT_TEXT)
     expect(view.period).toBe('1–3 Sep')
-    expect(view.confirmedByOtherSide).toBe('0 / 24 (peer-fetch pending)')
+    // 16 halves closed through the gate, 24 exchanges total.
+    expect(view.confirmedByOtherSide).toBe('16 / 24')
   })
 
   it('a zero-dealings advertised-only peer shows "no exchanges yet" and "—" for every accountability column, never a fabricated zero-of-zero', () => {

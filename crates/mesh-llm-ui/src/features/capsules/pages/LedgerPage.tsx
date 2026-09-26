@@ -988,7 +988,7 @@ function IntegritySection() {
   const closedByOtherSideCount = paneCRows.filter((row) => deriveRightCellState(row).kind === 'closed').length
   const contradictedCount = paneCRows.filter((row) => deriveRightCellState(row).kind === 'contradicted').length
 
-  const setupSteps = buildSetupSteps(card ?? null, owner)
+  const setupSteps = buildSetupSteps(card ?? null, owner, closedByOtherSideCount)
   const registrationCopy = buildRegistrationCopy(card ?? null)
 
   return (

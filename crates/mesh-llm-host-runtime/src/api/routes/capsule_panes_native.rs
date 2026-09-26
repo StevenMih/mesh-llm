@@ -597,29 +597,46 @@ fn seen_range(records: &[Value]) -> (Option<&str>, Option<&str>) {
 /// node exchanged with, `exchange_count` real. Its half being unheld is a
 /// STATE ("their half not held") the CLOSED path fills -- it is never a reason
 /// to omit the peer or show a zero count.
-fn dealt_with_row(label: &str, records: &[Value]) -> Value {
+fn dealt_with_row(
+    label: &str,
+    records: &[Value],
+    siblings_by_key: &HashMap<String, Vec<CorrelatedSibling<'_>>>,
+    received_provenance: &HashMap<String, ReceivedProvenance>,
+) -> Value {
     let (first_seen, last_seen) = seen_range(records);
     let total = records.len();
+    let confirmed_siblings =
+        confirmed_siblings_for(records, siblings_by_key, received_provenance);
     let served_count = records.iter().filter(|r| label_role(r) == "served").count();
     let requested_count = records
         .iter()
         .filter(|r| label_role(r) == "requested")
         .count();
+    // A half this peer pushed and the door verified IS held now. The node/
+    // cross_party text stops asserting the flat "their half not held" the
+    // moment a provenance-carrying sibling correlates -- the gate decides
+    // CLOSED, but the presence of a held half is a structural fact stated here.
+    let held_half_count = confirmed_siblings.len();
+    let half_state = if held_half_count > 0 {
+        format!("their half held (received by push) for {held_half_count} of {total}")
+    } else {
+        "their half not held".to_string()
+    };
     json!({
         "peer_id": label,
         "node": {
             "state": CELL_PRESENT,
-            "text": format!("dealt with {label} in {total} exchange(s) — their half not held"),
+            "text": format!("dealt with {label} in {total} exchange(s) — {half_state}"),
             "peer_id": label,
             "member_kind": Value::Null,
             "exchange_count": total,
         },
         // Counterparty IS present (this node's own record names the peer);
-        // their sealed half is not yet held -- `present-unverified`, not the
-        // false `NOT_PRESENT` the unattributed bucket carries.
+        // their sealed half is `present-unverified` -- not the false
+        // `NOT_PRESENT` the unattributed bucket carries.
         "cross_party": {
             "state": STATE_PRESENT_UNVERIFIED,
-            "text": format!("counterparty {label} named by this node's own record — their half not held"),
+            "text": format!("counterparty {label} named by this node's own record — {half_state}"),
             "peer_id": label,
         },
         "role": {
@@ -633,6 +650,11 @@ fn dealt_with_row(label: &str, records: &[Value]) -> Value {
         "history": not_checked_state(),
         "served": not_checked_state(),
         "pair": pair_cell(records),
+        // [mesh-closed-on-frozen-base] The two gate inputs, per correlated
+        // push-primary sibling -- the TS view runs each through the ONE gate
+        // (`deriveRightCellState`) and counts CLOSED. Empty when no foreign
+        // half correlates: the gate reads that as "not confirmed", honest.
+        "confirmed_siblings": confirmed_siblings,
         "verdicts": not_checked_state(),
         "asked": {
             "state": STATE_ABSENT,
@@ -648,8 +670,14 @@ fn dealt_with_row(label: &str, records: &[Value]) -> Value {
 /// The honest residual: records that name NO distinct counterparty. Unchanged
 /// from the prior reader -- one unattributed row, never a fabricated peer and
 /// never counted as "dealt with · 0".
-fn unattributed_row(records: &[Value]) -> Value {
+fn unattributed_row(
+    records: &[Value],
+    siblings_by_key: &HashMap<String, Vec<CorrelatedSibling<'_>>>,
+    received_provenance: &HashMap<String, ReceivedProvenance>,
+) -> Value {
     let (first_seen, last_seen) = seen_range(records);
+    let confirmed_siblings =
+        confirmed_siblings_for(records, siblings_by_key, received_provenance);
     let served_count = records.iter().filter(|r| label_role(r) == "served").count();
     let requested_count = records
         .iter()
@@ -694,6 +722,11 @@ fn unattributed_row(records: &[Value]) -> Value {
         "history": not_checked_state(),
         "served": not_checked_state(),
         "pair": pair_cell(records),
+        // Supplied for parity with dealt-with rows; an unattributed residual has
+        // no named peer, so the Peers list filters it out before the gate reads
+        // this -- present and honest (empty unless a sibling correlates) rather
+        // than absent.
+        "confirmed_siblings": confirmed_siblings,
         "verdicts": not_checked_state(),
         "asked": {
             "state": STATE_ABSENT,
@@ -713,7 +746,25 @@ fn unattributed_row(records: &[Value]) -> Value {
 /// node's own record names counts as dealt-with NOW -- "their half not held"
 /// is a state, never a fabricated zero; an unknown counterparty is unattributed,
 /// never a false "dealt with · 0".
-pub(super) fn build_pane_b(records: &[Value]) -> Value {
+///
+/// **[mesh-closed-on-frozen-base] "Confirmed by the other side" routes through
+/// the ONE gate, same as Pane C.** Pane B used to gate its confirmed/MATCH
+/// columns on a browser peer-fetch of the peer's whole chain (`history` cell) --
+/// a SECOND CLOSED predicate, distinct from Pane C's push-primary one-gate path.
+/// This now SUPPLIES each dealt-with row the SAME two gate inputs Pane C
+/// supplies: for every one of this node's own records that a provenance-carrying
+/// foreign sibling correlates with (by `exchange_key_for`, the ONE correlator,
+/// digest-first), a `confirmed_siblings` entry carrying the door's recorded
+/// `signature_ok` + the structural `digest_match` state. The TS view
+/// (`peer-row-view.ts`) runs each entry through `deriveRightCellState` -- the
+/// ONE gate -- and counts CLOSED, never a fetch-gated predicate. No second
+/// predicate here; correlation feeds the gate, it never bypasses it. A peer with
+/// no correlated sibling supplies an empty list, which the gate reads as "not
+/// confirmed" -- honest, never a fabricated zero.
+pub(super) fn build_pane_b(
+    records: &[Value],
+    received_provenance: &HashMap<String, ReceivedProvenance>,
+) -> Value {
     if records.is_empty() {
         return json!({
             "peer_count": 0,
@@ -722,6 +773,10 @@ pub(super) fn build_pane_b(records: &[Value]) -> Value {
             "peer_fetch_count": 0,
         });
     }
+    // The received siblings, keyed by their correlator (`exchange_key_for`), so
+    // a peer's own record can find the foreign half that closes it -- the SAME
+    // digest-first correlator Pane C groups on, never a peer-label match.
+    let siblings_by_key = received_siblings_by_key(records, received_provenance);
     // BTreeMap: deterministic (sorted) peer ordering; attributed peers first,
     // the unattributed residual last -- so an all-unattributed ledger yields
     // exactly the prior single-row output (rows[0] == the residual).
@@ -735,10 +790,14 @@ pub(super) fn build_pane_b(records: &[Value]) -> Value {
     }
     let mut rows: Vec<Value> = by_peer
         .iter()
-        .map(|(label, group)| dealt_with_row(label, group))
+        .map(|(label, group)| dealt_with_row(label, group, &siblings_by_key, received_provenance))
         .collect();
     if !unattributed.is_empty() {
-        rows.push(unattributed_row(&unattributed));
+        rows.push(unattributed_row(
+            &unattributed,
+            &siblings_by_key,
+            received_provenance,
+        ));
     }
     json!({
         "peer_count": rows.len(),
@@ -746,6 +805,83 @@ pub(super) fn build_pane_b(records: &[Value]) -> Value {
         "peer_fetch_enabled": false,
         "peer_fetch_count": 0,
     })
+}
+
+/// One correlated foreign half held locally: its `exchange_key_for` correlator,
+/// its own record (for the structural `digest_match` against `mine`), and the
+/// door's provenance. This is the native-ledger equivalent of the `theirs`
+/// half Pane C splits out -- the ONLY records treated as a counterparty half
+/// are those carrying a `received-provenance.jsonl` line (the provenance rule,
+/// enforced by `received_provenance.contains_key`).
+struct CorrelatedSibling<'a> {
+    record: &'a Value,
+    provenance: &'a ReceivedProvenance,
+}
+
+/// Indexes every received (provenance-carrying) foreign sibling by its
+/// `exchange_key_for` correlator, so a peer's own record can look up the half
+/// that closes it. Mirrors Pane C's `is_received_sibling` split, but keyed for
+/// per-peer lookup instead of folded into one row. A capsule with no provenance
+/// line is NEVER indexed -- the provenance rule holds identically here.
+fn received_siblings_by_key<'a>(
+    records: &'a [Value],
+    received_provenance: &'a HashMap<String, ReceivedProvenance>,
+) -> HashMap<String, Vec<CorrelatedSibling<'a>>> {
+    let mut map: HashMap<String, Vec<CorrelatedSibling<'a>>> = HashMap::new();
+    for record in records {
+        let Some(capsule_id) = record.get("capsule_id").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(provenance) = received_provenance.get(capsule_id) else {
+            continue;
+        };
+        let Some(key) = exchange_key_for(record) else {
+            continue;
+        };
+        map.entry(key)
+            .or_default()
+            .push(CorrelatedSibling { record, provenance });
+    }
+    map
+}
+
+/// The `confirmed_siblings` array a peer row supplies to the ONE gate: for each
+/// of this node's OWN records (never a received sibling itself) whose
+/// `exchange_key_for` a provenance-carrying foreign half shares, one entry of
+/// exactly the two inputs `deriveRightCellState` reads -- the door's recorded
+/// `signature_ok` (via a `theirs`-shaped cell) and the structural
+/// `digest_match` state. The gate, not this route, turns `verified` +
+/// `signature_ok` into CLOSED and `failed` into CONTRADICTED. A record that is
+/// itself a received sibling is skipped (it is a counterparty half, not one of
+/// this node's asked halves to be confirmed).
+fn confirmed_siblings_for(
+    peer_records: &[Value],
+    siblings_by_key: &HashMap<String, Vec<CorrelatedSibling<'_>>>,
+    received_provenance: &HashMap<String, ReceivedProvenance>,
+) -> Vec<Value> {
+    let mut out = Vec::new();
+    for mine in peer_records {
+        let is_received = mine
+            .get("capsule_id")
+            .and_then(Value::as_str)
+            .is_some_and(|id| received_provenance.contains_key(id));
+        if is_received {
+            continue;
+        }
+        let Some(key) = exchange_key_for(mine) else {
+            continue;
+        };
+        let Some(siblings) = siblings_by_key.get(&key) else {
+            continue;
+        };
+        for sibling in siblings {
+            out.push(json!({
+                "theirs": theirs_sibling_cell(sibling.record, sibling.provenance),
+                "digest_match": { "state": digest_match_state(mine, sibling.record) },
+            }));
+        }
+    }
+    out
 }
 
 /// The `theirs` cell when a real, provenance-carrying foreign SIBLING is held
@@ -944,7 +1080,7 @@ pub(super) fn build_pane_json(
     let records = read_capsule_records(ledger_dir);
     match pane {
         "pane-a" => Some(build_pane_a(&records, read_checkpoint_card(ledger_dir))),
-        "pane-b" => Some(build_pane_b(&records)),
+        "pane-b" => Some(build_pane_b(&records, &read_received_provenance(ledger_dir))),
         "pane-c" => Some(match exchange_id {
             Some(id) if !id.is_empty() => build_pane_c_drilldown(&records, id),
             _ => build_pane_c_list(&records, &read_received_provenance(ledger_dir)),
@@ -1091,7 +1227,7 @@ mod tests {
             fixture_record("cap-1", "2026-09-01T00:00:00Z", "req-1", None),
             fixture_record("cap-2", "2026-09-02T00:00:00Z", "req-2", Some("cap-1")),
         ];
-        let pane = build_pane_b(&records);
+        let pane = build_pane_b(&records, &no_provenance());
         assert_eq!(pane["peer_count"], json!(1));
         let row = &pane["rows"][0];
         assert_eq!(row["exchange_count"], json!(2));
@@ -1115,7 +1251,7 @@ mod tests {
             fixture_record("cap-1", "2026-09-01T00:00:00Z", "req-1", None),
             fixture_record("cap-2", "2026-09-02T00:00:00Z", "req-2", Some("cap-1")),
         ];
-        let pane = build_pane_b(&records);
+        let pane = build_pane_b(&records, &no_provenance());
         let row = &pane["rows"][0];
         assert_eq!(row["cross_party"]["state"], json!("NOT_PRESENT"));
         assert_eq!(
@@ -1141,13 +1277,13 @@ mod tests {
         let mut record = fixture_record("cap-1", "2026-09-01T00:00:00Z", "req-1", None);
         record["model_attestation"]["compute_attestation"]["x-mesh-poc-v1"] =
             json!({ "serving_provenance": { "exchange_id": "exch-real" } });
-        let pane = build_pane_b(&[record]);
+        let pane = build_pane_b(&[record], &no_provenance());
         assert_eq!(pane["rows"][0]["pair"]["state"], json!(NOT_CHECKED));
     }
 
     #[test]
     fn pane_b_on_an_empty_ledger_has_zero_peers_not_a_fabricated_row() {
-        let pane = build_pane_b(&[]);
+        let pane = build_pane_b(&[], &no_provenance());
         assert_eq!(pane["peer_count"], json!(0));
         assert_eq!(pane["rows"], json!([]));
     }
@@ -1168,7 +1304,7 @@ mod tests {
                 "dispatch_path": "remote_mesh"
             }
         });
-        let pane = build_pane_b(&[record]);
+        let pane = build_pane_b(&[record], &no_provenance());
         assert_eq!(pane["peer_count"], json!(1));
         let row = &pane["rows"][0];
         // node:<served_by[:16]>, mirroring capsule_mesh_view.label_counterparty.
@@ -1191,11 +1327,122 @@ mod tests {
             "serving_provenance": { "served_by_node_id": "peerXYZ0123456789ab" }
         });
         let plain = fixture_record("cap-b", "2026-09-02T00:00:00Z", "req-b", None);
-        let pane = build_pane_b(&[attributed, plain]);
+        let pane = build_pane_b(&[attributed, plain], &no_provenance());
         assert_eq!(pane["peer_count"], json!(2));
         assert_eq!(pane["rows"][0]["peer_id"], json!("node:peerXYZ012345678"));
         assert_eq!(pane["rows"][1]["peer_id"], Value::Null);
         assert_eq!(pane["rows"][1]["node"]["state"], json!("absent"));
+    }
+
+    // -----------------------------------------------------------------
+    // [mesh-closed-on-frozen-base] Pane B routes "confirmed by the other
+    // side" through the SAME ONE gate Pane C uses: a dealt-with peer row
+    // SUPPLIES `confirmed_siblings`, each carrying the door's `signature_ok`
+    // (via a `theirs`-shaped cell) + the structural `digest_match` -- the two
+    // inputs `exchange-row-state.ts::deriveRightCellState` reads to render
+    // CLOSED. These mirror the Pane C sibling tests above; the CLOSED/
+    // CONTRADICTED DECISION stays the gate's, never a second fetch-gated
+    // predicate here (the `history`/`pair` peer-fetch tranche is untouched).
+    // -----------------------------------------------------------------
+
+    /// A peer this node asked, whose served half arrived by push (a
+    /// provenance line, `signature_ok: true`) and correlates by digest, gets
+    /// ONE `confirmed_siblings` entry with `signature_ok: true` and a
+    /// `verified` `digest_match` -- exactly the two gate inputs the TS view
+    /// runs through the ONE gate to count as confirmed/clean. MUTANT: revert
+    /// Pane B to no `confirmed_siblings` and this goes red.
+    #[test]
+    fn pane_b_supplies_a_confirmed_sibling_for_a_correlated_pushed_half() {
+        let local = mesh_half("a".repeat(64).as_str(), "requested", "d".repeat(64).as_str(), "e".repeat(64).as_str(), "m4-914b61c1");
+        let foreign = mesh_half("b".repeat(64).as_str(), "served", "d".repeat(64).as_str(), "e".repeat(64).as_str(), "m3-82777e20");
+        let provenance: HashMap<String, ReceivedProvenance> =
+            [provenance_for("b".repeat(64).as_str(), "m3")].into_iter().collect();
+
+        let pane = build_pane_b(&[local, foreign], &provenance);
+
+        // The local half (role requested, served_by_node_id m3) attributes the
+        // peer; the foreign served half is its counterparty half, not a second
+        // peer row.
+        let row = pane["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["peer_id"] == json!("node:m3"))
+            .expect("the asked peer is attributed");
+        let siblings = row["confirmed_siblings"].as_array().unwrap();
+        assert_eq!(siblings.len(), 1);
+        assert_eq!(siblings[0]["theirs"]["signature_ok"], json!(true));
+        assert_eq!(siblings[0]["theirs"]["received_from"], json!("m3"));
+        assert_eq!(siblings[0]["digest_match"]["state"], json!(STATE_VERIFIED));
+        // The half IS held now -- the node text stops asserting "not held".
+        assert!(
+            row["node"]["text"]
+                .as_str()
+                .unwrap()
+                .contains("their half held")
+        );
+    }
+
+    /// A peer with only this node's own half (no pushed sibling, no
+    /// provenance) supplies an EMPTY `confirmed_siblings` -- the gate reads
+    /// that as "not confirmed", and the row stays "their half not held". No
+    /// fabricated confirmation, no fetch-gated predicate.
+    #[test]
+    fn pane_b_local_only_peer_supplies_no_confirmed_sibling() {
+        let local = mesh_half("a".repeat(64).as_str(), "requested", "d".repeat(64).as_str(), "e".repeat(64).as_str(), "m4-914b61c1");
+        let pane = build_pane_b(&[local], &no_provenance());
+        let row = &pane["rows"][0];
+        assert_eq!(row["peer_id"], json!("node:m3"));
+        assert_eq!(row["confirmed_siblings"].as_array().unwrap().len(), 0);
+        assert!(
+            row["node"]["text"]
+                .as_str()
+                .unwrap()
+                .contains("their half not held")
+        );
+    }
+
+    /// The provenance rule holds in Pane B exactly as in Pane C: a genuine
+    /// cross-node served half with NO provenance line is not a counterparty
+    /// half, so it supplies no `confirmed_siblings` -- the gate cannot close.
+    #[test]
+    fn pane_b_sibling_without_a_provenance_line_supplies_no_confirmed_sibling() {
+        let local = mesh_half("a".repeat(64).as_str(), "requested", "d".repeat(64).as_str(), "e".repeat(64).as_str(), "m4-914b61c1");
+        let foreign = mesh_half("b".repeat(64).as_str(), "served", "d".repeat(64).as_str(), "e".repeat(64).as_str(), "m3-82777e20");
+        // No provenance -> `foreign` is not a received half.
+        let pane = build_pane_b(&[local, foreign], &no_provenance());
+        let row = pane["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["peer_id"] == json!("node:m3"))
+            .expect("the peer is still attributed by this node's own record");
+        assert_eq!(row["confirmed_siblings"].as_array().unwrap().len(), 0);
+    }
+
+    /// A correlated pushed half whose digests DIFFER supplies a `failed`
+    /// `digest_match` -- which the ONE gate turns into CONTRADICTED, never a
+    /// silent confirmation. The sibling is still supplied (a real disagreement
+    /// between two present halves), never dropped.
+    #[test]
+    fn pane_b_correlated_pushed_half_with_differing_digests_supplies_a_failed_match() {
+        let local = mesh_half("a".repeat(64).as_str(), "requested", "d".repeat(64).as_str(), "e".repeat(64).as_str(), "m4-914b61c1");
+        // Same request_digest (correlates), DIFFERENT response_digest.
+        let foreign = mesh_half("b".repeat(64).as_str(), "served", "d".repeat(64).as_str(), "f".repeat(64).as_str(), "m3-82777e20");
+        let provenance: HashMap<String, ReceivedProvenance> =
+            [provenance_for("b".repeat(64).as_str(), "m3")].into_iter().collect();
+
+        let pane = build_pane_b(&[local, foreign], &provenance);
+
+        let row = pane["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["peer_id"] == json!("node:m3"))
+            .expect("the peer is attributed");
+        let siblings = row["confirmed_siblings"].as_array().unwrap();
+        assert_eq!(siblings.len(), 1);
+        assert_eq!(siblings[0]["digest_match"]["state"], json!(STATE_FAILED));
     }
 
     #[test]
@@ -1721,6 +1968,6 @@ mod tests {
             fixture_record("cap-1", "2026-09-01T00:00:00Z", "req-1", None),
             fixture_record("cap-2", "2026-09-02T00:00:00Z", "req-2", Some("cap-1")),
         ];
-        assert_no_retired_vocabulary(&build_pane_b(&records), "$");
+        assert_no_retired_vocabulary(&build_pane_b(&records, &no_provenance()), "$");
     }
 }

@@ -10,12 +10,29 @@
 // unused" row group fixture.
 import type { CapsuleRecord } from '@/features/capsules/api/types'
 import type { ModelSummary, Peer } from '@/features/app-tabs/types'
-import type { PaneBJson, PaneBRow } from '@/features/capsules/api/sidecarTypes'
+import type { PaneBConfirmedSibling, PaneBJson, PaneBRow } from '@/features/capsules/api/sidecarTypes'
 import type { PeerExchangeSource } from '@/features/capsules/lib/peer-exchange-timeline'
 import { LatencySource } from '@/lib/api/types'
 
 const CLEAN_PEER_ID = 'node:aa11bb22cc33dd44'
 const ALARMED_PEER_ID = 'node:ff99ee88dd77cc66'
+
+/** A pushed counterparty half as `capsule_panes_native.rs` supplies it: the
+ *  two inputs the ONE gate reads. `verified` digest_match + `signature_ok`
+ *  closes (clean); `failed` contradicts (mismatch). Mirrors the Pane C sibling
+ *  fixtures so the two panes render off the SAME gate. */
+function confirmedSibling(state: 'verified' | 'failed', index: number): PaneBConfirmedSibling {
+  return {
+    theirs: {
+      state: 'present-unverified',
+      capsule_id: `pushed_half_${String(index).padStart(2, '0')}`,
+      received_from: state === 'failed' ? ALARMED_PEER_ID : CLEAN_PEER_ID,
+      via: 'push',
+      signature_ok: true
+    },
+    digest_match: { state }
+  }
+}
 
 const CLEAN_PEER_ROW: PaneBRow = {
   peer_id: CLEAN_PEER_ID,
@@ -62,6 +79,10 @@ const CLEAN_PEER_ROW: PaneBRow = {
       state: 'verified'
     }))
   },
+  // 16 halves pushed in and closed through the ONE gate (the same 16 the
+  // pair ledger reconciled) -- confirmed-by-other-side and MATCH both derive
+  // from these, never a browser peer-fetch of the whole chain.
+  confirmed_siblings: Array.from({ length: 16 }, (_, i) => confirmedSibling('verified', i)),
   verdicts: {
     state: 'present',
     text: '8 corroborated, 0 contradicted, 0 inconclusive (self-sealed)',
@@ -141,6 +162,12 @@ const ALARMED_PEER_ROW: PaneBRow = {
       }))
     ]
   },
+  // 10 halves pushed in: 9 close clean through the gate, 1 disagrees on a
+  // digest (the gate reads it CONTRADICTED -> a mismatch).
+  confirmed_siblings: [
+    confirmedSibling('failed', 0),
+    ...Array.from({ length: 9 }, (_, i) => confirmedSibling('verified', i + 1))
+  ],
   verdicts: {
     state: 'contradicted',
     text: '6 corroborated, 1 contradicted, 0 inconclusive (self-sealed)',

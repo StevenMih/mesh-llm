@@ -3,7 +3,8 @@
 // invariants (denominators always present, NOT_CHECKED never summarized as
 // corroborated, with-you and their-chain never summed) are unit-testable
 // without mounting a component.
-import type { PaneBRow } from '@/features/capsules/api/sidecarTypes'
+import type { PaneBConfirmedSibling, PaneBRow, PaneCRow } from '@/features/capsules/api/sidecarTypes'
+import { deriveRightCellState } from '@/features/capsules/lib/exchange-row-state'
 import type { PeerMeshStatus } from '@/features/capsules/lib/peer-mesh-status'
 
 export const STATE_NOT_CHECKED = 'NOT_CHECKED'
@@ -178,31 +179,56 @@ export function theirChainSummary(row: PaneBRow): ChainSummary {
 }
 
 // ---------------------------------------------------------------------------
-// Confirmed by other side -- the on-demand peer-fetch mechanism
-// (mesh-e9e10-pieces-3-4), distinct from `matchTally` below (which is this
-// node's own two-sided-capture reconciliation, a different, already-local
-// signal). `theirChainSummary` is a PEER-LEVEL fact (their whole chain
-// verified/failed/refused/not-checked) -- no sidecar emits a per-exchange
-// peer-fetch tally, so a `verified` state counts as every exchange
-// confirmed (never invented partial credit), and every other state counts
-// as zero with an honest note naming why.
+// Confirmed by the other side -- routed through the ONE gate
+// ([mesh-closed-on-frozen-base]), the SAME predicate Pane C uses. A peer's
+// pushed halves arrive correlated + provenance-carrying in
+// `row.confirmed_siblings` (`capsule_panes_native.rs`), each supplying the two
+// gate inputs (`theirs.signature_ok` + `digest_match`). Every sibling is run
+// through `deriveRightCellState` -- never a second, browser-peer-fetch
+// predicate on `history` -- and a `closed` verdict counts as confirmed. A peer
+// with no correlated pushed half has an empty list, which the gate reads as
+// "not confirmed": the honest "waiting for the other side" state, never a
+// fabricated zero and never phrased as pending work the user must trigger.
 // ---------------------------------------------------------------------------
 
 export type ConfirmedByOtherSide = { confirmed: number; total: number; note: string | null }
 
+/** Runs one supplied sibling through the ONE gate as a minimal Pane C row --
+ *  the gate reads only `theirs` + `digest_match` on the push-primary path, so
+ *  the rest of a full `PaneCRow` is never consulted and is stubbed honestly. */
+function siblingGateState(sibling: PaneBConfirmedSibling): ReturnType<typeof deriveRightCellState> {
+  const row: PaneCRow = {
+    exchange_key: '',
+    role_tag: '',
+    header_state: '',
+    properties: null,
+    has_issue: false,
+    mine: { state: 'present-unverified', capsule_id: null },
+    theirs: sibling.theirs,
+    unilateral: false,
+    digest_match: sibling.digest_match,
+    timestamp: null
+  }
+  return deriveRightCellState(row)
+}
+
 export function confirmedByOtherSide(row: PaneBRow): ConfirmedByOtherSide {
   const total = row.exchange_count ?? 0
-  const chain = theirChainSummary(row)
-  if (chain.state === STATE_VERIFIED) {
-    return { confirmed: total, total, note: null }
+  const siblings = row.confirmed_siblings ?? []
+  const confirmed = siblings.filter((sibling) => siblingGateState(sibling).kind === 'closed').length
+  const contradicted = siblings.filter((sibling) => siblingGateState(sibling).kind === 'contradicted').length
+  // A confirmation the gate reads as CONTRADICTED is a disagreement, not a
+  // silent zero -- name it so the count and the alarm can never diverge.
+  if (contradicted > 0) {
+    return { confirmed, total, note: `${contradicted} contradicted` }
   }
-  if (chain.state === STATE_FAILED) {
-    return { confirmed: 0, total, note: 'peer-fetch failed' }
+  // Nothing the other side sent has closed through the gate yet -- covers both
+  // "no half received" and "a half received but not yet verifiable". Stated as
+  // a fact, never as pending work the user has to go and do.
+  if (confirmed === 0) {
+    return { confirmed: 0, total, note: 'none confirmed yet' }
   }
-  if (chain.state === STATE_REFUSED) {
-    return { confirmed: 0, total, note: 'peer refused' }
-  }
-  return { confirmed: 0, total, note: 'peer-fetch pending' }
+  return { confirmed, total, note: null }
 }
 
 export function confirmedByOtherSideText(summary: ConfirmedByOtherSide): string {
@@ -211,20 +237,22 @@ export function confirmedByOtherSideText(summary: ConfirmedByOtherSide): string 
 }
 
 // ---------------------------------------------------------------------------
-// Match -- local two-sided-capture reconciliation (`pair_cell`) plus any
-// contradiction a sealed adjudication later found. `clean`/`mismatch`
-// always both render (even at zero); `contradicted` only appears when
-// nonzero -- a peer with no contradiction has never had one, not "0 of
-// them", the same zero-is-a-fact-not-silence discipline as
-// `adjudicationSummaryText`.
+// Match -- the clean/mismatch tally of the halves the other side actually
+// sent, derived through the SAME ONE gate ([mesh-closed-on-frozen-base]): a
+// `closed` sibling is clean (digests cite our half), a `contradicted` sibling
+// is a mismatch. `clean`/`mismatch` always both render (even at zero);
+// `contradicted` (the adjudication tally) only appears when nonzero -- a peer
+// with no contradiction has never had one, not "0 of them", the same
+// zero-is-a-fact-not-silence discipline as `adjudicationSummaryText`.
 // ---------------------------------------------------------------------------
 
 export type MatchTally = { clean: number; mismatch: number; contradicted: number }
 
 export function matchTally(row: PaneBRow): MatchTally {
+  const siblings = row.confirmed_siblings ?? []
   return {
-    clean: row.pair?.verified ?? 0,
-    mismatch: row.pair?.failed ?? 0,
+    clean: siblings.filter((sibling) => siblingGateState(sibling).kind === 'closed').length,
+    mismatch: siblings.filter((sibling) => siblingGateState(sibling).kind === 'contradicted').length,
     contradicted: row.verdicts?.tally?.contradicted ?? 0
   }
 }

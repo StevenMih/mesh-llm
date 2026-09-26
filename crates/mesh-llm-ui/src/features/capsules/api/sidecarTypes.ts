@@ -127,6 +127,21 @@ export type PaneBAskedCell = PaneState & {
   send_log?: unknown[]
 }
 
+/** [mesh-closed-on-frozen-base] One correlated push-primary counterparty half
+ *  supplied to the ONE gate, per this peer's asked half that a
+ *  provenance-carrying foreign sibling reconciles with
+ *  (`capsule_panes_native.rs::confirmed_siblings_for`). Carries exactly the two
+ *  inputs `exchange-row-state.ts::deriveRightCellState` reads on the
+ *  push-primary path -- the door's recorded `signature_ok` (inside a
+ *  `theirs`-shaped cell) and the structural `digest_match` -- so Pane B's
+ *  "confirmed by the other side" / MATCH derive from the SAME gate Pane C uses,
+ *  never a second browser-peer-fetch predicate. Empty on a peer with no
+ *  correlated pushed half; the gate reads that as "not confirmed", honest. */
+export type PaneBConfirmedSibling = {
+  theirs: PaneCRow['theirs']
+  digest_match?: PaneCRow['digest_match']
+}
+
 export type PaneBRow = {
   peer_id: string | null
   node: PaneBNodeCell
@@ -135,6 +150,10 @@ export type PaneBRow = {
   history: PaneBHistoryCell
   served: PaneBServedCell
   pair: PaneBPairCell
+  /** See `PaneBConfirmedSibling`. Absent on an older sidecar that predates the
+   *  push-primary path -- `confirmedByOtherSide` reads that as no correlated
+   *  half, never a fabricated confirmation. */
+  confirmed_siblings?: PaneBConfirmedSibling[]
   verdicts: PaneBVerdictsCell
   asked: PaneBAskedCell
   exchange_count: number

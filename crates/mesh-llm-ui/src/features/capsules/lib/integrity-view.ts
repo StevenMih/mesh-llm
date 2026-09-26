@@ -52,7 +52,14 @@ export type SetupStep = {
 
 export function buildSetupSteps(
   card: JsonRecord | null | undefined,
-  owner: StatusOwner | null | undefined
+  owner: StatusOwner | null | undefined,
+  /** [mesh-closed-on-frozen-base] Halves that arrived by push and closed
+   *  through the ONE gate (`IntegritySection`'s own `closedByOtherSideCount`,
+   *  the same tile figure). Corroboration can arrive by push, not only by an
+   *  ask this node sent -- so a nonzero count marks the "ask a peer" step done,
+   *  worded to match the tile, never left reading "never asked" while the tile
+   *  reads CLOSED. Defaults to 0 (the pre-push-path behaviour). */
+  closedByOtherSideCount = 0
 ): SetupStep[] {
   const checkpointCount = typeof card?.checkpoint_count === 'number' ? card.checkpoint_count : null
   // Three honest states, never two: `null` = the host did not REPORT a count
@@ -87,10 +94,20 @@ export function buildSetupSteps(
     },
     {
       key: 'ask_peer',
-      title: 'Ask a peer for their half',
-      done: askedPeerAt !== null,
-      status: askedPeerAt !== null ? `asked ${askedPeerAt}` : 'never asked',
-      body: askedPeerAt !== null ? null : 'Corroboration cannot come from you.'
+      title: 'Get the other side’s half',
+      // A half that arrived by push and closed through the gate corroborates
+      // just as an asked-for half does -- the step is done either way.
+      done: closedByOtherSideCount > 0 || askedPeerAt !== null,
+      status:
+        closedByOtherSideCount > 0
+          ? `${closedByOtherSideCount} confirmed by the other side`
+          : askedPeerAt !== null
+            ? `asked ${askedPeerAt}`
+            : 'none received yet',
+      body:
+        closedByOtherSideCount > 0 || askedPeerAt !== null
+          ? null
+          : 'Corroboration cannot come from you. It arrives when a peer pushes their half, or when you ask for it.'
     }
   ]
 }

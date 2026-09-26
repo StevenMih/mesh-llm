@@ -74,6 +74,18 @@ function checksTextFor(row: PaneCRow): string {
   return failing.length > 0 ? failing.join(', ') : 'pair reconciliation'
 }
 
+/** The peer a CLOSED (or contradicted) row's own half attributes, when a
+ *  provenance-carrying counterparty half was pushed in
+ *  ([mesh-closed-on-frozen-base]): `theirs.received_from` is the door's
+ *  recorded sender of that half (`capsule_panes_native.rs::theirs_sibling_cell`,
+ *  sourced from `received-provenance.jsonl`). A row that cites the peer's half
+ *  by digest must attribute the peer, never read "counterparty not recorded".
+ *  `null` when no half was received -- never a fabricated identity. */
+function pushedHalfCounterparty(row: PaneCRow): string | null {
+  const receivedFrom = row.theirs.received_from
+  return typeof receivedFrom === 'string' && receivedFrom.length > 0 ? receivedFrom : null
+}
+
 export function buildExchangeLedgerRows(
   rows: readonly PaneCRow[],
   counterpartyIndex: ReadonlyMap<string, string>
@@ -82,7 +94,10 @@ export function buildExchangeLedgerRows(
     exchangeKey: row.exchange_key,
     timestamp: row.timestamp,
     roleTag: row.role_tag,
-    counterparty: counterpartyIndex.get(row.exchange_key) ?? null,
+    // Prefer the Pane B pair-reconciliation join, but fall back to the sender
+    // the record-push door recorded for a locally-held counterparty half -- a
+    // row whose CLOSED state cites that half must name whose half it is.
+    counterparty: counterpartyIndex.get(row.exchange_key) ?? pushedHalfCounterparty(row),
     confirmed: row.theirs.state !== 'absent' && !row.unilateral,
     hasIssue: row.has_issue,
     checksText: checksTextFor(row),

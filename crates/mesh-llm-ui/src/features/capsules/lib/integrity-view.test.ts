@@ -9,23 +9,34 @@ import {
 } from '@/features/capsules/lib/integrity-view'
 
 describe('buildSetupSteps — ledger-ux-from-the-user §6, three steps in value order', () => {
-  it('renders all three steps "not set up" / "never asked" on a bare node (checkpoint_count REPORTED 0)', () => {
+  it('renders all three steps "not set up" / "none received yet" on a bare node (checkpoint_count REPORTED 0)', () => {
     // A bare node's host reports `checkpoint_count: 0` (capsule_panes_native's
     // build_pane_a always supplies the card) -- genuinely none yet, "not set up".
     const steps = buildSetupSteps({ checkpoint_count: 0 }, null)
     expect(steps.map((step) => step.title)).toEqual([
       'Register your checkpoints',
       'Bind an owner identity',
-      'Ask a peer for their half'
+      'Get the other side’s half'
     ])
     expect(steps.every((step) => !step.done)).toBe(true)
     expect(steps[0].status).toBe('not set up')
     expect(steps[1].status).toBe('not set up')
-    expect(steps[2].status).toBe('never asked')
+    expect(steps[2].status).toBe('none received yet')
     // Each explains what it buys and what it does not.
     expect(steps[0].body).toMatch(/does not make your records true/)
     expect(steps[1].body).toMatch(/does not prove who you are/)
-    expect(steps[2].body).toBe('Corroboration cannot come from you.')
+    expect(steps[2].body).toMatch(/Corroboration cannot come from you/)
+    // The retired "never asked" framing is gone -- a half can arrive by push.
+    expect(steps[2].status).not.toMatch(/never asked/)
+  })
+
+  it('step 3 reflects the push-confirmed reality: a nonzero closed-by-other-side count marks it done, worded like the tile', () => {
+    // [mesh-closed-on-frozen-base] The rung must not read "never asked" while
+    // the tile reads CLOSED-BY-OTHER-SIDE N -- halves arrived by push.
+    const steps = buildSetupSteps({ checkpoint_count: 0 }, null, 3)
+    expect(steps[2].done).toBe(true)
+    expect(steps[2].status).toBe('3 confirmed by the other side')
+    expect(steps[2].body).toBeNull()
   })
 
   it('checkpoints step reads a NULL card as "status not reported", NOT a false "not set up"', () => {

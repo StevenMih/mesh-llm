@@ -717,8 +717,8 @@ describe('LedgerPageContent — Part T6: Integrity section completion', () => {
 
     await screen.findByText(/Register your checkpoints/)
     expect(screen.getByText(/Bind an owner identity/)).toBeInTheDocument()
-    expect(screen.getByText(/Ask a peer for their half/)).toBeInTheDocument()
-    expect(screen.getByText('Corroboration cannot come from you.')).toBeInTheDocument()
+    expect(screen.getByText(/Get the other side’s half/)).toBeInTheDocument()
+    expect(screen.getByText(/Corroboration cannot come from you/)).toBeInTheDocument()
     expect(screen.getByText(/does not make your records true/)).toBeInTheDocument()
     expect(screen.getByText(/does not prove who you are/)).toBeInTheDocument()
   })
