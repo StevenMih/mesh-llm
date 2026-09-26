@@ -76,6 +76,7 @@ import {
   CONTINUITY_NOT_ESTABLISHED,
   identityFact,
   INTEGRITY_TILE_INFO,
+  REGISTRATION_IS_SEPARATE,
   RETENTION_FACT,
   type SetupStep
 } from '@/features/capsules/lib/integrity-view'
@@ -1189,7 +1190,10 @@ function IntegritySection() {
             Continuity: <span className="font-medium text-foreground">{continuity}</span>
           </p>
         ) : (
-          <p>{CONTINUITY_NOT_ESTABLISHED}</p>
+          <>
+            <p>{CONTINUITY_NOT_ESTABLISHED}</p>
+            <p>{REGISTRATION_IS_SEPARATE}</p>
+          </>
         )}
 
         {/* Once-per-node facts -- stated once here, never repeated per

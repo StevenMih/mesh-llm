@@ -8,6 +8,7 @@ import {
   CHECKPOINTED_NOT_REGISTERED_STATUS,
   checkpointRegistration,
   CONTINUITY_NOT_ESTABLISHED,
+  REGISTRATION_IS_SEPARATE,
   identityFact,
   INTEGRITY_TILE_INFO,
   RETENTION_FACT
@@ -98,10 +99,10 @@ describe('buildSetupSteps — ledger-ux-from-the-user §6, three steps in value 
     expect(buildRegistrationCopy(witnessed)?.witnessSummary).toMatch(/^Registered with 1 witness/)
   })
 
-  it('step 2 flips to "bound" once the live owner is verified', () => {
+  it('step 2 flips to "bound (self-asserted)" once the live owner is verified', () => {
     const steps = buildSetupSteps(null, { status: 'verified', verified: true })
     expect(steps[1].done).toBe(true)
-    expect(steps[1].status).toBe('bound')
+    expect(steps[1].status).toBe('bound (self-asserted)')
     expect(steps[1].body).toBeNull()
   })
 
@@ -227,10 +228,14 @@ describe('once-per-node facts — never fabricated, never per-row', () => {
     )
   })
 
-  it('continuity default prose names what would establish it', () => {
-    expect(CONTINUITY_NOT_ESTABLISHED).toBe(
-      'Continuity: not established. It needs a registered checkpoint and a prior one to bind to.'
-    )
+  it('continuity default prose names what would establish it: a PRIOR checkpoint, not registration', () => {
+    expect(CONTINUITY_NOT_ESTABLISHED).toBe('Continuity: not established. It needs a prior checkpoint for the next one to bind to.')
+    expect(CONTINUITY_NOT_ESTABLISHED).not.toMatch(/regist/i)
+  })
+
+  it('registration is stated as its own sentence: what makes a rewrite detectable by others', () => {
+    expect(REGISTRATION_IS_SEPARATE).toMatch(/^Registration is a separate step/)
+    expect(REGISTRATION_IS_SEPARATE).toMatch(/detectable by someone else/)
   })
 })
 

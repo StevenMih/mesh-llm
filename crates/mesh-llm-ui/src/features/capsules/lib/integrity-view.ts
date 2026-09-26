@@ -133,7 +133,7 @@ export function buildSetupSteps(
       key: 'identity',
       title: 'Bind an owner identity',
       done: bound,
-      status: bound ? 'bound' : 'not set up',
+      status: bound ? 'bound (self-asserted)' : 'not set up',
       body: bound
         ? null
         : '`mesh-llm auth init` binds your records to a key you hold, so a later denial is harder. It is self-asserted: it does not prove who you are.'
@@ -269,11 +269,11 @@ export const CHAIN_BAR_INFO = CHAIN_STRIP_TOOLTIP
 export const RETENTION_FACT =
   'Retention: set by Settings → Logging (retention length and row cap). This node does not yet compare that declared setting against a running measurement.'
 
-/** Grounded in the real capture point (`security-checks-view.ts`'s
- *  existing per-record default, `'captured at the sidecar observe
- *  path'`) -- stated once here instead of repeated on every row. */
+/** Grounded in the real capture point: the capsule plugin seals at the
+ *  host's serve boundary (`security-checks-view.ts`'s per-record default
+ *  says the same) -- stated once here instead of repeated on every row. */
 export const CAPTURE_BOUNDARY_FACT =
-  'Capture boundary: the sidecar observe path. Rule: whatever passes through that path is what gets sealed; nothing upstream or downstream of it is captured.'
+  'Capture boundary: the plugin’s serve-boundary path. Rule: whatever passes through that path is what gets sealed; nothing upstream or downstream of it is captured.'
 
 export function identityFact(owner: StatusOwner | null | undefined): string {
   if (ownerBound(owner)) {
@@ -282,5 +282,11 @@ export function identityFact(owner: StatusOwner | null | undefined): string {
   return 'Owner: not bound — not bound to a person.'
 }
 
-export const CONTINUITY_NOT_ESTABLISHED =
-  'Continuity: not established. It needs a registered checkpoint and a prior one to bind to.'
+/** Continuity and registration are different facts, stated separately:
+ *  continuity is a chain of checkpoints, each binding to the one before it,
+ *  so it needs a PRIOR checkpoint; registration is what lets someone else
+ *  detect a later rewrite. */
+export const CONTINUITY_NOT_ESTABLISHED = 'Continuity: not established. It needs a prior checkpoint for the next one to bind to.'
+
+export const REGISTRATION_IS_SEPARATE =
+  'Registration is a separate step: registering a checkpoint with a service you don’t run is what makes a later rewrite detectable by someone else.'

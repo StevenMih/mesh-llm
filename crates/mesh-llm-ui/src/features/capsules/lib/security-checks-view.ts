@@ -451,7 +451,7 @@ export function buildChecksRows(
       const cell = row.properties?.[key] ?? null
       const singleLine =
         cell && cell.state !== 'NOT_PRESENT'
-          ? (cell.text ?? 'captured at the sidecar observe path (rule: every served exchange)')
+          ? (cell.text ?? 'captured at the plugin’s serve-boundary path (rule: every served exchange)')
           : labelForState('NOT_PRESENT')
       return { key, label, group, yours: null, theirs: null, singleLine }
     }

@@ -142,6 +142,9 @@ export function LedgerPeersTable({
     count: allRows.filter((r) => alarmValue(r) === value).length
   }))
   const activeFilterGroups = alarmFilter.size < ALL_ALARM_VALUES.length ? 1 : 0
+  // An empty group only says "match this filter" when a search or filter is
+  // actually narrowing it; with nothing set, the group is simply empty.
+  const narrowed = trimmedSearch !== '' || activeFilterGroups > 0
 
   const columnCount = 1 + visibleColumns.size
 
@@ -300,7 +303,7 @@ export function LedgerPeersTable({
           {visibleDealtWith.length === 0 ? (
             <TableRow className="border-border-soft">
               <TableCell className="h-16 text-center text-xs text-fg-dim" colSpan={columnCount}>
-                No exchanges match this filter.
+                {narrowed ? 'No exchanges match this filter.' : 'None yet.'}
               </TableCell>
             </TableRow>
           ) : (
@@ -325,7 +328,7 @@ export function LedgerPeersTable({
           {visibleAdvertised.length === 0 ? (
             <TableRow className="border-border-soft">
               <TableCell className="h-16 text-center text-xs text-fg-dim" colSpan={columnCount}>
-                No advertised peers match this filter.
+                {narrowed ? 'No advertised peers match this filter.' : 'None yet.'}
               </TableCell>
             </TableRow>
           ) : (

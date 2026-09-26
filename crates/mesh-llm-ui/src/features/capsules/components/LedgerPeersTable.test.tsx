@@ -80,6 +80,24 @@ describe('LedgerPeersTable — two row groups, never merged', () => {
   })
 })
 
+describe('LedgerPeersTable — [mesh-freeze-candidate-final-fixes] no "match this filter" when nothing is filtered', () => {
+  it('an empty group with no search or filter set says "None yet.", never "match this filter"', () => {
+    const props = { ...buildFixtureProps(), dealtWith: [], dealtWithRawRows: [] }
+    render(<LedgerPeersTable {...props} />)
+    const dealtWithGroup = screen.getByText(/Nodes you have dealt with · 0/).closest('tbody') as HTMLElement
+    expect(within(dealtWithGroup).getByText('None yet.')).toBeInTheDocument()
+    expect(screen.queryByText(/match this filter/)).not.toBeInTheDocument()
+  })
+
+  it('the same empty group says "match this filter" once a search is actually narrowing it', async () => {
+    const user = userEvent.setup()
+    render(<LedgerPeersTable {...buildFixtureProps()} />)
+    await user.type(screen.getByLabelText('Search peers'), 'no-such-peer')
+    expect(screen.getByText('No exchanges match this filter.')).toBeInTheDocument()
+    expect(screen.getByText('No advertised peers match this filter.')).toBeInTheDocument()
+  })
+})
+
 describe('LedgerPeersTable — toolbar', () => {
   it('search filters both groups to the matching peer only', async () => {
     const user = userEvent.setup()

@@ -1073,7 +1073,7 @@ describe('LedgerPageContent — Part T6: Integrity section completion', () => {
 
     expect(await screen.findByText('Owner: bound (self-asserted) — not bound to a person.')).toBeInTheDocument()
     // The setup checklist's step 2 flips too -- same live owner data.
-    expect(screen.getByText('bound')).toBeInTheDocument()
+    expect(screen.getByText('bound (self-asserted)')).toBeInTheDocument()
   })
 
   it('shows the default continuity sentence naming what would establish it', async () => {
@@ -1081,9 +1081,11 @@ describe('LedgerPageContent — Part T6: Integrity section completion', () => {
     render(<LedgerPageContent />, { wrapper: makeWrapper() })
     await user.click(screen.getByRole('tab', { name: /integrity/i }))
 
+    expect(await screen.findByText('Continuity: not established. It needs a prior checkpoint for the next one to bind to.')).toBeInTheDocument()
+    // Registration is its own sentence, not folded into continuity.
     expect(
-      await screen.findByText(
-        'Continuity: not established. It needs a registered checkpoint and a prior one to bind to.'
+      screen.getByText(
+        'Registration is a separate step: registering a checkpoint with a service you don’t run is what makes a later rewrite detectable by someone else.'
       )
     ).toBeInTheDocument()
   })

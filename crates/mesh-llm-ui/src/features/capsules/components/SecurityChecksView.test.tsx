@@ -138,7 +138,9 @@ describe('SecurityChecksView — L-M: recomputed-here vs from-sidecar are visual
 describe('SecurityChecksView — capture_coverage: sentence or not present, never a bare pass chip', () => {
   it('renders the fixed sentence when present', () => {
     render(<SecurityChecksView identity={RECOMPUTED_MATCH} localRecord={null} row={ledgerRow(paneCRow())} />)
-    expect(screen.getByText('captured at the sidecar observe path (rule: every served exchange)')).toBeInTheDocument()
+    expect(
+      screen.getByText('captured at the plugin’s serve-boundary path (rule: every served exchange)')
+    ).toBeInTheDocument()
   })
 
   it('renders "not present" when the sidecar sends nothing for it', () => {
