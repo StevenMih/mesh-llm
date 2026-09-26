@@ -202,8 +202,9 @@ fn response_digest(record: &Value) -> Option<&str> {
 /// capsule BODIES to, by `capsule_id`. A peer's pushed capsule is evidence we
 /// HOLD, not a record we MADE: it lives HERE, never in `capsules.jsonl` (our
 /// chain). The chained record for a received half is a LOCAL CITING record in
-/// `capsules.jsonl` (`chain.relation == "cites"`, `citation_purpose ==
-/// "counterparty_half"`) that references the foreign body by digest; this
+/// `capsules.jsonl` -- identified by its `citation_purpose == "counterparty_half"`
+/// reference (never by the `chain.relation` string) -- that references the
+/// foreign body by digest; this
 /// reader resolves the cited body from this store for the digest recompute the
 /// CLOSED gate reads. This store is NOT a ledger -- nothing chains it.
 const RECEIVED_CAPSULES_FILENAME: &str = "received-capsules.jsonl";
@@ -256,13 +257,15 @@ fn read_received_capsules(ledger_dir: &Path) -> HashMap<String, Value> {
 }
 
 /// True when `record` is a LOCAL CITING record for a received counterparty half
-/// ([mesh-received-half-is-a-citing-record]): `chain.relation == "cites"` AND a
-/// `references[]` entry with `citation_purpose == "counterparty_half"`. These
+/// ([mesh-received-half-is-a-citing-record]): it carries a `references[]` entry
+/// with `citation_purpose == "counterparty_half"`. The record kind is defined by
+/// the citation PURPOSE alone, never by the `chain.relation` string (AAC-05: a
+/// cross-stream citation is a `references[]` entry, not a relation value -- the
+/// citing record's relation may read `follows`, `cites`, or anything else). These
 /// are OUR OWN chained log entries (not served actions, not foreign bodies) --
 /// they are what makes the received half a checkpoint-covered record of ours.
 fn is_citing_record(record: &Value) -> bool {
-    let is_cite = record.pointer("/chain/relation").and_then(Value::as_str) == Some("cites");
-    is_cite && cited_counterparty_capsule_id(record).is_some()
+    cited_counterparty_capsule_id(record).is_some()
 }
 
 /// The foreign `capsule_id` a citing record cites -- its `references[]` entry
@@ -2402,14 +2405,17 @@ mod tests {
     }
 
     /// A minimal CITING record ([mesh-received-half-is-a-citing-record]): our
-    /// own chained record, `chain.relation == "cites"`, citing `cited` by CPB
-    /// typed digest with `citation_purpose == "counterparty_half"`, carrying
-    /// the receiving facts in `compute_attestation.received_half`.
+    /// own chained record citing `cited` by CPB typed digest with
+    /// `citation_purpose == "counterparty_half"`, carrying the receiving facts in
+    /// `compute_attestation.received_half`. The record kind is defined by the
+    /// citation purpose, NOT by the `chain.relation` string (AAC-05); the
+    /// relation here reads `follows` -- the citing record is still identified
+    /// solely by its `counterparty_half` reference.
     fn citing_fixture(cited: &str, received_from: &str, signature_ok: bool) -> Value {
         json!({
             "capsule_id": format!("cite-of-{cited}"),
             "timestamp": "2026-09-25T00:00:02Z",
-            "chain": { "parent_capsule_id": "head", "relation": "cites" },
+            "chain": { "parent_capsule_id": "head", "relation": "follows" },
             "references": [{
                 "type": "capsule", "digest_alg": "SHA-256", "digest": cited,
                 "citation_purpose": "counterparty_half",
@@ -2444,12 +2450,25 @@ mod tests {
         assert!(received_half_provenance(&served).is_none());
     }
 
-    /// `is_citing_record` recognizes exactly a `chain.relation == "cites"` +
-    /// `counterparty_half` reference; a served record and a plain `follows`
-    /// record are not citing records.
+    /// `is_citing_record` recognizes a record by its `citation_purpose ==
+    /// "counterparty_half"` reference ALONE, never by the `chain.relation` string
+    /// (AAC-05). The `citing_fixture` carries `relation: "follows"` and is still
+    /// recognized; a record with `relation: "cites"` but NO counterparty_half
+    /// reference is NOT a citing record; a served record is not either.
     #[test]
     fn is_citing_record_recognizes_the_counterparty_half_citation() {
-        assert!(is_citing_record(&citing_fixture("x", "m3", true)));
+        // Recognized by citation_purpose, though its relation reads "follows".
+        let follows_citing = citing_fixture("x", "m3", true);
+        assert_eq!(follows_citing.pointer("/chain/relation").unwrap(), &json!("follows"));
+        assert!(is_citing_record(&follows_citing));
+
+        // A record whose relation reads "cites" but carries NO counterparty_half
+        // reference is NOT identified as a citing record: the relation string is
+        // not the key.
+        let mut cites_no_ref = fixture_record("cap-9", "2026-09-01T00:00:00Z", "req-9", None);
+        cites_no_ref["chain"] = json!({ "parent_capsule_id": "head", "relation": "cites" });
+        assert!(!is_citing_record(&cites_no_ref));
+
         let served = fixture_record("cap-1", "2026-09-01T00:00:00Z", "req-1", None);
         assert!(!is_citing_record(&served));
     }
@@ -2695,8 +2714,8 @@ mod tests {
         let foreign = mesh_half(
             &"b".repeat(64), "served", &req_digest, &resp_digest, "m3-82777e20",
         );
-        // Our CITING record of receiving the foreign half (relation cites,
-        // counterparty_half, received_from the pushing peer m3).
+        // Our CITING record of receiving the foreign half (identified by its
+        // counterparty_half citation, received_from the pushing peer m3).
         let citing = citing_fixture(&"b".repeat(64), "m3", true);
 
         std::fs::write(
