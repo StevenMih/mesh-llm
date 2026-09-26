@@ -7,6 +7,7 @@ mod released_schema_import;
 mod runner;
 mod schema_contract;
 mod sqlite_autoincrement;
+mod v2_exchange_id_migration;
 
 pub(super) const EXPECTED_INDEXES: &[&str] = &[
     "idx_artifact_pointers_occurred",

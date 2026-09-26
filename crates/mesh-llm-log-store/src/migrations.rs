@@ -19,11 +19,26 @@ struct MigrationPlan<'a> {
     migrations: &'a [Migration],
 }
 
-const MIGRATIONS: &[Migration] = &[];
+/// Adds the exchange_id logs<->ledger join key column (and its unique
+/// partial index) that shipped in the fresh-install DDL without a forward
+/// path for databases created before it, so every v1 database applies this
+/// on open instead of silently rejecting summary inserts against a
+/// hand-written column list.
+fn migrate_v2_add_exchange_id(connection: &Connection) -> Result<(), rusqlite::Error> {
+    connection.execute_batch(
+        "ALTER TABLE summaries ADD COLUMN exchange_id TEXT;
+         CREATE UNIQUE INDEX idx_summaries_exchange_id ON summaries (exchange_id) WHERE exchange_id IS NOT NULL;",
+    )
+}
+
+const MIGRATIONS: &[Migration] = &[Migration {
+    version: 2,
+    apply: migrate_v2_add_exchange_id,
+}];
 const APPLICATION_ID: u32 = 0x4D4C4F47;
 
 /// Current schema version for the integrated local logging feature.
-pub const CURRENT_VERSION: u32 = 1;
+pub const CURRENT_VERSION: u32 = 2;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum SchemaClassification {
