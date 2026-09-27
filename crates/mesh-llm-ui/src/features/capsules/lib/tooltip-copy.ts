@@ -18,7 +18,8 @@ export const HERO_TOOLTIPS = {
   yourRecords: 'The records this node keeps, sealed and checkpointed. Open to see where they are and what you share.',
   // [mesh-evidence-hero-your-history-and-cleanup]: the storage-posture pills,
   // mirroring Logs. Facts, not features.
-  localOnly: 'Nothing is sent from this machine unless a switch under What you share says so.',
+  // Shown only when every switch under What you share is off.
+  localOnly: 'Nothing is sent from this machine: every switch under What you share is off.',
   digestsOnly: 'Each record holds a fingerprint of the prompt and the answer, never the words themselves.',
   promptsKept: 'The words of your prompts and answers are stored on this machine only, apart from the records.',
   promptsNotKept: 'No prompt or answer text is stored on this machine. The records hold fingerprints only.',

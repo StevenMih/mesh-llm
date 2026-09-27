@@ -258,10 +258,12 @@ vi.mock('@/features/capsules/api/recordsClient', () => ({
     log_id: 'capsule-emit-mesh',
     stored_text_count: 3,
     new_history_pending: null,
+    // All four off, so the conditional `Local only` pill renders and its
+    // tooltip is counted too.
     sharing: {
-      record_at_completion: { value: 'counterparty', source: 'default' },
-      history_segments: { value: 'prospective', source: 'default' },
-      adjudications: { value: 'deliver_to_subjects', source: 'default' },
+      record_at_completion: { value: 'off', source: 'set' },
+      history_segments: { value: 'off', source: 'set' },
+      adjudications: { value: 'off', source: 'set' },
       witness: { value: null, source: 'default' }
     }
   }),
@@ -313,6 +315,7 @@ describe('tooltip census -- every chip type the Evidence tab ships has a plain o
     render(<LedgerPageContent />, { wrapper })
     await screen.findByText(/Nodes you have dealt with/)
     await screen.findByText('Your prompts · kept here')
+    await screen.findByText('Local only')
     const seen = censusOnScreen()
     expectCovered(REQUIRED.hero, seen, 'face')
     expectCovered(REQUIRED.peers, seen, 'face')

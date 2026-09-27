@@ -8,6 +8,7 @@ import {
   cleanupResultMessage,
   heroStatusLine,
   lastCheckpointFact,
+  nothingIsShared,
   promptsPill,
   recordsLocationFact,
   sharingRows
@@ -127,5 +128,44 @@ describe('Your records facts', () => {
       'Covers 8 records, made no later than 2026-09-26T17:37:20.014Z.'
     )
     expect(lastCheckpointFact(0, null)).toBe('No checkpoint yet.')
+  })
+})
+
+describe('Local only', () => {
+  const off = { value: 'off', source: 'set' as const }
+  const allOff = status({
+    sharing: {
+      record_at_completion: off,
+      history_segments: off,
+      adjudications: off,
+      witness: { value: null, source: 'default' }
+    }
+  })
+
+  it('holds only when every switch is off', () => {
+    expect(nothingIsShared(allOff)).toBe(true)
+  })
+
+  it('does not hold with the defaults, with any one switch on, or without a status', () => {
+    expect(nothingIsShared(status())).toBe(false)
+    expect(
+      nothingIsShared(
+        status({ sharing: { ...allOff.sharing, record_at_completion: { value: 'counterparty', source: 'set' } } })
+      )
+    ).toBe(false)
+    expect(
+      nothingIsShared(status({ sharing: { ...allOff.sharing, history_segments: { value: 'peers', source: 'set' } } }))
+    ).toBe(false)
+    expect(
+      nothingIsShared(
+        status({ sharing: { ...allOff.sharing, adjudications: { value: 'deliver_to_subjects', source: 'set' } } })
+      )
+    ).toBe(false)
+    expect(
+      nothingIsShared(
+        status({ sharing: { ...allOff.sharing, witness: { value: 'https://w.example', source: 'set' } } })
+      )
+    ).toBe(false)
+    expect(nothingIsShared(null)).toBe(false)
   })
 })

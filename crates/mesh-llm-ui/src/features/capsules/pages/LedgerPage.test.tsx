@@ -655,16 +655,34 @@ describe('LedgerPageContent', () => {
     expect(screen.queryByText(/Nothing needs your attention/)).not.toBeInTheDocument()
   })
 
+  it('`Local only` shows only when the node reports all four sharing switches off', async () => {
+    const { fetchRecordsStatus } = await import('@/features/capsules/api/recordsClient')
+    const base = await fetchRecordsStatus()
+    const off = { value: 'off', source: 'set' as const }
+    vi.mocked(fetchRecordsStatus).mockResolvedValueOnce({
+      ...base,
+      sharing: {
+        record_at_completion: off,
+        history_segments: off,
+        adjudications: off,
+        witness: { value: null, source: 'default' }
+      }
+    })
+    render(<LedgerPageContent />, { wrapper: makeWrapper() })
+    expect(await screen.findByText('Local only')).toBeInTheDocument()
+    expect(
+      screen.getByText('Nothing is sent from this machine: every switch under What you share is off.')
+    ).toBeInTheDocument()
+  })
+
   it('hero pills state the storage posture, mirroring Logs, each with its one sentence; the whole-tab line sits under them', async () => {
     render(<LedgerPageContent />, { wrapper: makeWrapper() })
 
-    expect(screen.getByText('Local only')).toBeInTheDocument()
     expect(screen.getByText('Records · digests only')).toBeInTheDocument()
     // Two stored texts reported by the node -> "kept here".
     expect(await screen.findByText('Your prompts · kept here')).toBeInTheDocument()
-    expect(
-      screen.getByText('Nothing is sent from this machine unless a switch under What you share says so.')
-    ).toBeInTheDocument()
+    // Default switches send your record to the other side: no `Local only`.
+    expect(screen.queryByText('Local only')).not.toBeInTheDocument()
     expect(screen.queryByText("This node's copy")).not.toBeInTheDocument()
     expect(await screen.findByTestId('hero-status-line')).toHaveTextContent(
       '0 records · 0 confirmed by the other side · 0 disagreements · checkable only by you (no witness)'

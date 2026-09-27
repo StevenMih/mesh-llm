@@ -114,7 +114,7 @@ import { HoverChip } from '@/features/capsules/components/HoverChip'
 import { CleanUpRecordsDialog } from '@/features/capsules/components/CleanUpRecordsDialog'
 import { YourRecordsDialog } from '@/features/capsules/components/YourRecordsDialog'
 import { useYourRecords } from '@/features/capsules/lib/use-your-records'
-import { heroStatusLine, promptsPill } from '@/features/capsules/lib/your-records'
+import { heroStatusLine, nothingIsShared, promptsPill } from '@/features/capsules/lib/your-records'
 import {
   CLOSE_CARD_TOOLTIP,
   HERO_DESCRIPTION,
@@ -1451,14 +1451,18 @@ export function LedgerPageContent({ focusExchangeKey }: { focusExchangeKey?: str
                 />
               </span>
               {/* The storage posture, mirroring Logs: facts, not features.
-                 Each pill's hover is its one-sentence explanation. */}
-              <HoverChip census="hero:local_only" label={HERO_TOOLTIPS.localOnly}>
-                <span className="inline-flex rounded-full outline-none focus-visible:ring-2 focus-visible:ring-accent">
-                  <StatusBadge size="caption" tone="muted">
-                    Local only
-                  </StatusBadge>
-                </span>
-              </HoverChip>
+                 Each pill's hover is its one-sentence explanation. `Local
+                 only` is a claim, so it shows only when the node reports
+                 every sharing switch off. */}
+              {nothingIsShared(yourRecords.status) ? (
+                <HoverChip census="hero:local_only" label={HERO_TOOLTIPS.localOnly}>
+                  <span className="inline-flex rounded-full outline-none focus-visible:ring-2 focus-visible:ring-accent">
+                    <StatusBadge size="caption" tone="muted">
+                      Local only
+                    </StatusBadge>
+                  </span>
+                </HoverChip>
+              ) : null}
               <HoverChip census="hero:digests_only" label={HERO_TOOLTIPS.digestsOnly}>
                 <span className="inline-flex rounded-full outline-none focus-visible:ring-2 focus-visible:ring-accent">
                   <StatusBadge size="caption" tone="muted">

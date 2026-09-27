@@ -60,6 +60,20 @@ export function promptsPill(storedTextCount: number | null): PromptsPill {
 // What you share: the four switches, one "what leaves" sentence each
 // ---------------------------------------------------------------------------
 
+/** `Local only` is a claim that nothing is sent. It holds only when the
+ *  node reports every sharing switch off; with the defaults your record goes
+ *  to the other side, and without a status this view can't know. */
+export function nothingIsShared(status: RecordsStatus | null): boolean {
+  const sharing = status?.sharing
+  if (!sharing) return false
+  return (
+    sharing.record_at_completion?.value === 'off' &&
+    sharing.history_segments?.value === 'off' &&
+    sharing.adjudications?.value === 'off' &&
+    !sharing.witness?.value
+  )
+}
+
 export type SharingRow = {
   key: SharingSwitchKey
   label: string
