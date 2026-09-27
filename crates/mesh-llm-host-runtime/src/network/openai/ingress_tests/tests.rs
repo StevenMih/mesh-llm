@@ -263,6 +263,7 @@ async fn moa_single_worker_stays_in_gateway() {
             targets: &targets,
             affinity: &affinity,
             plugin_manager: None,
+            requested_by_node_id: None,
             exchange_channel: None,
             twin_exchange_channel: None,
         },
@@ -714,6 +715,7 @@ async fn api_proxy_tokenizer_route_ignores_generation_context_budget() {
         targets: &targets,
         affinity: &affinity,
         plugin_manager: None,
+        requested_by_node_id: None,
         exchange_channel: None,
         twin_exchange_channel: None,
     };
@@ -1433,6 +1435,7 @@ async fn route_missing_local_model_enters_remote_mesh_branch_when_peer_serves_mo
         targets: &targets,
         affinity: &affinity,
         plugin_manager: None,
+        requested_by_node_id: None,
         // Inject the recording double so both publish calls are observable
         // even though plugin_manager is None.
         exchange_channel: Some(&recording),
@@ -1577,6 +1580,7 @@ async fn route_missing_local_model_remote_mesh_terminal_carries_the_real_request
         targets: &targets,
         affinity: &affinity,
         plugin_manager: None,
+        requested_by_node_id: None,
         exchange_channel: Some(&recording),
         twin_exchange_channel: None,
     };
@@ -1698,6 +1702,7 @@ async fn route_missing_local_model_sidecar_generated_nonce_origin_sets_sidecar_f
         targets: &targets,
         affinity: &affinity,
         plugin_manager: None,
+        requested_by_node_id: None,
         exchange_channel: Some(&recording),
         twin_exchange_channel: None,
     };
@@ -1772,6 +1777,7 @@ fn remote_mesh_test_ctx<'a>(
         targets,
         affinity,
         plugin_manager: None,
+        requested_by_node_id: None,
         #[cfg(test)]
         exchange_channel: None,
         twin_exchange_channel: None,
@@ -2117,6 +2123,7 @@ async fn route_self_targeted_model_attempts_a_registered_plugin_instead_of_faili
         targets: &targets,
         affinity: &affinity,
         plugin_manager: Some(&plugin_manager),
+        requested_by_node_id: None,
         #[cfg(test)]
         exchange_channel: None,
         twin_exchange_channel: None,
@@ -2198,6 +2205,7 @@ async fn route_missing_local_model_excluding_self_blocks_local_plugin_fallback()
         targets: &targets,
         affinity: &affinity,
         plugin_manager: Some(&plugin_manager),
+        requested_by_node_id: None,
         #[cfg(test)]
         exchange_channel: None,
         twin_exchange_channel: None,
@@ -2260,7 +2268,7 @@ async fn serving_provenance_carries_weights_digest_when_descriptor_has_one() {
     })
     .await;
 
-    let provenance = serving_provenance_for_model(&node, "local/digested-model").await;
+    let provenance = serving_provenance_for_model(&node, "local/digested-model", None).await;
 
     assert_eq!(provenance.weights_digest.as_deref(), Some("sha256:abc123"));
 }
@@ -2283,7 +2291,7 @@ async fn serving_provenance_omits_weights_digest_when_descriptor_has_none() {
     })
     .await;
 
-    let provenance = serving_provenance_for_model(&node, "local/undigested-model").await;
+    let provenance = serving_provenance_for_model(&node, "local/undigested-model", None).await;
 
     assert!(provenance.weights_digest.is_none());
 }
@@ -2297,7 +2305,7 @@ async fn serving_provenance_omits_weights_digest_when_no_descriptor_matches() {
         .await
         .expect("test node");
 
-    let provenance = serving_provenance_for_model(&node, "unknown/model").await;
+    let provenance = serving_provenance_for_model(&node, "unknown/model", None).await;
 
     assert!(provenance.weights_digest.is_none());
 }
@@ -2660,6 +2668,7 @@ async fn ambient_twin_sampled_shares_bracket_id_across_two_exchanges() {
         targets: &targets,
         affinity: &affinity,
         plugin_manager: None,
+        requested_by_node_id: None,
         exchange_channel: Some(&*recording),
         twin_exchange_channel: Some(
             std::sync::Arc::clone(&recording) as std::sync::Arc<dyn OpenAiExchangeChannel>
@@ -2738,6 +2747,7 @@ async fn ambient_twin_rate_zero_never_dual_dispatches() {
         targets: &targets,
         affinity: &affinity,
         plugin_manager: None,
+        requested_by_node_id: None,
         exchange_channel: Some(&*recording),
         twin_exchange_channel: Some(
             std::sync::Arc::clone(&recording) as std::sync::Arc<dyn OpenAiExchangeChannel>
@@ -2797,6 +2807,7 @@ async fn ambient_twin_call_failure_does_not_block_or_break_the_primary_response(
         targets: &targets,
         affinity: &affinity,
         plugin_manager: None,
+        requested_by_node_id: None,
         exchange_channel: None,
         twin_exchange_channel: None,
     };
@@ -2854,6 +2865,7 @@ async fn ambient_twin_primary_response_is_byte_identical_whether_or_not_twinned(
             targets: &targets,
             affinity: &affinity,
             plugin_manager: None,
+            requested_by_node_id: None,
             exchange_channel: None,
             twin_exchange_channel: None,
         };

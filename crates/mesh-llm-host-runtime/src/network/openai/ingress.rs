@@ -40,7 +40,11 @@ fn plugin_route_status(outcome: &proxy::RouteDispatchOutcome) -> Option<u16> {
 /// this host's startup hardware survey (gpu, vram, soc, hostname). Every
 /// field is a real value or omitted; nothing is invented. Returned as a plain
 /// data struct so the wire event stays independent of the node internals.
-async fn serving_provenance_for_model(node: &mesh::Node, model_name: &str) -> ServingProvenance {
+async fn serving_provenance_for_model(
+    node: &mesh::Node,
+    model_name: &str,
+    requested_by_node_id: Option<&str>,
+) -> ServingProvenance {
     // The served-model descriptor for exactly this model, if the node has one.
     // We match on the served identity's `model_name`; a miss (peer-served or
     // not-yet-described) leaves every model field `None` rather than guessing.
@@ -73,6 +77,7 @@ async fn serving_provenance_for_model(node: &mesh::Node, model_name: &str) -> Se
         vram_bytes: (node.advertised_memory.total_bytes != 0)
             .then_some(node.advertised_memory.total_bytes),
         is_soc: node.is_soc,
+        requested_by_node_id: requested_by_node_id.map(str::to_string),
     }
 }
 
@@ -184,6 +189,8 @@ fn serving_provenance_for_remote_mesh(
         gpu: None,
         vram_bytes: None,
         is_soc: None,
+        // This node routed the exchange; it was not asked to serve it.
+        requested_by_node_id: None,
     })
 }
 
@@ -209,15 +216,33 @@ fn serving_provenance_for_remote_mesh(
 /// this node's own served-model quant/architecture/identity_hash). Omitting
 /// the whole block on the plugin path closes both windows at once rather than
 /// leaving the model-identity half open.
+/// The per-exchange facts `publish_raw_proxy_terminal` attaches, beyond the
+/// outcome itself.
+#[derive(Clone, Copy, Default)]
+struct RawProxyTerminalFacts<'a> {
+    /// `true` only on the host-served branch (this node's own weights and
+    /// hardware survey) -- see the function doc.
+    served_locally: bool,
+    /// Canonical digest of the real request body the host dispatched.
+    request_digest: Option<&'a str>,
+    /// The mesh node that asked, from the tunnel's authenticated remote id
+    /// (`IngressRouteContext::requested_by_node_id`). Host-served only.
+    requested_by_node_id: Option<&'a str>,
+}
+
 async fn publish_raw_proxy_terminal(
     node: &mesh::Node,
     channel: &dyn OpenAiExchangeChannel,
     exchange_id: &str,
     model_name: &str,
     final_outcome: &proxy::RouteDispatchOutcome,
-    served_locally: bool,
-    request_digest: Option<&str>,
+    facts: RawProxyTerminalFacts<'_>,
 ) {
+    let RawProxyTerminalFacts {
+        served_locally,
+        request_digest,
+        requested_by_node_id,
+    } = facts;
     let mut envelope = OpenAiExchangeEnvelope::terminal(
         exchange_id.to_string(),
         OpenAiExchangeDispatchPath::RawProxy,
@@ -232,7 +257,7 @@ async fn publish_raw_proxy_terminal(
     // thrown away. On the plugin-served path, skip it regardless of outcome:
     // see the `served_locally` doc above.
     if served_locally && outcome_was_served(final_outcome) {
-        let provenance = serving_provenance_for_model(node, model_name).await;
+        let provenance = serving_provenance_for_model(node, model_name, requested_by_node_id).await;
         envelope = envelope.with_serving_provenance(provenance);
     }
     // The host-served (real-weights) branch reaches this via
@@ -350,6 +375,11 @@ struct IngressRouteContext<'a> {
     targets: &'a election::ModelTargets,
     affinity: &'a affinity::AffinityRouter,
     plugin_manager: Option<&'a crate::plugin::PluginManager>,
+    /// The mesh node that sent this request over the HTTP tunnel, hex-encoded,
+    /// from the tunnel's QUIC-authenticated remote `EndpointId`. `None` for a
+    /// request on this node's local API. Carried onto the host-served
+    /// terminal as `ServingProvenance.requested_by_node_id`.
+    requested_by_node_id: Option<String>,
     /// Explicit exchange channel for the remote-mesh publish pair.
     /// When `None`, falls back to `plugin_manager` as the channel
     /// (production path). Set to `Some` in tests to inject a recording double,
@@ -1683,8 +1713,11 @@ async fn try_route_plugin_model(
                 &exchange_id,
                 model_name,
                 &final_outcome,
-                false, // plugin-served: never this node's own hardware/weights
-                request_digest.as_deref(),
+                RawProxyTerminalFacts {
+                    served_locally: false, // plugin-served: never this node's own hardware/weights
+                    request_digest: request_digest.as_deref(),
+                    requested_by_node_id: None, // no host-served provenance block on this path
+                },
             )
             .await;
             final_outcome
@@ -1858,8 +1891,11 @@ async fn route_request(
                 exchange_id,
                 model_name,
                 &outcome,
-                true, // host-served: this node's own weights and hardware survey
-                request_digest.as_deref(),
+                RawProxyTerminalFacts {
+                    served_locally: true, // host-served: this node's own weights and hardware survey
+                    request_digest: request_digest.as_deref(),
+                    requested_by_node_id: ctx.requested_by_node_id.as_deref(),
+                },
             )
             .await;
         }
@@ -2491,6 +2527,7 @@ async fn handle_api_proxy_connection(
     targets: election::ModelTargets,
     affinity: affinity::AffinityRouter,
     ingress_type: crate::runtime::IngressType,
+    requested_by: Option<iroh::EndpointId>,
 ) {
     let source_addr = tcp_stream.peer_addr().ok();
     let plugin_manager = node.plugin_manager().await;
@@ -2506,6 +2543,7 @@ async fn handle_api_proxy_connection(
                 targets: &targets,
                 affinity: &affinity,
                 plugin_manager: plugin_manager.as_ref(),
+                requested_by_node_id: requested_by.map(|id| hex::encode(id.as_bytes())),
                 #[cfg(test)]
                 exchange_channel: None,
                 #[cfg(test)]
@@ -2526,11 +2564,15 @@ async fn handle_api_proxy_connection(
     }
 }
 
+/// A request that arrived over the mesh HTTP tunnel. `remote` is the tunnel's
+/// QUIC-authenticated peer -- the node that asked -- and is carried onto the
+/// host-served terminal as `requested_by_node_id`.
 pub(crate) async fn handle_remote_http_stream(
     node: mesh::Node,
     stream: ClientStream,
     targets: election::ModelTargets,
     affinity: affinity::AffinityRouter,
+    remote: iroh::EndpointId,
 ) {
     handle_api_proxy_connection(
         node,
@@ -2538,6 +2580,7 @@ pub(crate) async fn handle_remote_http_stream(
         targets,
         affinity,
         crate::runtime::IngressType::RemoteQuicHttp,
+        Some(remote),
     )
     .await;
 }
@@ -2577,6 +2620,7 @@ pub(crate) async fn api_proxy(
                 targets,
                 affinity,
                 crate::runtime::IngressType::LocalOpenAi,
+                None, // local API: no requesting mesh node
             )
             .await;
         });

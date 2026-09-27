@@ -142,6 +142,16 @@ pub struct ServingProvenance {
     /// metal enum on the served-model path).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub is_soc: Option<bool>,
+    /// The mesh node that asked this host to serve the exchange, hex-encoded
+    /// -- set only when the request arrived over the mesh HTTP tunnel, from
+    /// the tunnel's own QUIC-authenticated remote `EndpointId`
+    /// (`network/tunnel/inbound_http.rs`). Never read from anything the
+    /// request carries, so a client cannot set or spoof it. Omitted for a
+    /// request that reached this node's local API directly (there is no
+    /// requesting mesh node) and on every non-host-served path. Lets a plugin
+    /// on the serving node address its sealed record to the node that asked.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub requested_by_node_id: Option<String>,
 }
 
 /// The real token accounting the host observed for a served exchange, from
@@ -1160,6 +1170,7 @@ mod tests {
             gpu: None,
             vram_bytes: None,
             is_soc: Some(true),
+            requested_by_node_id: None,
         });
 
         let value = serde_json::to_value(&envelope).expect("serialize");
@@ -1210,6 +1221,7 @@ mod tests {
             gpu: None,
             vram_bytes: None,
             is_soc: None,
+            requested_by_node_id: None,
         });
 
         let value = serde_json::to_value(&envelope).expect("serialize");
