@@ -1607,6 +1607,27 @@ pub(super) fn build_pane_json(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Dev tool, not a check: regenerate the Evidence tab's fixture pane JSON
+    /// (`/api/capsules/panes/pane-b` and `pane-c`) from a real ledger
+    /// directory, through THIS pane reader, so UI fixture mode
+    /// (`VITE_EVIDENCE_FIXTURES`) sees exactly what the current host would
+    /// send for that ledger. Needed whenever the pane shape changes (e.g. the
+    /// record bodies the ONE gate reads). Run:
+    ///   EVIDENCE_LEDGER_DIR=<plugin data>/ledger EVIDENCE_FIXTURE_OUT=<dir> \
+    ///   cargo test -p mesh-llm-host-runtime regenerate_evidence_pane_fixtures -- --ignored
+    #[test]
+    #[ignore = "dev tool: regenerates fixture JSON from a real ledger dir"]
+    fn regenerate_evidence_pane_fixtures() {
+        let ledger = std::env::var("EVIDENCE_LEDGER_DIR").expect("set EVIDENCE_LEDGER_DIR");
+        let out = std::env::var("EVIDENCE_FIXTURE_OUT").expect("set EVIDENCE_FIXTURE_OUT");
+        std::fs::create_dir_all(&out).expect("create output dir");
+        for pane in ["pane-b", "pane-c"] {
+            let json = build_pane_json(pane, Path::new(&ledger), None).expect("known pane");
+            let body = serde_json::to_string_pretty(&json).expect("serialize pane");
+            std::fs::write(Path::new(&out).join(format!("{pane}.json")), body).expect("write pane");
+        }
+    }
     use std::io::Write;
 
     fn fixture_record(
