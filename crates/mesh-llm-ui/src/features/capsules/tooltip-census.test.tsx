@@ -105,6 +105,14 @@ const REQUIRED = {
     'settlement_source:provider_asserted',
     'settlement_source:wallet_reported'
   ],
+  // [mesh-evidence-history-surface] the peer drill's "Their history" tab.
+  peerHistory: [
+    'peer_history:dealings',
+    'peer_history:theirLog',
+    'peer_history:othersSay',
+    'peer_history:verdicts',
+    'peer_history:askedOfYou'
+  ],
   integrity: [
     'integrity_tile:Sealed',
     'integrity_tile:Shared with a witness',
@@ -353,6 +361,20 @@ describe('tooltip census -- every chip type the Evidence tab ships has a plain o
     expectCovered(REQUIRED.yourRecords, censusOnScreen(), 'face')
   })
 
+  it('Peer drill: every section of Their history', async () => {
+    const user = userEvent.setup()
+    render(<LedgerPageContent />, { wrapper })
+    const [firstPeer] = await screen.findAllByRole('row', { name: /Open peer inspector for/ })
+    await user.click(firstPeer)
+    const dialog = await screen.findByRole('dialog')
+    await user.click(within(dialog).getByRole('tab', { name: /their history/i }))
+    await within(dialog).findByText('Their log, as shown to you')
+    expectCovered(REQUIRED.peerHistory, censusOnScreen(), 'face')
+    // The section bodies too, not only their tooltips.
+    const panel = within(dialog).getByRole('tabpanel')
+    expect(checkWords(panel.textContent ?? '', 'face')).toEqual([])
+  })
+
   it('Integrity: every tile and the chain strip', async () => {
     const user = userEvent.setup()
     render(<LedgerPageContent />, { wrapper })
@@ -371,6 +393,7 @@ describe('tooltip census -- the copy itself', () => {
       COPY.SELF_REPORTED_TOOLTIP,
       COPY.ROUTING_STOPPED_TOOLTIP,
       COPY.PEER_INSPECTOR_HEADER,
+      ...Object.values(COPY.PEER_HISTORY_TOOLTIPS),
       ...Object.values(COPY.PEER_ATTENTION).flatMap((entry) => [entry.tooltip(1), entry.tooltip(2)]),
       ...Object.values(COPY.ROW_STATE_TOOLTIPS),
       ...Object.values(COPY.CLOSED_CELL_TOOLTIPS),

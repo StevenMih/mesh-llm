@@ -86,6 +86,51 @@ export type PaneBHistoryCell = PaneState & {
     witnessed?: PaneState & { witnesses?: string[] }
     [key: string]: unknown
   } | null
+  /** [mesh-evidence-history-surface] `refusal_reason`, `segment` and
+   *  `adjudications` below: no producer emits them yet (the Python sidecar's
+   *  `peer_history_cell` and the native reader carry none); each degrades to
+   *  omission. `refusal_reason` is the signed refusal's registry token when
+   *  `state === 'refused'`. */
+  refusal_reason?: string
+  /** The peer's `chain_segment` answer (`capsule_emit.chain_segment.ChainSegment`),
+   *  present only on a verified fetch. Coarsened: per-checkpoint leaf counts by
+   *  kind; any `leaf_digests` a peer volunteers are never read by the UI. */
+  segment?: { links: PaneBSegmentLink[] }
+  /** The peer's own history-card `adjudications` block (provenance 2 of
+   *  `ADJUDICATIONS-ON-HISTORY-CARD.md`): verdicts on twins they were party to,
+   *  delivered to them, with their ack/rebuttal. Keyed by bare verdict kind: the
+   *  owner a `contradicted:<owner>` verdict names is dropped, so a contradicted
+   *  count can be against either side. `state` separates "never enriched" from
+   *  "enriched, none". */
+  adjudications?: {
+    state: 'never_enriched' | 'enriched'
+    delivered?: Partial<Record<AdjudicationVerdictKind, PaneBDeliveredVerdict>>
+  }
+}
+
+export type AdjudicationVerdictKind = 'corroborated' | 'contradicted' | 'inconclusive'
+
+/** One checkpoint of a peer's `chain_segment` (`CheckpointLink.to_dict`). */
+export type PaneBSegmentLink = {
+  checkpoint: { mmr_size: number; timestamp: string; witnesses?: unknown[] }
+  leaf_counts: Record<string, number>
+  leaf_digests?: string[]
+}
+
+/** `history_card` `adjudications.delivered[<verdict>]`. */
+export type PaneBDeliveredVerdict = { delivered: number; acknowledged: number; disputed: number }
+
+/** One `received_log.jsonl` line (`evidence_server.ReceivedLogEntry`,
+ *  [mesh-sharing-policy-v0]). The log is node-wide and `requester_id` is the
+ *  requester's self-declared id (`null` on a record push); the drill keeps only
+ *  the `evidence-request` lines whose id matches this peer's row. */
+export type AskedOfYouEntry = {
+  ts: string
+  path: string
+  requester_id: string | null
+  subject_kind: string | null
+  status: 'answered' | 'refused' | 'received'
+  reason: string | null
 }
 
 /** `served_cell` ("Served (theirs)"). Same peer-fetch-gap discipline as
@@ -121,6 +166,10 @@ export type PaneBVerdictsCell = PaneState & {
   references_tally?: { corroborated: number; contradicted: number; inconclusive: number }
   references_asked?: number
   references_answered?: number
+  /** Records the references hold of THIS peer refusing a verdict delivered
+   *  to it (`verdicts_cell`'s `ack_refusals`) -- a count of records, not of
+   *  references. Present with `references_asked`. */
+  ack_refusals?: number
 }
 
 /** `asked_cell` -- evidence requests THIS node sent to this peer. Absent
@@ -178,6 +227,10 @@ export type PaneBRow = {
   confirmed_siblings?: PaneBConfirmedSibling[]
   verdicts: PaneBVerdictsCell
   asked: PaneBAskedCell
+  /** [mesh-evidence-history-surface] Your node's `received_log.jsonl` lines,
+   *  as the producer carries them to this row. No producer emits this yet; an
+   *  absent field reads as "not shown in this view", never as zero requests. */
+  asked_of_you?: { entries: AskedOfYouEntry[] }
   exchange_count: number
   first_seen: string | null
   last_seen: string | null

@@ -54,9 +54,21 @@ export const PEER_COLUMN_TOOLTIPS = {
 export const SELF_REPORTED_TOOLTIP =
   'This identity is self-reported: it’s what the peer says about itself. Only the records they signed, checked on this machine, count as evidence.'
 
-/** The one line at the top of the old peer inspector, until the new peer
- *  drill replaces it ([mesh-evidence-peer-drill-and-local-block]). */
-export const PEER_INSPECTOR_HEADER = 'What you’ve recorded with this peer. Their own log and what others say come next.'
+/** The one line at the top of the peer inspector. */
+export const PEER_INSPECTOR_HEADER =
+  'What you’ve recorded with this peer. Their history shows their own log and what others say.'
+
+/** [mesh-evidence-history-surface] The peer drill's "Their history" sections
+ *  (UX review §7.2 names). One tooltip per section heading. */
+export const PEER_HISTORY_TOOLTIPS = {
+  dealings: 'Your exchanges with this peer, and how many of them their own signed record confirms.',
+  theirLog:
+    'Their log as your node fetched and checked it: counts per checkpoint, no record contents. Witnesses a checkpoint lists are shown as listed, not checked here.',
+  othersSay: 'What the nodes you asked about this peer said. A node that answered with a refusal still answered.',
+  verdicts:
+    'Verdicts on exchanges this peer took part in; a verdict can find against either side. Each column is counted on its own and never added to another.',
+  askedOfYou: 'Requests your node logged from a node naming itself as this peer, and what your node did with each one.'
+} as const
 
 /** Peer attention badges -- the specific thing, counted, replacing the old
  *  generic ⚠ alarm chip. Each is one sentence naming exactly that. */

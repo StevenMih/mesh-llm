@@ -2,8 +2,8 @@
 // replacing the old card's inline `expanded` accordion. Opened today from
 // a `PeerTableRow` click ([ledger-T7-peers-table] rebuilt the row as a
 // table cell, not a card). Mirrors the Logs Request Inspector shell
-// (SharedModal + TabPanel) verbatim -- Overview /
-// Timeline / Exchanges tabs, same as `LogRequestDetails`. The per-exchange
+// (SharedModal + TabPanel) verbatim -- Overview / Their history ([mesh-evidence-
+// history-surface]) / Timeline / Exchanges tabs. The per-exchange
 // drill-down (`PeerExchangeInspector`) nests inside this modal, opened from
 // either the Timeline chart or the Exchanges list -- both drive the SAME
 // `selectedPoint` state, never a second, divergent detail view.
@@ -28,6 +28,7 @@ import type { PeerMeshStatus } from '@/features/capsules/lib/peer-mesh-status'
 import { meshMetaLine, peerDisplayId, theirChainSummary } from '@/features/capsules/lib/peer-row-view'
 import { dealingsLines } from '@/features/capsules/lib/peer-routing-view'
 import { PeerExchangeInspector } from '@/features/capsules/components/PeerExchangeInspector'
+import { PeerHistoryTab } from '@/features/capsules/components/PeerHistoryTab'
 import { PeerRoutingSection } from '@/features/capsules/components/PeerRoutingSection'
 import type { PeerRoutingControls } from '@/features/capsules/api/usePeerBlocks'
 import { PEER_INSPECTOR_HEADER, YOUR_DEALINGS_TITLE } from '@/features/capsules/lib/tooltip-copy'
@@ -43,7 +44,7 @@ export type PeerInspectorProps = {
   routing?: PeerRoutingControls
 }
 
-type PeerInspectorTab = 'overview' | 'timeline' | 'exchanges'
+type PeerInspectorTab = 'overview' | 'history' | 'timeline' | 'exchanges'
 
 function PeerOverviewTab({
   row,
@@ -164,6 +165,11 @@ export function PeerInspector({ open, onClose, row, meshStatus, points, routing 
                     value: 'overview',
                     label: 'Overview',
                     content: <PeerOverviewTab meshStatus={meshStatus} routing={routing} row={row} />
+                  },
+                  {
+                    value: 'history',
+                    label: 'Their history',
+                    content: <PeerHistoryTab row={row} />
                   },
                   {
                     value: 'timeline',
