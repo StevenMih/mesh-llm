@@ -22,6 +22,7 @@ import { peerFetchJoinKey } from '@/features/capsules/lib/recompute-identity'
 import { NINE_PROPERTY_LABELS, PROPERTY_GROUP, RECOMPUTED_PROPERTIES } from '@/features/capsules/lib/nine-properties'
 import { labelForState } from '@/features/capsules/lib/assurance-tone'
 import { isDigestShaped } from '@/features/capsules/lib/canonical'
+import { OWNER_LINKED_PHRASE, OWNER_NOT_LINKED_PHRASE } from '@/features/capsules/lib/tooltip-copy'
 
 function boolToWireState(value: boolean | null): string {
   return value === null ? 'NOT_CHECKED' : value ? 'PASS' : 'FAIL'
@@ -419,7 +420,7 @@ function absentDefaultFor(key: string): string {
   return CHECKPOINT_DEPENDENT.has(key) || key === 'external_registration' ? 'NOT_PRESENT' : 'NOT_CHECKED'
 }
 
-function buildIdentityAuthorityFacts(row: PaneCRow): IdentityAuthorityFact[] {
+function buildIdentityAuthorityFacts(row: PaneCRow, ownerLinked: boolean | null): IdentityAuthorityFact[] {
   const cell = row.properties?.identity_authority ?? null
   const bindingState = cell?.state ?? 'NOT_PRESENT'
 
@@ -439,11 +440,23 @@ function buildIdentityAuthorityFacts(row: PaneCRow): IdentityAuthorityFact[] {
       detail: typeof cell?.text === 'string' ? cell.text : 'signature invalid',
       recomputed: false
     }
+  } else if (!cell && ownerLinked === true) {
+    // p2 item 3: the pane carries no binding property, but the node's own
+    // status says its key is linked to an owner (verified) -- the same fact
+    // Integrity's step 2 states, in the same words.
+    binding = {
+      state: 'PASS',
+      label: labelForState('PASS'),
+      detail: OWNER_LINKED_PHRASE,
+      recomputed: false
+    }
   } else {
+    // "no key bound" was wrong: every record IS signed by this node's key
+    // (`key_id`); what is missing is the link from that key to an owner.
     binding = {
       state: 'NOT_PRESENT',
       label: labelForState('NOT_PRESENT'),
-      detail: 'no key bound',
+      detail: OWNER_NOT_LINKED_PHRASE,
       recomputed: false
     }
   }
@@ -451,11 +464,16 @@ function buildIdentityAuthorityFacts(row: PaneCRow): IdentityAuthorityFact[] {
   // Authority (a person standing behind the key) is always `not present` --
   // this system never binds a person to a key. Not a fact about this
   // record; a fact about the system.
-  const owner = typeof cell?.owner === 'string' ? cell.owner : '…'
+  // p2 item 4: an empty owner never renders as a literal "…".
+  const owner = typeof cell?.owner === 'string' && cell.owner.length > 0 ? cell.owner : null
   const authority: ChecksSideCell = {
     state: 'NOT_PRESENT',
     label: labelForState('NOT_PRESENT'),
-    detail: `Owner: ${owner} — not bound to a person.`,
+    detail: owner
+      ? `Owner: ${owner} — not bound to a person.`
+      : binding.state === 'PASS'
+        ? 'Owner linked (self-asserted) — not bound to a person.'
+        : 'No owner set — not bound to a person.',
     recomputed: false
   }
 
@@ -475,15 +493,26 @@ function gateOutcomeCell(gateKind: RightCellStateKind | undefined): { state: str
   return null
 }
 
+/** Facts from outside the Pane C row that the checks need, so every surface
+ *  derives them the same way. */
+export type ChecksContext = {
+  /** The ONE gate's verdict for this row (`deriveRightCellState`). */
+  gateKind?: RightCellStateKind
+  /** Whether a checkpoint covers this record (look finding 2); `null` or
+   *  absent = not reported. Used only where the pane carries no per-row
+   *  checkpoint property. */
+  checkpointCovered?: boolean | null
+  /** p2 item 3: whether this node's key is linked to an owner, from the SAME
+   *  `ownerLinked` derivation Integrity's step 2 reads; `null` = not known.
+   *  Used only where the pane carries no `identity_authority` property. */
+  ownerLinked?: boolean | null
+}
+
 export function buildChecksRows(
   row: PaneCRow,
   identity: RecomputedIdentity,
   theirsRecompute?: PeerRecomputeState,
-  gateKind?: RightCellStateKind,
-  /** Whether a checkpoint covers this record (look finding 2); `null` or
-   *  absent = not reported. Used only where the pane carries no per-row
-   *  checkpoint property. */
-  checkpointCovered: boolean | null = null
+  { gateKind, checkpointCovered = null, ownerLinked = null }: ChecksContext = {}
 ): ChecksRow[] {
   const gateOutcome = gateOutcomeCell(gateKind)
   const held = theirsHeld(row)
@@ -503,7 +532,7 @@ export function buildChecksRows(
     }
 
     if (key === 'identity_authority') {
-      return { key, label, group, yours: null, theirs: null, facts: buildIdentityAuthorityFacts(row) }
+      return { key, label, group, yours: null, theirs: null, facts: buildIdentityAuthorityFacts(row, ownerLinked) }
     }
 
     const recomputable = RECOMPUTED_PROPERTIES.has(key)
@@ -572,4 +601,23 @@ export function buildChecksRows(
 
     return { key, label, group, yours, theirs }
   })
+}
+
+/** p2 item 2: the THEIRS sentence that repeats down the column ("their log,
+ *  no proof given" on seven rows), said once as a column note. `null` when no
+ *  sentence repeats. */
+export function sharedTheirsDetail(rows: readonly ChecksRow[]): string | null {
+  const counts = new Map<string, number>()
+  for (const r of rows) {
+    if (r.theirs) counts.set(r.theirs.detail, (counts.get(r.theirs.detail) ?? 0) + 1)
+  }
+  let best: string | null = null
+  let bestCount = 1
+  for (const [detail, count] of counts) {
+    if (count > bestCount) {
+      best = detail
+      bestCount = count
+    }
+  }
+  return best
 }

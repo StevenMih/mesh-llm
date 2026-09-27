@@ -45,7 +45,10 @@ const RETIRED_PHRASES = [
   '✓ same request and answer as yours', // -> "✓ They recorded the same request and answer"
   'bound (self-asserted)', // -> "linked (self-asserted)" + what it established
   'serve-boundary path', // -> "the plugin at this node’s serving boundary"
-  'Registration is a separate step' // said once, in step 1
+  'Registration is a separate step', // said once, in step 1
+  // [mesh-evidence-look-findings-2026-09-26-p2]
+  'no key bound', // records ARE signed by the node key -> "not linked to an owner"
+  'open in Logs' // an inert control; returns only when it can link
 ] as const
 
 const HERE = dirname(fileURLToPath(import.meta.url))

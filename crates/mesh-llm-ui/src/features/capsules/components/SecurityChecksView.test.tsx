@@ -2,6 +2,7 @@ import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it } from 'vitest'
 import { SecurityChecksView } from '@/features/capsules/components/SecurityChecksView'
+import { sharedTheirsDetail } from '@/features/capsules/lib/security-checks-view'
 import type { PaneCRow } from '@/features/capsules/api/sidecarTypes'
 import type { ExchangeLedgerRow } from '@/features/capsules/lib/exchange-ledger'
 import type { RecomputedIdentity } from '@/features/capsules/lib/recompute-identity'
@@ -109,24 +110,80 @@ describe('SecurityChecksView — two labelled groups, no counts', () => {
   })
 })
 
-describe('SecurityChecksView — L-L: every check row names its inputs and policy inline', () => {
-  it('never renders a bare state word with nothing beside it', () => {
+/** The chip cell whose sentence is `detail` (p2 item 2: the sentence lives
+ *  in the chip's tooltip, carried on the cell as `data-detail`). */
+function cellWithDetail(detail: string): HTMLElement {
+  const cells = Array.from(document.querySelectorAll<HTMLElement>('[data-detail]')).filter(
+    (el) => el.getAttribute('data-detail') === detail
+  )
+  expect(cells.length, `no chip carries "${detail}"`).toBeGreaterThan(0)
+  return cells[0]
+}
+
+/** The text a chip's tooltip carries (its aria-describedby copy). */
+function chipTooltip(cell: HTMLElement): string {
+  const id = cell.querySelector('[aria-describedby]')?.getAttribute('aria-describedby')
+  return (id ? document.getElementById(id)?.textContent : '') ?? ''
+}
+
+describe('SecurityChecksView — p2 item 2: chip-only rows, each sentence moved word for word into its chip’s tooltip', () => {
+  it('every sentence is in its chip’s tooltip, never printed beside the chip', () => {
     render(<SecurityChecksView identity={RECOMPUTED_MATCH} localRecord={null} row={ledgerRow(paneCRow())} />)
-    expect(screen.getAllByText('recomputed here').length).toBeGreaterThan(0)
-    expect(screen.getByText('Range facts: no checkpoint covers this record — see Integrity.')).toBeInTheDocument()
-    expect(screen.getAllByText('no checkpoint covers this record').length).toBeGreaterThan(0)
-    expect(screen.getByText('no receipt covers this record')).toBeInTheDocument()
-    expect(screen.getByText('no key bound')).toBeInTheDocument()
+    for (const detail of [
+      'recomputed here',
+      'Range facts: no checkpoint covers this record — see Integrity.',
+      'no checkpoint covers this record',
+      'no receipt covers this record',
+      'not linked to an owner'
+    ]) {
+      const cell = cellWithDetail(detail)
+      expect(chipTooltip(cell)).toContain(detail)
+      // Chip only on the face: the cell's visible text (screen-reader copy
+      // aside) is the state word alone.
+      const visible = cell.cloneNode(true) as HTMLElement
+      for (const hidden of visible.querySelectorAll('.sr-only')) hidden.remove()
+      expect(visible.textContent).not.toContain(detail)
+    }
+  })
+
+  it('a row reads name -> your chip -> their chip', () => {
+    render(<SecurityChecksView identity={RECOMPUTED_MATCH} localRecord={null} row={ledgerRow(paneCRow())} />)
+    const line = document.querySelector('[data-check-line="content binding"]') as HTMLElement
+    const [name, yours, theirs] = Array.from(line.children) as HTMLElement[]
+    expect(name.textContent).toBe('content binding')
+    expect(yours.querySelector('[data-detail]')).not.toBeNull()
+    expect(theirs.querySelector('[data-detail]')).not.toBeNull()
+  })
+
+  it('the THEIRS sentence that repeats down the column is said once, as a column note, and left off those chips', () => {
+    render(<SecurityChecksView identity={RECOMPUTED_MATCH} localRecord={null} row={ledgerRow(paneCRow())} />)
+    const note = document.querySelector('[data-theirs-column-note]') as HTMLElement
+    expect(note.textContent).toBe('their log, no proof given')
+    expect(screen.getAllByText('their log, no proof given')).toHaveLength(1)
+    const repeated = Array.from(document.querySelectorAll<HTMLElement>('[data-detail="their log, no proof given"]'))
+    expect(repeated.length).toBeGreaterThan(1)
+    for (const cell of repeated) expect(chipTooltip(cell)).not.toContain('their log, no proof given')
+  })
+
+  it('sharedTheirsDetail: only a sentence that actually repeats becomes the note', () => {
+    const cell = (detail: string) => ({ state: 'NOT_CHECKED', label: 'not checked', detail, recomputed: false })
+    const row = (key: string, detail: string | null) => ({
+      key,
+      label: key,
+      group: 'g',
+      yours: null,
+      theirs: detail ? cell(detail) : null
+    })
+    expect(sharedTheirsDetail([row('a', 'x'), row('b', 'y')])).toBeNull()
+    expect(sharedTheirsDetail([row('a', 'x'), row('b', 'x'), row('c', 'y'), row('d', null)])).toBe('x')
   })
 })
 
 describe('SecurityChecksView — L-M: recomputed-here vs from-sidecar are visually distinct', () => {
   it('content_binding/producer_signature carry a different class + data-source than a sidecar property', () => {
     render(<SecurityChecksView identity={RECOMPUTED_MATCH} localRecord={null} row={ledgerRow(paneCRow())} />)
-    const recomputedCell = screen.getAllByText('recomputed here')[0].closest('[data-source]')
-    const sidecarCell = screen
-      .getByText('Range facts: no checkpoint covers this record — see Integrity.')
-      .closest('[data-source]')
+    const recomputedCell = cellWithDetail('recomputed here')
+    const sidecarCell = cellWithDetail('Range facts: no checkpoint covers this record — see Integrity.')
     expect(recomputedCell).not.toBeNull()
     expect(sidecarCell).not.toBeNull()
     expect(recomputedCell?.getAttribute('data-source')).toBe('recomputed-in-browser')
@@ -162,9 +219,12 @@ describe('SecurityChecksView — capture_coverage: sentence or not present, neve
 describe('SecurityChecksView — identity/authority: two facts rendered under one row', () => {
   it('renders both a "binding" and an "authority" fact, each with its own state', () => {
     render(<SecurityChecksView identity={RECOMPUTED_MATCH} localRecord={null} row={ledgerRow(paneCRow())} />)
-    expect(screen.getByText('binding')).toBeInTheDocument()
-    expect(screen.getByText('authority')).toBeInTheDocument()
-    expect(screen.getByText(/not bound to a person/)).toBeInTheDocument()
+    expect(screen.getByText('identity/authority · binding')).toBeInTheDocument()
+    expect(screen.getByText('identity/authority · authority')).toBeInTheDocument()
+    // p2 item 4: an empty owner reads "No owner set", never a literal "…".
+    const authority = cellWithDetail('No owner set — not bound to a person.')
+    expect(chipTooltip(authority)).toContain('No owner set — not bound to a person.')
+    expect(document.body.textContent).not.toContain('Owner: …')
   })
 })
 
@@ -196,7 +256,7 @@ describe('SecurityChecksView — rendered property set', () => {
       'checkpoint signature',
       'external registration',
       'continuity',
-      'identity/authority',
+      'identity/authority · binding',
       'capture coverage',
       'outcome corroboration'
     ]) {
@@ -263,11 +323,10 @@ describe('[ledger-T4-inline-inspector] SecurityChecksView — WHAT IT COMMITS TO
   })
 })
 
-describe('[ledger-T4-inline-inspector] SecurityChecksView — per-row "Save evidence file" and "open in Logs"', () => {
-  it('renders the 40-word evidence-file sentence and both controls', () => {
+describe('[ledger-T4-inline-inspector] SecurityChecksView — per-row "Save evidence file"', () => {
+  it('renders the 40-word evidence-file sentence and the save control', () => {
     render(<SecurityChecksView identity={RECOMPUTED_MATCH} localRecord={null} row={ledgerRow(paneCRow())} />)
     expect(screen.getByRole('button', { name: 'Save evidence file' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'open in Logs' })).toBeInTheDocument()
     expect(
       screen.getByText(
         'A file: what you asked, what you got, which machine and model answered, when it was registered, plus your own copy. Anyone can check it, no account needed. Not included: the text, or proof the answer was right.'
@@ -275,8 +334,9 @@ describe('[ledger-T4-inline-inspector] SecurityChecksView — per-row "Save evid
     ).toBeInTheDocument()
   })
 
-  it('"open in Logs" is disabled -- [ledger-T5-join-key] fills the target, not this task', () => {
+  it('p2 item 1: no inert "open in Logs" -- it cannot link yet ([ledger-T5-join-key]), so it is not shown', () => {
     render(<SecurityChecksView identity={RECOMPUTED_MATCH} localRecord={null} row={ledgerRow(paneCRow())} />)
-    expect(screen.getByRole('button', { name: 'open in Logs' })).toBeDisabled()
+    expect(screen.queryByRole('button', { name: /open in Logs/i })).not.toBeInTheDocument()
+    for (const button of screen.getAllByRole('button')) expect(button).not.toBeDisabled()
   })
 })

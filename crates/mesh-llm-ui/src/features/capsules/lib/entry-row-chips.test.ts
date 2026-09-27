@@ -41,7 +41,7 @@ const NOT_RUN = { idMatch: null, signatureOk: null } as RecomputedIdentity
 const RECOMPUTED_OK = { idMatch: true, signatureOk: true } as RecomputedIdentity
 
 function marks(row: PaneCRow, identity: RecomputedIdentity, gateKind?: RightCellStateKind) {
-  const checks = buildChecksRows(row, identity, undefined, gateKind)
+  const checks = buildChecksRows(row, identity, undefined, { gateKind })
   return ENTRY_ROW_CHIP_ORDER.map((chip) => entryRowChipMark(checks, chip)).join(' ')
 }
 

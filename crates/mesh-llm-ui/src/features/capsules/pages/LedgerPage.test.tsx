@@ -133,7 +133,7 @@ describe('LedgerPageContent', () => {
 
     // The Live/Local + "This node's copy" chips each carry an (i) whose
     // aria-describedby holds the moved honest sentence.
-    const copyGlyph = screen.getByRole('button', { name: "About the This node's copy chip" })
+    const copyGlyph = screen.getByRole('button', { name: "About This node's copy" })
     const copyDesc = document.getElementById(copyGlyph.getAttribute('aria-describedby') as string)
     expect(copyDesc).toHaveTextContent('The records this node keeps, sealed and checkpointed.')
 
@@ -523,6 +523,52 @@ describe('LedgerPageContent', () => {
     render(<LedgerPageContent />, { wrapper: makeWrapper() })
     const bodyText = document.body.textContent ?? ''
     expect(bodyText).not.toMatch(/No served-summary data available yet\./)
+  })
+
+  it('p2 item 1: "This node\'s copy" is a plain label, not a pill; its (i) is the only interaction', () => {
+    render(<LedgerPageContent />, { wrapper: makeWrapper() })
+    const label = screen.getByTestId('hero-your-records')
+    expect(label.className).not.toMatch(/rounded-full/)
+    expect(label.closest('button')).toBeNull()
+    expect(screen.getByRole('button', { name: "About This node's copy" })).toBeInTheDocument()
+  })
+
+  it('p2 item 5: on sample data the two setup jumps are disabled, with the reason on hover', async () => {
+    const { fetchPaneCList } = await import('@/features/capsules/api/sidecarClient')
+    vi.mocked(fetchPaneCList).mockResolvedValue(oneCleanExchangeRow())
+    vi.stubEnv('VITE_EVIDENCE_FIXTURES', 'freeze-candidate')
+    try {
+      const user = userEvent.setup()
+      render(<LedgerPageContent />, { wrapper: makeWrapper() })
+      await user.click(screen.getByRole('tab', { name: /exchanges/i }))
+      for (const name of ['Get the other side’s record', 'Register a checkpoint']) {
+        const button = await screen.findByRole('button', { name })
+        expect(button).toBeDisabled()
+        const wrapper = button.closest('[aria-describedby]') as HTMLElement
+        expect(document.getElementById(wrapper.getAttribute('aria-describedby') as string)).toHaveTextContent(
+          'Not available on sample data.'
+        )
+      }
+      // The downloads work on the sample, so they stay enabled.
+      expect(screen.getByRole('button', { name: /export view/i })).toBeEnabled()
+      expect(screen.getByRole('button', { name: /save evidence file/i })).toBeEnabled()
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
+
+  it('p2 item 5: a disabled Next contradiction says why', async () => {
+    const { fetchPaneCList } = await import('@/features/capsules/api/sidecarClient')
+    vi.mocked(fetchPaneCList).mockResolvedValue(oneCleanExchangeRow())
+    const user = userEvent.setup()
+    render(<LedgerPageContent />, { wrapper: makeWrapper() })
+    await user.click(screen.getByRole('tab', { name: /exchanges/i }))
+    const button = await screen.findByRole('button', { name: /next contradiction/i })
+    expect(button).toBeDisabled()
+    const wrapper = button.closest('[aria-describedby]') as HTMLElement
+    expect(document.getElementById(wrapper.getAttribute('aria-describedby') as string)).toHaveTextContent(
+      'No contradicted exchange to jump to.'
+    )
   })
 
   it('look finding 6: in fixture replay the hero chip reads "Sample data", never "Live"', async () => {

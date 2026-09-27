@@ -130,13 +130,9 @@ describe('buildChecksRows — look finding 2: per-record checkpoint coverage agr
     // read as not covered.
     const coveredId = 'mine-1'
     const coverage = checkpointCoverageByRecord([coveredId, 'mine-2'], 1)
-    const rows = buildChecksRows(
-      paneCRow({ properties: null }),
-      NOT_RECOMPUTED,
-      undefined,
-      undefined,
-      coverage.get(coveredId) ?? null
-    )
+    const rows = buildChecksRows(paneCRow({ properties: null }), NOT_RECOMPUTED, undefined, {
+      checkpointCovered: coverage.get(coveredId) ?? null
+    })
     const byKey = Object.fromEntries(rows.map((r) => [r.key, r]))
     for (const key of ['local_inclusion', 'checkpoint_signature', 'continuity']) {
       expect(byKey[key].yours?.detail).not.toMatch(/no checkpoint covers/)
@@ -151,13 +147,9 @@ describe('buildChecksRows — look finding 2: per-record checkpoint coverage agr
 
   it('a record after the last checkpoint says "not ... yet"', () => {
     const coverage = checkpointCoverageByRecord(['mine-1', 'mine-2'], 1)
-    const rows = buildChecksRows(
-      paneCRow({ properties: null }),
-      NOT_RECOMPUTED,
-      undefined,
-      undefined,
-      coverage.get('mine-2') ?? null
-    )
+    const rows = buildChecksRows(paneCRow({ properties: null }), NOT_RECOMPUTED, undefined, {
+      checkpointCovered: coverage.get('mine-2') ?? null
+    })
     const localInclusion = rows.find((r) => r.key === 'local_inclusion')
     expect(localInclusion?.yours?.state).toBe('NOT_PRESENT')
     expect(localInclusion?.yours?.detail).toBe('Range facts: no checkpoint covers this record yet — see Integrity.')

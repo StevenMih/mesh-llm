@@ -18,17 +18,29 @@
 // same field `status-adapter.ts`'s `resolveOwner` reads for the Network
 // dashboard), so that one fact is real today, not aspirational.
 import type { JsonRecord } from '@/features/capsules/api/types'
-import { CHAIN_STRIP_TOOLTIP, INTEGRITY_TILE_TOOLTIPS } from '@/features/capsules/lib/tooltip-copy'
+import {
+  CHAIN_STRIP_TOOLTIP,
+  INTEGRITY_TILE_TOOLTIPS,
+  OWNER_LINKED_PHRASE,
+  OWNER_NOT_LINKED_PHRASE
+} from '@/features/capsules/lib/tooltip-copy'
 
 /** `StatusPayload.owner` / `PeerInfo['owner']` verbatim (`lib/api/
  *  types.ts`) -- deliberately not re-typed narrower than the wire shape. */
 export type StatusOwner = string | { status?: string; verified?: boolean; name?: string; display_name?: string }
 
-function ownerBound(owner: StatusOwner | null | undefined): boolean {
+/** p2 item 3: linked only when the host VERIFIED the ownership certificate
+ *  (`OwnershipStatus::Verified`, api/status.rs). Every other status the host
+ *  sends -- `unsigned`, `expired`, `invalid_signature`, `revoked_*`, … -- is a
+ *  non-empty string, and the old truthiness test read each of them as bound:
+ *  the look showed "linked" on a node whose status said `unsigned`. */
+export function ownerLinked(owner: StatusOwner | null | undefined): boolean {
   if (owner == null) return false
   if (typeof owner === 'string') return owner.length > 0
-  return owner.verified === true || Boolean(owner.status || owner.name || owner.display_name)
+  return owner.verified === true || owner.status === 'verified'
 }
+
+const ownerBound = ownerLinked
 
 // ---------------------------------------------------------------------------
 // Checkpoint registration -- THE one fact ([mesh-citing-record-shots-four-
@@ -67,8 +79,7 @@ export function checkpointRegistration(card: JsonRecord | null | undefined): Che
 }
 
 /** Step 2's done state (UX §4): what binding actually established. */
-export const OWNER_LINKED_SENTENCE =
-  'Your records are signed by this node’s key, linked to your owner account (self-asserted).'
+export const OWNER_LINKED_SENTENCE = `Your records are signed by this node’s key, ${OWNER_LINKED_PHRASE}.`
 
 /** The honest rung-1/witness-line copy for a checkpoint no witness holds. */
 // Finding 7: "witness: off" is the witness tile's to say ("off — your
@@ -139,7 +150,7 @@ export function buildSetupSteps(
       key: 'identity',
       title: 'Bind an owner identity',
       done: bound,
-      status: bound ? 'linked (self-asserted)' : 'not set up',
+      status: bound ? 'linked (self-asserted)' : OWNER_NOT_LINKED_PHRASE,
       // UX §4: "bound" alone overclaims -- the done state says what it is.
       body: bound
         ? OWNER_LINKED_SENTENCE

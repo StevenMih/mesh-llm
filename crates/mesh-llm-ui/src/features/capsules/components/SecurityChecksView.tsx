@@ -17,6 +17,7 @@ import {
   buildCommitsToRows,
   buildHeaderRows,
   buildIdentityRow,
+  sharedTheirsDetail,
   theirsFetchable,
   type ChecksRow,
   type ChecksSideCell
@@ -49,11 +50,14 @@ function TwoCol({ yours, theirs }: { yours: ReactNode; theirs: ReactNode | null 
 function ChecksCell({
   cell,
   propertyKey,
-  factKey
+  factKey,
+  showDetail = true
 }: {
   cell: ChecksSideCell
   propertyKey: string
   factKey?: 'binding' | 'authority'
+  /** False when this sentence is already the column note (said once). */
+  showDetail?: boolean
 }) {
   // L-M: recomputed-here and taken-from-the-source must never render
   // identically -- distinct class + a distinct data attribute so a test can
@@ -61,23 +65,78 @@ function ChecksCell({
   return (
     <p
       className={cn(
-        'flex flex-wrap items-baseline gap-1.5 text-xs',
+        'flex items-baseline text-xs',
         cell.recomputed
           ? 'border-l-2 border-accent/60 pl-1.5 text-foreground'
           : 'border-l-2 border-transparent pl-1.5 text-fg-dim'
       )}
+      data-detail={cell.detail}
       data-recomputed={cell.recomputed ? 'true' : 'false'}
       data-source={cell.recomputed ? 'recomputed-in-browser' : 'from-sidecar'}
     >
-      {/* v3 §4: every chip opens the four-part explanation. */}
-      <ChipExplanationPopover cell={cell} factKey={factKey} propertyKey={propertyKey}>
+      {/* v3 §4: every chip opens the four-part explanation. p2 item 2
+         (Steven, supersedes L-L's "inline, never on hover"): the chip stands
+         alone; its sentence moves word for word into the chip's tooltip. */}
+      <ChipExplanationPopover
+        cell={cell}
+        detail={showDetail ? cell.detail : undefined}
+        factKey={factKey}
+        propertyKey={propertyKey}
+      >
         <StatusBadge size="caption" tone={badgeToneFor(cell.state)}>
           {cell.label}
         </StatusBadge>
       </ChipExplanationPopover>
-      {/* L-L: the input/policy phrase always renders inline, never on hover -- a bare state word is forbidden. */}
-      <span>{cell.detail}</span>
     </p>
+  )
+}
+
+/** The CHECKS column header: blank · YOURS · THEIRS, with the repeated THEIRS
+ *  sentence under it once. */
+function ChecksColumnHeader({ theirsNote }: { theirsNote: string | null }) {
+  return (
+    <div className="grid grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)_minmax(0,1fr)] gap-x-3">
+      <span />
+      <p className="type-caption font-mono uppercase tracking-wide text-fg-faint">yours</p>
+      <div>
+        <p className="type-caption font-mono uppercase tracking-wide text-fg-faint">theirs</p>
+        {theirsNote ? (
+          <p className="type-caption text-fg-faint" data-theirs-column-note="true">
+            {theirsNote}
+          </p>
+        ) : null}
+      </div>
+    </div>
+  )
+}
+
+/** One check: name -> your chip -> their chip (p2 item 2). */
+function ChecksLine({
+  id,
+  name,
+  yours,
+  theirs,
+  highlighted
+}: {
+  id?: string
+  name: string
+  yours: ReactNode
+  theirs: ReactNode
+  highlighted: boolean
+}) {
+  return (
+    <div
+      className={cn(
+        'grid grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)_minmax(0,1fr)] items-baseline gap-x-3 rounded',
+        highlighted && 'ring-1 ring-accent/60 bg-accent/10'
+      )}
+      data-check-line={name}
+      id={id}
+    >
+      <p className="type-caption text-fg-faint">{name}</p>
+      <div className="min-w-0">{yours}</div>
+      <div className="min-w-0">{theirs}</div>
+    </div>
   )
 }
 
@@ -129,6 +188,7 @@ export function SecurityChecksView({
   const captureCoverageRow = checksRows.find((r) => r.key === 'capture_coverage')
   const nodeSaidRows = checksRows.filter((r) => r.key !== 'capture_coverage' && r.group === WHAT_NODE_SAID_GROUP)
   const actuallyHappenedRows = checksRows.filter((r) => r.group === WHAT_ACTUALLY_HAPPENED_GROUP)
+  const theirsColumnNote = sharedTheirsDetail(checksRows)
 
   async function copyBoth() {
     const payload = JSON.stringify({ mine: row.raw.mine, theirs: row.raw.theirs }, null, 2)
@@ -284,37 +344,44 @@ export function SecurityChecksView({
             >
               {WHAT_NODE_SAID_GROUP}
             </p>
-            {nodeSaidRows.map((checkRow) => (
-              <div
-                className={cn(
-                  'flex flex-col gap-0.5 rounded',
-                  highlightedPropertyKey === checkRow.key && 'ring-1 ring-accent/60 bg-accent/10'
-                )}
-                id={checkRowDomId(row.exchangeKey, checkRow.key)}
-                key={checkRow.key}
-              >
-                <p className="type-caption text-fg-faint">{checkRow.label}</p>
-                {checkRow.facts ? (
-                  <div className="flex flex-col gap-0.5">
-                    {checkRow.facts.map((fact) => (
-                      <div className="flex items-baseline gap-1.5" key={fact.factLabel}>
-                        <span className="type-caption text-fg-faint">{fact.factLabel}</span>
-                        <ChecksCell
-                          cell={fact.cell}
-                          factKey={fact.factLabel as 'binding' | 'authority'}
-                          propertyKey={checkRow.key}
-                        />
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <TwoCol
-                    theirs={checkRow.theirs ? <ChecksCell cell={checkRow.theirs} propertyKey={checkRow.key} /> : null}
-                    yours={checkRow.yours ? <ChecksCell cell={checkRow.yours} propertyKey={checkRow.key} /> : null}
+            <ChecksColumnHeader theirsNote={theirsColumnNote} />
+            {nodeSaidRows.map((checkRow) =>
+              checkRow.facts ? (
+                checkRow.facts.map((fact) => (
+                  <ChecksLine
+                    highlighted={highlightedPropertyKey === checkRow.key}
+                    id={fact.factLabel === 'binding' ? checkRowDomId(row.exchangeKey, checkRow.key) : undefined}
+                    key={`${checkRow.key}:${fact.factLabel}`}
+                    name={`${checkRow.label} · ${fact.factLabel}`}
+                    theirs={null}
+                    yours={
+                      <ChecksCell
+                        cell={fact.cell}
+                        factKey={fact.factLabel as 'binding' | 'authority'}
+                        propertyKey={checkRow.key}
+                      />
+                    }
                   />
-                )}
-              </div>
-            ))}
+                ))
+              ) : (
+                <ChecksLine
+                  highlighted={highlightedPropertyKey === checkRow.key}
+                  id={checkRowDomId(row.exchangeKey, checkRow.key)}
+                  key={checkRow.key}
+                  name={checkRow.label}
+                  theirs={
+                    checkRow.theirs ? (
+                      <ChecksCell
+                        cell={checkRow.theirs}
+                        propertyKey={checkRow.key}
+                        showDetail={checkRow.theirs.detail !== theirsColumnNote}
+                      />
+                    ) : null
+                  }
+                  yours={checkRow.yours ? <ChecksCell cell={checkRow.yours} propertyKey={checkRow.key} /> : null}
+                />
+              )
+            )}
             {captureCoverageRow ? (
               <p className="text-xs text-fg-dim">
                 <span className="text-fg-faint">{captureCoverageRow.label}</span> {captureCoverageRow.singleLine}
@@ -328,30 +395,31 @@ export function SecurityChecksView({
               {WHAT_ACTUALLY_HAPPENED_GROUP}
             </p>
             {actuallyHappenedRows.map((checkRow) => (
-              <div
-                className={cn(
-                  'flex flex-col gap-0.5 rounded',
-                  highlightedPropertyKey === checkRow.key && 'ring-1 ring-accent/60 bg-accent/10'
-                )}
+              <ChecksLine
+                highlighted={highlightedPropertyKey === checkRow.key}
                 id={checkRowDomId(row.exchangeKey, checkRow.key)}
                 key={checkRow.key}
-              >
-                <p className="type-caption text-fg-faint">{checkRow.label}</p>
-                <TwoCol
-                  theirs={checkRow.theirs ? <ChecksCell cell={checkRow.theirs} propertyKey={checkRow.key} /> : null}
-                  yours={checkRow.yours ? <ChecksCell cell={checkRow.yours} propertyKey={checkRow.key} /> : null}
-                />
-              </div>
+                name={checkRow.label}
+                theirs={
+                  checkRow.theirs ? (
+                    <ChecksCell
+                      cell={checkRow.theirs}
+                      propertyKey={checkRow.key}
+                      showDetail={checkRow.theirs.detail !== theirsColumnNote}
+                    />
+                  ) : null
+                }
+                yours={checkRow.yours ? <ChecksCell cell={checkRow.yours} propertyKey={checkRow.key} /> : null}
+              />
             ))}
           </div>
         </>
       )}
 
       {/* [ledger-T4-inline-inspector] "Save evidence file" acts on the
-         current scope (v3 §4) -- from a row it saves that exchange. `open in
-         Logs` is a shell only: the Ledger and Logs sides of one call don't
-         yet share a single id to link through -- [ledger-T5-join-key]
-         supplies the target. */}
+         current scope (v3 §4) -- from a row it saves that exchange. p2 item
+         1: the disabled "open in Logs" shell is dropped until the Ledger and
+         Logs sides share one id ([ledger-T5-join-key]); no inert control. */}
       <div className="flex flex-col gap-1.5 border-t border-border-soft pt-2">
         <div className="flex flex-wrap items-center gap-2">
           <Button
@@ -368,16 +436,6 @@ export function SecurityChecksView({
             variant="outline"
           >
             Save evidence file
-          </Button>
-          <Button
-            className="ui-control h-7 gap-1 rounded-[var(--radius)] px-2 text-[length:var(--density-type-caption)]"
-            disabled
-            size="sm"
-            title="Needs one id shared with Logs before this can link there — see ledger-T5-join-key"
-            type="button"
-            variant="outline"
-          >
-            open in Logs
           </Button>
         </div>
         <p className="text-xs text-fg-faint">{EVIDENCE_FILE_SENTENCE}</p>

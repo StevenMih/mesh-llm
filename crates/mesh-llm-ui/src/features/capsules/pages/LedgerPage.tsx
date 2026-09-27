@@ -7,7 +7,7 @@
 //
 // Security boundary: NO user-visible strings may name internal tooling,
 // internal item IDs, or any branded service name. Comments are exempt.
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, type ReactElement, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
 import { ArrowLeftRight, Search as SearchIcon, ShieldCheck, Users } from 'lucide-react'
@@ -81,6 +81,7 @@ import {
   checkpointRegistration,
   continuityFact,
   identityFact,
+  ownerLinked,
   sealedBreakdownText,
   INTEGRITY_TILE_INFO,
   RETENTION_FACT,
@@ -106,7 +107,13 @@ import {
 } from '@/features/capsules/lib/peer-row-view'
 import { useStatusQuery } from '@/features/network/api/use-status-query'
 import { useDataMode } from '@/lib/data-mode'
-import { HERO_DESCRIPTION, HERO_TOOLTIPS } from '@/features/capsules/lib/tooltip-copy'
+import { HoverChip } from '@/features/capsules/components/HoverChip'
+import {
+  HERO_DESCRIPTION,
+  HERO_TOOLTIPS,
+  NO_CONTRADICTION_REASON,
+  SAMPLE_DATA_UNAVAILABLE
+} from '@/features/capsules/lib/tooltip-copy'
 
 // ---------------------------------------------------------------------------
 // Error helper — honest fetch-failure messages, never "set the URL"
@@ -132,6 +139,19 @@ type LedgerTab = 'peers' | 'exchanges' | 'integrity'
 // Exchanges records table. Retired the standalone Balance tab entirely;
 // this is the quantity answer, records are the list below it.
 // ---------------------------------------------------------------------------
+
+/** p2 item 5: a control that can't act right now says why on hover (and to
+ *  screen readers), never greys out silently. `reason === null` renders the
+ *  control untouched. The wrapper takes the hover because a disabled button
+ *  gets no pointer events. */
+function DisabledReason({ reason, children }: { reason: string | null; children: ReactElement }) {
+  if (reason === null) return children
+  return (
+    <HoverChip census="action:disabled_reason" label={reason}>
+      <span className="inline-flex">{children}</span>
+    </HoverChip>
+  )
+}
 
 function ExchangesBalanceHeader({ card }: { card: JsonRecord | null | undefined }) {
   const coverage = balanceCoverage(card)
@@ -333,6 +353,7 @@ function ExchangesSection({
   recordsById,
   nodePubKeyPem,
   onGoToIntegrity,
+  sampleData = false,
   requesterStartedDate,
   focusExchangeKey
 }: {
@@ -345,6 +366,9 @@ function ExchangesSection({
    *  honest-stub discipline as `handleAskForHalf` below). Deep-linking to
    *  the specific checklist row is `[mesh-evidence-ui-drill-paths]`'s job. */
   onGoToIntegrity: () => void
+  /** A replayed fixture run (`evidenceSource` === 'sample'): actions that
+   *  need a live node are disabled with the reason. */
+  sampleData?: boolean
   requesterStartedDate?: string | null
   focusExchangeKey?: string
 }) {
@@ -360,6 +384,12 @@ function ExchangesSection({
     refetchInterval: 15_000,
     retry: false
   })
+  // p2 item 3: the owner link from the node's own status -- the SAME
+  // `ownerLinked` derivation Integrity's step 2 reads, so the checks panel's
+  // binding fact and Integrity can never disagree. Disabled in harness mode,
+  // same gating as IntegritySection.
+  const ownerStatusQuery = useStatusQuery({ enabled: !harnessMode })
+  const nodeOwnerLinked = ownerStatusQuery.data ? ownerLinked(ownerStatusQuery.data.owner ?? null) : null
   // Look finding 2: per-record checkpoint coverage from the SAME card figure
   // the Integrity chain strip shades, so a row's checks panel can never say
   // "no checkpoint covers this record" while Integrity says all are covered.
@@ -710,24 +740,23 @@ function ExchangesSection({
           {exchangesHeadline(total, confirmed, disagreements, allRowsRangeText)}
         </p>
         <div className="flex items-center gap-2">
-          <Button
-            className="ui-control h-8 gap-1.5 rounded-[var(--radius)] px-2.5 text-[length:var(--density-type-caption)]"
-            onClick={onGoToIntegrity}
-            size="sm"
-            type="button"
-            variant="outline"
-          >
-            Get the other side’s record
-          </Button>
-          <Button
-            className="ui-control h-8 gap-1.5 rounded-[var(--radius)] px-2.5 text-[length:var(--density-type-caption)]"
-            onClick={onGoToIntegrity}
-            size="sm"
-            type="button"
-            variant="outline"
-          >
-            Register a checkpoint
-          </Button>
+          {/* p2 item 5: both land on Integrity's setup steps, which a saved
+             sample can't act on -- disabled there, with the reason on hover,
+             never a click that silently goes nowhere useful. */}
+          {(['Get the other side’s record', 'Register a checkpoint'] as const).map((label) => (
+            <DisabledReason key={label} reason={sampleData ? SAMPLE_DATA_UNAVAILABLE : null}>
+              <Button
+                className="ui-control h-8 gap-1.5 rounded-[var(--radius)] px-2.5 text-[length:var(--density-type-caption)]"
+                disabled={sampleData}
+                onClick={onGoToIntegrity}
+                size="sm"
+                type="button"
+                variant="outline"
+              >
+                {label}
+              </Button>
+            </DisabledReason>
+          ))}
         </div>
       </div>
       {/* Exceptions-first line — only when something needs attention; the
@@ -798,16 +827,18 @@ function ExchangesSection({
             triggerLabel="Filter exchanges"
             visibleCount={visibleRows.length}
           />
-          <Button
-            className="ui-control h-8 gap-1.5 rounded-[var(--radius)] px-2.5 text-[length:var(--density-type-caption)]"
-            disabled={!hasContradiction}
-            onClick={jumpToNextContradiction}
-            size="sm"
-            type="button"
-            variant="outline"
-          >
-            Next contradiction ▸
-          </Button>
+          <DisabledReason reason={hasContradiction ? null : NO_CONTRADICTION_REASON}>
+            <Button
+              className="ui-control h-8 gap-1.5 rounded-[var(--radius)] px-2.5 text-[length:var(--density-type-caption)]"
+              disabled={!hasContradiction}
+              onClick={jumpToNextContradiction}
+              size="sm"
+              type="button"
+              variant="outline"
+            >
+              Next contradiction ▸
+            </Button>
+          </DisabledReason>
           {/* Two distinct actions, never collapsed: a CSV of the current
              view vs. the portable evidence bundle (full records). */}
           <Button
@@ -934,6 +965,7 @@ function ExchangesSection({
                         }
                         nodePubKeyPem={nodePubKeyPem}
                         onAction={handleAskForHalf}
+                        ownerLinked={nodeOwnerLinked}
                         onToggleChecks={handleToggleChecks}
                         onToggleContent={handleToggleContent}
                         rail={railSegments[pageStart + index]}
@@ -1316,14 +1348,13 @@ export function LedgerPageContent({ focusExchangeKey }: { focusExchangeKey?: str
                 />
               </span>
               <span className="inline-flex items-center gap-1">
-                <StatusBadge tone="muted" size="caption">
+                {/* p2 item 1: a plain label, not a pill -- a pill reads as a
+                   control, and this one does nothing on click. The (i) is its
+                   only interaction. */}
+                <span className="text-[length:var(--density-type-caption)] text-fg-dim" data-testid="hero-your-records">
                   This node's copy
-                </StatusBadge>
-                <InfoHover
-                  census="hero:your_records"
-                  describes="the This node's copy chip"
-                  label={HERO_TOOLTIPS.yourRecords}
-                />
+                </span>
+                <InfoHover census="hero:your_records" describes="This node's copy" label={HERO_TOOLTIPS.yourRecords} />
               </span>
             </div>
           }
@@ -1371,6 +1402,7 @@ export function LedgerPageContent({ focusExchangeKey }: { focusExchangeKey?: str
                     focusExchangeKey={focusExchangeKey}
                     nodePubKeyPem={nodePubKeyPem}
                     onGoToIntegrity={() => setActiveTab('integrity')}
+                    sampleData={source === 'sample'}
                     recordsById={recordsById}
                   />
                 )

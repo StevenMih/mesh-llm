@@ -168,6 +168,9 @@ export type ExchangeStreamRowProps = {
   /** Whether the latest checkpoint covers this row's own record (look
    *  finding 2, `checkpointCoverageByRecord`); `null` = not reported. */
   checkpointCovered?: boolean | null
+  /** p2 item 3: this node's owner link (`ownerLinked`, the same derivation
+   *  Integrity's step 2 reads); `null` = not known. */
+  ownerLinked?: boolean | null
   /** Toggle ① -- flips `contentExpanded` for this row (the `▸/▾ content` control). */
   onToggleContent: (row: ExchangeLedgerRow) => void
   /** Toggle ② -- flips `checksExpanded` for this row (the `▸/▾ checks` control). */
@@ -185,6 +188,7 @@ export function ExchangeStreamRow({
   localRecord = null,
   nodePubKeyPem = null,
   checkpointCovered = null,
+  ownerLinked = null,
   onToggleContent,
   onToggleChecks,
   onAction
@@ -225,7 +229,11 @@ export function ExchangeStreamRow({
   const identity = useRecomputedIdentity(localRecord, nodePubKeyPem)
   // ONE set of check results for both the strip and the panel; the gate's
   // verdict feeds the outcome row so the badge, strip and panel agree.
-  const checksRows = buildChecksRows(row.raw, identity, theirsRecompute, state.kind, checkpointCovered)
+  const checksRows = buildChecksRows(row.raw, identity, theirsRecompute, {
+    gateKind: state.kind,
+    checkpointCovered,
+    ownerLinked
+  })
   // The bracket strip, drawn in words (UX §3): `Yours ● sealed —— Theirs ●
   // same`. Same state the badge renders.
   const strip = bracketStripText(bracketStrip(row.raw, state))

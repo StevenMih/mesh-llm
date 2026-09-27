@@ -20,6 +20,15 @@ export const HERO_TOOLTIPS = {
   yourRecords: 'The records this node keeps, sealed and checkpointed.'
 } as const
 
+/** p2 item 3: the owner-link fact, worded once for Integrity's step 2 and
+ *  the checks panel's binding fact. */
+export const OWNER_LINKED_PHRASE = 'linked to your owner account (self-asserted)'
+export const OWNER_NOT_LINKED_PHRASE = 'not linked to an owner'
+
+/** p2 item 5: why an action is disabled -- said on hover, never a silent grey. */
+export const SAMPLE_DATA_UNAVAILABLE = 'Not available on sample data.'
+export const NO_CONTRADICTION_REASON = 'No contradicted exchange to jump to.'
+
 /** The InfoBanner description under the tab title. */
 export const HERO_DESCRIPTION = 'Everything here is checked on this machine, from sealed records.'
 

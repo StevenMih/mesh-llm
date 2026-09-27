@@ -14,6 +14,9 @@ import {
   INTEGRITY_TILE_INFO,
   RETENTION_FACT
 } from '@/features/capsules/lib/integrity-view'
+import { ownerLinked } from '@/features/capsules/lib/integrity-view'
+import type { RecomputedIdentity } from '@/features/capsules/lib/recompute-identity'
+import { buildChecksRows } from '@/features/capsules/lib/security-checks-view'
 
 describe('buildSetupSteps — ledger-ux-from-the-user §6, three steps in value order', () => {
   it('renders all three steps "not set up" / "none received yet" on a bare node (checkpoint_count REPORTED 0)', () => {
@@ -27,7 +30,7 @@ describe('buildSetupSteps — ledger-ux-from-the-user §6, three steps in value 
     ])
     expect(steps.every((step) => !step.done)).toBe(true)
     expect(steps[0].status).toBe('not set up')
-    expect(steps[1].status).toBe('not set up')
+    expect(steps[1].status).toBe('not linked to an owner')
     expect(steps[2].status).toBe('none received yet')
     // Each explains what it buys and what it does not.
     expect(steps[0].body).toMatch(/does not make your records true/)
@@ -110,7 +113,36 @@ describe('buildSetupSteps — ledger-ux-from-the-user §6, three steps in value 
     )
   })
 
-  it('step 2 stays "not set up" when the wire carries no owner at all', () => {
+  it('p2 item 3: an owner the host did NOT verify is not linked -- every non-verified status the host sends', () => {
+    // The look: status.owner was { status: "unsigned", verified: false } and
+    // Integrity said "linked", while the checks panel said not bound.
+    for (const status of ['unsigned', 'expired', 'invalid_signature', 'revoked_owner', 'untrusted_owner']) {
+      expect(ownerLinked({ status, verified: false })).toBe(false)
+      expect(buildSetupSteps(null, { status, verified: false })[1].status).toBe('not linked to an owner')
+    }
+    expect(ownerLinked({ status: 'verified', verified: true })).toBe(true)
+  })
+
+  it('p2 item 3: the checks panel binding fact and Integrity step 2 say the same thing from the same owner', () => {
+    const binding = (linked: boolean) =>
+      buildChecksRows(
+        { exchange_key: 'e', role_tag: 'ASKED', header_state: 'ok', properties: null, has_issue: false,
+          mine: { state: 'present', capsule_id: 'm' }, theirs: { state: 'absent', capsule_id: null },
+          unilateral: true, timestamp: null },
+        { idMatch: null, signatureOk: null } as RecomputedIdentity,
+        undefined,
+        { ownerLinked: linked }
+      )
+        .find((r) => r.key === 'identity_authority')
+        ?.facts?.find((f) => f.factLabel === 'binding')?.cell
+    const unsigned = { status: 'unsigned', verified: false }
+    expect(binding(ownerLinked(unsigned))?.detail).toBe(buildSetupSteps(null, unsigned)[1].status)
+    const verified = { status: 'verified', verified: true }
+    expect(binding(ownerLinked(verified))?.state).toBe('PASS')
+    expect(buildSetupSteps(null, verified)[1].body).toContain(binding(ownerLinked(verified))?.detail as string)
+  })
+
+  it('step 2 stays "not linked to an owner" when the wire carries no owner at all', () => {
     const steps = buildSetupSteps(null, undefined)
     expect(steps[1].done).toBe(false)
   })
