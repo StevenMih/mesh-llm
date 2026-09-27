@@ -15,7 +15,7 @@
 // already does for `mine`.
 import { env } from '@/lib/env'
 
-const MESH_LEDGER_FETCH_URL = `${env.managementApiUrl}/api/plugins/admission-policy/tools/mesh_ledger_fetch`
+const MESH_LEDGER_FETCH_URL = `${env.managementApiUrl}/api/plugins/capsule-emit-mesh/tools/mesh_ledger_fetch`
 
 export type PeerLedgerFetchOutcome =
   | { kind: 'found'; capsule: Record<string, unknown>; signedStatementB64: string; nodePubKeyPem: string }

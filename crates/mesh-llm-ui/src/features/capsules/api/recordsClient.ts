@@ -10,7 +10,7 @@
 // get.
 import { env } from '@/lib/env'
 
-const TOOLS_BASE = `${env.managementApiUrl}/api/plugins/admission-policy/tools`
+const TOOLS_BASE = `${env.managementApiUrl}/api/plugins/capsule-emit-mesh/tools`
 
 export type SharingSwitchKey = 'record_at_completion' | 'history_segments' | 'adjudications' | 'witness'
 
