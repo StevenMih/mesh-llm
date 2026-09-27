@@ -525,6 +525,17 @@ describe('LedgerPageContent', () => {
     expect(bodyText).not.toMatch(/No served-summary data available yet\./)
   })
 
+  it('look finding 6: in fixture replay the hero chip reads "Sample data", never "Live"', async () => {
+    vi.stubEnv('VITE_EVIDENCE_FIXTURES', 'freeze-candidate')
+    try {
+      render(<LedgerPageContent />, { wrapper: makeWrapper() })
+      expect(await screen.findByText('Sample data')).toBeInTheDocument()
+      expect(screen.queryByText('Live')).not.toBeInTheDocument()
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
+
   it('UX §2: the Peers intro is plain grey text that links to the Network tab', async () => {
     render(<LedgerPageContent />, { wrapper: makeWrapper() })
     const link = await screen.findByRole('link', { name: 'Network tab' })
@@ -1128,7 +1139,8 @@ describe('LedgerPageContent — Part T6: Integrity section completion', () => {
     ).toBeInTheDocument()
     // Finding 7: the unwitnessed checkpoint is said by step 1 -- not again as
     // a separate "Checkpointed locally" line.
-    expect(screen.getAllByText(/not registered \(witness: off\)/i)).toHaveLength(1)
+    expect(screen.getAllByText(/not registered/i)).toHaveLength(1)
+    expect(screen.queryByText(/witness: off/)).not.toBeInTheDocument()
     const details = screen.getByTestId('integrity-details')
     expect(details.tagName).toBe('DETAILS')
     expect(details).not.toHaveAttribute('open')
@@ -1257,6 +1269,13 @@ describe('LedgerPageContent — Part B3: windowed paging + sticky header', () =>
     await screen.findByRole('group', { name: 'Exchange exch-0' })
     expect(screen.getAllByText('YOUR RECORD')).toHaveLength(1)
     expect(screen.getAllByText('THEIR RECORD, AS GIVEN TO YOU')).toHaveLength(1)
+    // Look finding 5: one page scroll -- the list is never its own scroll box,
+    // and no ancestor clips with `overflow-hidden` (which would break sticky).
+    const list = screen.getByTestId('exchange-list')
+    expect(screen.getByText('YOUR RECORD').parentElement?.className).toMatch(/\bsticky\b/)
+    for (let el: HTMLElement | null = list; el; el = el.parentElement) {
+      expect(el.className).not.toMatch(/overflow-(y-)?(auto|scroll|hidden)|max-h-/)
+    }
   })
 
   it('[ledger-T4-inline-inspector] a deep-linked exchange key jumps to its page, highlights the row, and expands its checks inline', async () => {

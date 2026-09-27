@@ -71,7 +71,9 @@ export const OWNER_LINKED_SENTENCE =
   'Your records are signed by this node’s key, linked to your owner account (self-asserted).'
 
 /** The honest rung-1/witness-line copy for a checkpoint no witness holds. */
-export const CHECKPOINTED_NOT_REGISTERED_STATUS = 'checkpointed locally · not registered (witness: off)'
+// Finding 7: "witness: off" is the witness tile's to say ("off — your
+// choice"); the step says only what this step's state is.
+export const CHECKPOINTED_NOT_REGISTERED_STATUS = 'checkpointed locally · not registered'
 
 // ---------------------------------------------------------------------------
 // Setup checklist (ledger-ux-from-the-user-2026-09-09 §6) -- three steps in
@@ -149,9 +151,11 @@ export function buildSetupSteps(
       // A half that arrived by push and closed through the gate corroborates
       // just as an asked-for half does -- the step is done either way.
       done: closedByOtherSideCount > 0 || askedPeerAt !== null,
+      // Finding 7: the count is the "Confirmed by the other side" tile's to
+      // say; the step says only that it's done.
       status:
         closedByOtherSideCount > 0
-          ? `${closedByOtherSideCount} confirmed by the other side`
+          ? 'received'
           : askedPeerAt !== null
             ? `asked ${askedPeerAt}`
             : 'none received yet',
@@ -287,6 +291,20 @@ export const RETENTION_FACT =
  *  says the same) -- stated once here instead of repeated on every row. */
 export const CAPTURE_BOUNDARY_FACT =
   'Capture boundary: the plugin at this node’s serving boundary. Rule: whatever passes through it is what gets sealed; nothing upstream or downstream of it is captured.'
+
+/** Look finding 2: which records the latest checkpoint covers. Chain leaves
+ *  are the ledger's records in order, and the checkpoint covers the first
+ *  `coveredLeafCount` of them -- the same figure the chain strip shades. An
+ *  empty map when the host reported no covered count (unknown, never "none"). */
+export function checkpointCoverageByRecord(
+  ledgerOrderIds: readonly string[],
+  coveredLeafCount: number | null
+): Map<string, boolean> {
+  const coverage = new Map<string, boolean>()
+  if (coveredLeafCount === null) return coverage
+  ledgerOrderIds.forEach((id, index) => coverage.set(id, index < coveredLeafCount))
+  return coverage
+}
 
 /** Finding 3: the Sealed tile's sub-line, so Integrity's record count and
  *  Exchanges' exchange count reconcile on screen. */

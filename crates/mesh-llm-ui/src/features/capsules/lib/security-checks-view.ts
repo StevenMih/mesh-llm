@@ -16,6 +16,7 @@
 // COMMITS TO" comparison already lives by).
 import type { CapsuleRecord } from '@/features/capsules/api/types'
 import type { PaneCRow } from '@/features/capsules/api/sidecarTypes'
+import type { RightCellStateKind } from '@/features/capsules/lib/exchange-row-state'
 import type { PeerRecomputeState, RecomputedIdentity } from '@/features/capsules/lib/recompute-identity'
 import { peerFetchJoinKey } from '@/features/capsules/lib/recompute-identity'
 import { NINE_PROPERTY_LABELS, PROPERTY_GROUP, RECOMPUTED_PROPERTIES } from '@/features/capsules/lib/nine-properties'
@@ -361,8 +362,8 @@ const CHECKPOINT_DEPENDENT = new Set(['local_inclusion', 'checkpoint_signature',
 
 function yoursDetailFor(key: string, state: string, text: string | undefined, actuallyRecomputed: boolean): string {
   if (text) return text
-  if (actuallyRecomputed) return 'recomputed in browser'
-  if (RECOMPUTED_PROPERTIES.has(key)) return 'not yet recomputed in browser'
+  if (actuallyRecomputed) return 'recomputed here'
+  if (RECOMPUTED_PROPERTIES.has(key)) return 'not yet recomputed here'
   if (state === 'NOT_PRESENT') {
     // [ledger-T6-integrity-completion]: once-per-node checkpoint/registration
     // facts live on the Integrity section, never repeated per row -- this
@@ -383,6 +384,35 @@ function theirsDetailFor(key: string, theirsRecompute: PeerRecomputeState | unde
     return 'their bytes not held'
   }
   return 'their log, no proof given'
+}
+
+/** Look finding 2: whether a checkpoint covers THIS record, from the same
+ *  card figure the Integrity strip shades (`checkpointCoverageByRecord`).
+ *  `null` = not reported. The native pane sends no per-row checkpoint
+ *  properties, and reading their absence as "no checkpoint covers this
+ *  record" contradicted Integrity's "All 8 records are sealed into a
+ *  checkpoint" on the same screen. */
+function checkpointCoverageCell(key: string, covered: boolean | null): { state: string; text: string } | null {
+  if (covered === true) {
+    return {
+      state: 'NOT_CHECKED',
+      text:
+        key === 'local_inclusion'
+          ? 'a checkpoint covers this record — see Integrity; its inclusion proof isn’t checked here'
+          : 'a checkpoint covers this record; not checked here'
+    }
+  }
+  if (covered === false) {
+    return {
+      state: 'NOT_PRESENT',
+      text:
+        key === 'local_inclusion'
+          ? 'Range facts: no checkpoint covers this record yet — see Integrity.'
+          : 'no checkpoint covers this record yet'
+    }
+  }
+  // Not reported: keep the ruled not-present default (`absentDefaultFor`).
+  return null
 }
 
 function absentDefaultFor(key: string): string {
@@ -435,11 +465,27 @@ function buildIdentityAuthorityFacts(row: PaneCRow): IdentityAuthorityFact[] {
   ]
 }
 
+/** The ONE gate's verdict on the other side's record (`deriveRightCellState`)
+ *  as an outcome-corroboration check -- so the panel's outcome row, the chip
+ *  strip, and the row badge all say the same thing. `null` = the gate reached
+ *  no verdict (every OPEN state), and the row falls back to the pane. */
+function gateOutcomeCell(gateKind: RightCellStateKind | undefined): { state: string; text: string } | null {
+  if (gateKind === 'closed') return { state: 'PASS', text: 'their record has the same request and answer' }
+  if (gateKind === 'contradicted') return { state: 'FAIL', text: 'their record differs' }
+  return null
+}
+
 export function buildChecksRows(
   row: PaneCRow,
   identity: RecomputedIdentity,
-  theirsRecompute?: PeerRecomputeState
+  theirsRecompute?: PeerRecomputeState,
+  gateKind?: RightCellStateKind,
+  /** Whether a checkpoint covers this record (look finding 2); `null` or
+   *  absent = not reported. Used only where the pane carries no per-row
+   *  checkpoint property. */
+  checkpointCovered: boolean | null = null
 ): ChecksRow[] {
+  const gateOutcome = gateOutcomeCell(gateKind)
   const held = theirsHeld(row)
   const checkpointSignatureState = row.properties?.checkpoint_signature?.state ?? 'NOT_PRESENT'
 
@@ -465,7 +511,13 @@ export function buildChecksRows(
     if (recomputable) {
       yoursState = boolToWireState(key === 'content_binding' ? identity.idMatch : identity.signatureOk)
     } else {
-      yoursState = row.properties?.[key]?.state ?? absentDefaultFor(key)
+      const coverageCell =
+        CHECKPOINT_DEPENDENT.has(key) && !row.properties?.[key] ? checkpointCoverageCell(key, checkpointCovered) : null
+      yoursState =
+        (key === 'outcome_corroboration' ? gateOutcome?.state : undefined) ??
+        coverageCell?.state ??
+        row.properties?.[key]?.state ??
+        absentDefaultFor(key)
       // Continuity is established ONLY if checkpoint_signature is: a
       // sidecar-claimed continuity PASS with no established checkpoint
       // signature to anchor to is downgraded. A continuity state that
@@ -476,7 +528,13 @@ export function buildChecksRows(
         yoursState = 'NOT_PRESENT'
       }
     }
-    const yoursText = recomputable ? undefined : (row.properties?.[key]?.text as string | undefined)
+    const yoursText = recomputable
+      ? undefined
+      : key === 'outcome_corroboration' && gateOutcome
+        ? gateOutcome.text
+        : ((CHECKPOINT_DEPENDENT.has(key) && !row.properties?.[key]
+            ? checkpointCoverageCell(key, checkpointCovered)?.text
+            : undefined) ?? (row.properties?.[key]?.text as string | undefined))
     // The forbidden mutant: a property is only "recomputed" if the
     // recompute actually produced a value -- not merely because its key
     // is recomputable while the recompute hasn't run yet (idMatch/

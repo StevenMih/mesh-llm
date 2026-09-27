@@ -35,7 +35,17 @@ const RETIRED_PHRASES = [
   'cites your half by digest',
   'Ask them for their half',
   'Get the other side’s half',
-  'covered by checkpoint ('
+  'covered by checkpoint (',
+  // [mesh-evidence-plain-language-pass] + look findings (2026-09-26): one
+  // term per thing, plain words, no designer notation on the face.
+  'Closed by the other side', // -> "Confirmed by the other side"
+  'recomputed in browser', // -> "recomputed here"
+  'none sealed', // Disputes judged -> "none"
+  '{ yours ', // bracket strip -> "Yours ● sealed —— Theirs ● same"
+  '✓ same request and answer as yours', // -> "✓ They recorded the same request and answer"
+  'bound (self-asserted)', // -> "linked (self-asserted)" + what it established
+  'serve-boundary path', // -> "the plugin at this node’s serving boundary"
+  'Registration is a separate step' // said once, in step 1
 ] as const
 
 const HERE = dirname(fileURLToPath(import.meta.url))

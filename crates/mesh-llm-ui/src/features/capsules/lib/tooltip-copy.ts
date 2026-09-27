@@ -14,6 +14,7 @@
 export const HERO_TOOLTIPS = {
   live: 'Reading this node’s records over its running local API. They update as this node seals them.',
   local: 'Reading a saved local copy. This node’s API is not connected, so the records are not updating.',
+  sample: 'Showing a saved sample run, not this node’s records. Nothing here updates.',
   // §8 adds "Open to see where they are and what you share." -- held back
   // until the pill opens something (rule 5: never ask for what can't be done).
   yourRecords: 'The records this node keeps, sealed and checkpointed.'
@@ -32,7 +33,7 @@ export const PEER_COLUMN_TOOLTIPS = {
     'Times someone compared this peer’s answers to another’s and sealed a verdict, and how many they looked at.',
   witness:
     'Whether this peer’s records are held by a witness they don’t run. Not shown yet: this view doesn’t have that data.',
-  period: 'The dates of your first and last exchange with this peer on screen.'
+  period: 'The date of your latest exchange with this peer.'
 } as const
 
 /** The peer's self-reported identity note. */

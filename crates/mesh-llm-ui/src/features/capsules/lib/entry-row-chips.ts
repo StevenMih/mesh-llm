@@ -3,7 +3,7 @@
 // summary of five named properties -- distinct from the `▸ checks` panel's
 // own five-state detail (`assurance-tone.ts`'s CHIP_GLYPH/CHIP_TONE), which
 // this strip links into rather than duplicates.
-import type { PaneCRow } from '@/features/capsules/api/sidecarTypes'
+import type { ChecksRow } from '@/features/capsules/lib/security-checks-view'
 
 export type EntryRowChipKey = 'content' | 'sig' | 'inclusion' | 'registered' | 'theirs'
 export type EntryRowChipMark = '✓' | '✗' | '–'
@@ -28,12 +28,14 @@ export function entryRowChipPropertyKey(chip: EntryRowChipKey): string {
 }
 
 /** PASS -> green check, FAIL -> red cross, everything else (NOT_PRESENT /
- *  NOT_CHECKED / INCONCLUSIVE, or the property entirely absent from this
- *  row's `properties`) -> the neutral dash. Never a fabricated pass/fail for
- *  a property this row's payload doesn't carry an opinion on. */
-export function entryRowChipMark(row: PaneCRow, chip: EntryRowChipKey): EntryRowChipMark {
-  const cell = row.properties?.[CHIP_PROPERTY_KEY[chip]]
-  if (cell?.state === 'PASS') return '✓'
-  if (cell?.state === 'FAIL') return '✗'
+ *  NOT_CHECKED / INCONCLUSIVE, or a property the checks don't carry) -> the
+ *  neutral dash. Finding 1 (look 2026-09-26): the strip reads the SAME check
+ *  results the `▸ checks` panel renders (`buildChecksRows`, this node's side)
+ *  -- never the pane's `properties` map, which the native pane leaves null,
+ *  so the strip read all dashes while the panel below it said established. */
+export function entryRowChipMark(checks: readonly ChecksRow[], chip: EntryRowChipKey): EntryRowChipMark {
+  const state = checks.find((row) => row.key === CHIP_PROPERTY_KEY[chip])?.yours?.state
+  if (state === 'PASS') return '✓'
+  if (state === 'FAIL') return '✗'
   return '–'
 }

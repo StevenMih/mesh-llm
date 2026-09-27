@@ -38,12 +38,13 @@ describe('buildSetupSteps — ledger-ux-from-the-user §6, three steps in value 
     expect(steps[2].status).not.toMatch(/never asked/)
   })
 
-  it('step 3 reflects the push-confirmed reality: a nonzero closed-by-other-side count marks it done, worded like the tile', () => {
+  it('step 3 reflects the push-confirmed reality: a nonzero confirmed count marks it done, without repeating the tile’s count (finding 7)', () => {
     // [mesh-closed-on-frozen-base] The rung must not read "never asked" while
     // the tile reads CLOSED-BY-OTHER-SIDE N -- halves arrived by push.
     const steps = buildSetupSteps({ checkpoint_count: 0 }, null, 3)
     expect(steps[2].done).toBe(true)
-    expect(steps[2].status).toBe('3 confirmed by the other side')
+    expect(steps[2].status).toBe('received')
+    expect(steps[2].status).not.toMatch(/\d/)
     expect(steps[2].body).toBeNull()
   })
 
@@ -71,7 +72,7 @@ describe('buildSetupSteps — ledger-ux-from-the-user §6, three steps in value 
     // Local checkpointing is NOT registration.
     const steps = buildSetupSteps({ checkpoint_count: 3, witnesses: [] }, null)
     expect(steps[0].done).toBe(false)
-    expect(steps[0].status).toBe('checkpointed locally · not registered (witness: off)')
+    expect(steps[0].status).toBe('checkpointed locally · not registered')
     expect(steps[0].status).not.toBe('registered')
     // The step still explains what registration would buy -- the reader is
     // exactly the person deciding whether to do it.

@@ -18,6 +18,7 @@ import {
   buildHeaderRows,
   buildIdentityRow,
   theirsFetchable,
+  type ChecksRow,
   type ChecksSideCell
 } from '@/features/capsules/lib/security-checks-view'
 import { ChipExplanationPopover } from '@/features/capsules/components/ChipExplanationPopover'
@@ -96,6 +97,10 @@ export type SecurityChecksViewProps = {
    *  block so the jump is visible, not just scrolled-to. `null`/absent when
    *  no chip jump is pending (the panel opened some other way). */
   highlightedPropertyKey?: string | null
+  /** The row's check results, computed once by `ExchangeStreamRow` and
+   *  shared with its chip strip so the two can never disagree (look finding
+   *  1). Computed here only when a caller doesn't supply them. */
+  checksRows?: readonly ChecksRow[]
 }
 
 const NOT_FETCHED_DEFAULT: PeerRecomputeState = {
@@ -111,7 +116,8 @@ export function SecurityChecksView({
   identity,
   localRecord,
   theirsRecompute = NOT_FETCHED_DEFAULT,
-  highlightedPropertyKey = null
+  highlightedPropertyKey = null,
+  checksRows: suppliedChecksRows
 }: SecurityChecksViewProps) {
   const [rawMode, setRawMode] = useState(false)
   const canFetchTheirs = theirsFetchable(row.raw) !== null
@@ -119,7 +125,7 @@ export function SecurityChecksView({
   const identityRow = buildIdentityRow(row.raw, identity, theirsRecompute)
   const headerRows = buildHeaderRows(row.raw, localRecord, theirsRecompute)
   const commitsToRows = buildCommitsToRows(row.raw, localRecord, theirsRecompute)
-  const checksRows = buildChecksRows(row.raw, identity, theirsRecompute)
+  const checksRows = suppliedChecksRows ?? buildChecksRows(row.raw, identity, theirsRecompute)
   const captureCoverageRow = checksRows.find((r) => r.key === 'capture_coverage')
   const nodeSaidRows = checksRows.filter((r) => r.key !== 'capture_coverage' && r.group === WHAT_NODE_SAID_GROUP)
   const actuallyHappenedRows = checksRows.filter((r) => r.group === WHAT_ACTUALLY_HAPPENED_GROUP)

@@ -40,6 +40,7 @@ import {
   dayTalliesByKey,
   dayTallyLine
 } from '@/features/capsules/lib/exchange-day-groups'
+import { EVIDENCE_SOURCE_LABEL, evidenceSource } from '@/features/capsules/lib/evidence-source'
 import {
   exceptionsFirstLine,
   exceptionsFirstTally,
@@ -76,6 +77,7 @@ import {
   CAPTURE_BOUNDARY_FACT,
   CHAIN_BAR_INFO,
   chainStripCaption,
+  checkpointCoverageByRecord,
   checkpointRegistration,
   continuityFact,
   identityFact,
@@ -358,6 +360,17 @@ function ExchangesSection({
     refetchInterval: 15_000,
     retry: false
   })
+  // Look finding 2: per-record checkpoint coverage from the SAME card figure
+  // the Integrity chain strip shades, so a row's checks panel can never say
+  // "no checkpoint covers this record" while Integrity says all are covered.
+  const checkpointCoverage = useMemo(() => {
+    const card = balanceQuery.data?.card ?? null
+    const covered = typeof card?.covered_leaf_count === 'number' ? card.covered_leaf_count : null
+    return checkpointCoverageByRecord(
+      (balanceQuery.data?.rows ?? []).map((r) => r.capsule_id),
+      covered
+    )
+  }, [balanceQuery.data])
   // Same queryKey as PeersSection's own pane-c query (no `mode` suffix) --
   // that one calls the identical `fetchPaneCList()` in live mode and is
   // simply `enabled: false` in harness mode, so both share ONE cache entry
@@ -878,16 +891,11 @@ function ExchangesSection({
             </div>
           ) : null}
 
-          {/* v3 §2a — the row list is its own bounded, independently
-             scrolling panel: the enclosing Card uses `overflow-hidden` (for
-             its rounded corners), which breaks page-level `sticky` for any
-             descendant -- an ancestor with non-visible overflow becomes the
-             nearest "scrollport" a sticky element sticks within, per the
-             CSS spec, so a sticky header inside it would just scroll away
-             with the page instead of pinning. A local scroll container
-             sidesteps that entirely and keeps the header pinned while this
-             page's rows scroll. */}
-          <div className="max-h-[70vh] overflow-y-auto rounded border border-border-soft">
+          {/* Look finding 5: ONE page scroll, no nested scroll box. The
+             enclosing Card clips with `overflow-clip` (not `overflow-hidden`),
+             which keeps its rounded corners without becoming a scroll
+             container, so this header pins against the page scroll itself. */}
+          <div className="rounded border border-border-soft" data-testid="exchange-list">
             <div className="sticky top-0 z-10 grid grid-cols-2 gap-0 border-b border-border-soft bg-panel px-3 py-1.5">
               <p className="type-caption font-mono text-fg-faint">YOUR RECORD</p>
               <p className="type-caption font-mono text-fg-faint">THEIR RECORD, AS GIVEN TO YOU</p>
@@ -920,6 +928,9 @@ function ExchangesSection({
                         highlighted={highlightedKey === row.exchangeKey}
                         localRecord={
                           row.raw.mine.capsule_id ? (recordsById.get(row.raw.mine.capsule_id) ?? null) : null
+                        }
+                        checkpointCovered={
+                          row.raw.mine.capsule_id ? (checkpointCoverage.get(row.raw.mine.capsule_id) ?? null) : null
                         }
                         nodePubKeyPem={nodePubKeyPem}
                         onAction={handleAskForHalf}
@@ -1205,9 +1216,9 @@ function IntegritySection() {
         {/* Finding 7 -- each thing said once: an unwitnessed checkpoint is
            already stated by step 1's status and the witness tile, so the
            summary line renders only once a witness actually holds one. */}
-        {registrationCopy && registration.registered ? (
+        {registrationCopy ? (
           <div className="flex flex-col gap-0.5">
-            <p>{registrationCopy.witnessSummary}</p>
+            {registration.registered ? <p>{registrationCopy.witnessSummary}</p> : null}
             {registrationCopy.registeredNoLaterThan ? (
               <p className="type-caption text-fg-faint">{registrationCopy.registeredNoLaterThan}</p>
             ) : null}
@@ -1279,6 +1290,8 @@ export function LedgerPageContent({ focusExchangeKey }: { focusExchangeKey?: str
 
   const nodePubKeyPem = ledgerQuery.data?.nodePubKeyPem ?? null
   const sidecarConnected = paneAStatusQuery.isSuccess
+  // Look finding 6: a replayed fixture run reads "Sample data", never "Live".
+  const source = evidenceSource(sidecarConnected, import.meta.env.VITE_EVIDENCE_FIXTURES as string | undefined)
 
   return (
     <TooltipProvider delayDuration={250} skipDelayDuration={120}>
@@ -1289,20 +1302,28 @@ export function LedgerPageContent({ focusExchangeKey }: { focusExchangeKey?: str
           status={
             <div className="flex flex-wrap items-center gap-2">
               <span className="inline-flex items-center gap-1">
-                <StatusBadge dot size="caption" tone={sidecarConnected ? 'good' : 'muted'}>
-                  {sidecarConnected ? 'Live' : 'Local'}
+                <StatusBadge
+                  dot
+                  size="caption"
+                  tone={source === 'live' ? 'good' : source === 'sample' ? 'warn' : 'muted'}
+                >
+                  {EVIDENCE_SOURCE_LABEL[source]}
                 </StatusBadge>
                 <InfoHover
-                  census={sidecarConnected ? 'hero:live' : 'hero:local'}
-                  describes={sidecarConnected ? 'the Live chip' : 'the Local chip'}
-                  label={sidecarConnected ? HERO_TOOLTIPS.live : HERO_TOOLTIPS.local}
+                  census={`hero:${source}`}
+                  describes={`the ${EVIDENCE_SOURCE_LABEL[source]} chip`}
+                  label={HERO_TOOLTIPS[source]}
                 />
               </span>
               <span className="inline-flex items-center gap-1">
                 <StatusBadge tone="muted" size="caption">
                   This node's copy
                 </StatusBadge>
-                <InfoHover census="hero:your_records" describes="the This node's copy chip" label={HERO_TOOLTIPS.yourRecords} />
+                <InfoHover
+                  census="hero:your_records"
+                  describes="the This node's copy chip"
+                  label={HERO_TOOLTIPS.yourRecords}
+                />
               </span>
             </div>
           }
@@ -1311,7 +1332,7 @@ export function LedgerPageContent({ focusExchangeKey }: { focusExchangeKey?: str
           titleLevel="h1"
         />
 
-        <Card className="overflow-hidden rounded-[var(--radius-lg)] border-border bg-panel p-4 shadow-none">
+        <Card className="overflow-clip rounded-[var(--radius-lg)] border-border bg-panel p-4 shadow-none">
           <TabPanel<LedgerTab>
             ariaLabel="Evidence sections"
             onValueChange={setActiveTab}

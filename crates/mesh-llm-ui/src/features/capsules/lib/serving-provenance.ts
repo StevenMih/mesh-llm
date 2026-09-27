@@ -179,7 +179,9 @@ export function formatModelIdentity(modelRef: string | null): string | null {
   const slashIndex = modelRef.indexOf('/')
   if (slashIndex === -1) return modelRef
   const family = modelRef.slice(0, slashIndex)
-  const digest = modelRef.slice(slashIndex + 1)
+  // A `sha256-` algorithm prefix is not part of the digest: shortening
+  // `sha256-6c1a…` to six characters would print "sha256…" for every model.
+  const digest = modelRef.slice(slashIndex + 1).replace(/^sha256[-:]/, '')
   const shortDigest = digest.length > 8 ? `${digest.slice(0, 6)}…` : digest
   return `${family}/${shortDigest}`
 }

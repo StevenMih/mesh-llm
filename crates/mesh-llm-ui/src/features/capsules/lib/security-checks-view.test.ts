@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { PaneCRow } from '@/features/capsules/api/sidecarTypes'
+import { checkpointCoverageByRecord } from '@/features/capsules/lib/integrity-view'
 import {
   NINE_PROPERTY_LABELS,
   WHAT_ACTUALLY_HAPPENED_GROUP,
@@ -118,6 +119,52 @@ describe('buildChecksRows — checkpoint-dependent properties resolve NOT_PRESEN
     const rows = buildChecksRows(paneCRow({ properties: null }), NOT_RECOMPUTED)
     const taskBinding = rows.find((r) => r.key === 'task_binding')
     expect(taskBinding?.yours?.label).toBe('not checked')
+  })
+})
+
+describe('buildChecksRows — look finding 2: per-record checkpoint coverage agrees with Integrity', () => {
+  it('REGRESSION: a record the checkpoint covers never reads "no checkpoint covers this record"', () => {
+    // The look: Integrity said "All 8 records are sealed into a checkpoint"
+    // while every row's panel said "no checkpoint covers this record" --
+    // the native pane sends no per-row properties, and their absence was
+    // read as not covered.
+    const coveredId = 'mine-1'
+    const coverage = checkpointCoverageByRecord([coveredId, 'mine-2'], 1)
+    const rows = buildChecksRows(
+      paneCRow({ properties: null }),
+      NOT_RECOMPUTED,
+      undefined,
+      undefined,
+      coverage.get(coveredId) ?? null
+    )
+    const byKey = Object.fromEntries(rows.map((r) => [r.key, r]))
+    for (const key of ['local_inclusion', 'checkpoint_signature', 'continuity']) {
+      expect(byKey[key].yours?.detail).not.toMatch(/no checkpoint covers/)
+      // Covered, but the inclusion proof isn't checked in the browser --
+      // never an "established" this page did not check.
+      expect(byKey[key].yours?.state).toBe('NOT_CHECKED')
+    }
+    expect(byKey.local_inclusion.yours?.detail).toBe(
+      'a checkpoint covers this record — see Integrity; its inclusion proof isn’t checked here'
+    )
+  })
+
+  it('a record after the last checkpoint says "not ... yet"', () => {
+    const coverage = checkpointCoverageByRecord(['mine-1', 'mine-2'], 1)
+    const rows = buildChecksRows(
+      paneCRow({ properties: null }),
+      NOT_RECOMPUTED,
+      undefined,
+      undefined,
+      coverage.get('mine-2') ?? null
+    )
+    const localInclusion = rows.find((r) => r.key === 'local_inclusion')
+    expect(localInclusion?.yours?.state).toBe('NOT_PRESENT')
+    expect(localInclusion?.yours?.detail).toBe('Range facts: no checkpoint covers this record yet — see Integrity.')
+  })
+
+  it('an unreported covered count maps nothing -- coverage unknown, never "none"', () => {
+    expect(checkpointCoverageByRecord(['mine-1'], null).size).toBe(0)
   })
 })
 
@@ -268,11 +315,11 @@ describe('buildChecksRows — L-M: recomputed-here and from-sidecar are never th
     expect(byKey.outcome_corroboration.yours?.recomputed).toBe(false)
   })
 
-  it('recomputed properties always say "recomputed in browser", never a sidecar phrase', () => {
+  it('recomputed properties always say "recomputed here", never a sidecar phrase', () => {
     const rows = buildChecksRows(paneCRow(), RECOMPUTED_MATCH)
     const byKey = Object.fromEntries(rows.map((r) => [r.key, r]))
-    expect(byKey.content_binding.yours?.detail).toBe('recomputed in browser')
-    expect(byKey.producer_signature.yours?.detail).toBe('recomputed in browser')
+    expect(byKey.content_binding.yours?.detail).toBe('recomputed here')
+    expect(byKey.producer_signature.yours?.detail).toBe('recomputed here')
   })
 
   it('content_binding reflects idMatch, never upgraded to established when unrecomputed', () => {
@@ -293,10 +340,10 @@ describe('buildChecksRows — forbidden mutant: never NOT_CHECKED together with 
     expect(byKey.producer_signature.yours?.recomputed).toBe(false)
   })
 
-  it('says "not yet recomputed in browser", not "recomputed in browser", while unrecomputed', () => {
+  it('says "not yet recomputed here", not "recomputed here", while unrecomputed', () => {
     const rows = buildChecksRows(paneCRow(), NOT_RECOMPUTED)
     const byKey = Object.fromEntries(rows.map((r) => [r.key, r]))
-    expect(byKey.content_binding.yours?.detail).toBe('not yet recomputed in browser')
+    expect(byKey.content_binding.yours?.detail).toBe('not yet recomputed here')
   })
 
   it('no row, in any identity state, ever pairs NOT_CHECKED with recomputed:true', () => {

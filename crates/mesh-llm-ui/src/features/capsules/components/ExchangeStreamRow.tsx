@@ -15,6 +15,7 @@ import { cn } from '@/lib/cn'
 import type { CapsuleRecord } from '@/features/capsules/api/types'
 import { ExchangeRowChips } from '@/features/capsules/components/ExchangeRowChips'
 import { SecurityChecksView } from '@/features/capsules/components/SecurityChecksView'
+import { buildChecksRows } from '@/features/capsules/lib/security-checks-view'
 import {
   theirContentAction,
   theirContentText,
@@ -164,6 +165,9 @@ export type ExchangeStreamRowProps = {
    *  (never a stand-in for a trusted result). */
   localRecord?: CapsuleRecord | null
   nodePubKeyPem?: string | null
+  /** Whether the latest checkpoint covers this row's own record (look
+   *  finding 2, `checkpointCoverageByRecord`); `null` = not reported. */
+  checkpointCovered?: boolean | null
   /** Toggle ① -- flips `contentExpanded` for this row (the `▸/▾ content` control). */
   onToggleContent: (row: ExchangeLedgerRow) => void
   /** Toggle ② -- flips `checksExpanded` for this row (the `▸/▾ checks` control). */
@@ -180,6 +184,7 @@ export function ExchangeStreamRow({
   contentExpanded = false,
   localRecord = null,
   nodePubKeyPem = null,
+  checkpointCovered = null,
   onToggleContent,
   onToggleChecks,
   onAction
@@ -213,10 +218,14 @@ export function ExchangeStreamRow({
   const nowMs = useNowMs()
   const askWaiting = isAskAction(state.kind) && !askForRecordIsDue(row.timestamp, nowMs)
   const action = gatedByCounterparty || askWaiting ? null : rightCellAction(state)
-  // Only recompute while the security view is actually open -- the hook
-  // itself must always be called (rules of hooks), but its effect no-ops on
-  // a `null` record, so collapsed rows never pay for a fetch+verify.
-  const identity = useRecomputedIdentity(checksExpanded ? localRecord : null, nodePubKeyPem)
+  // Look finding 1: the chip strip on the collapsed row must show the same
+  // results as the panel, so this node's own record is recomputed for every
+  // rendered row, not only an expanded one. It is a local hash + signature
+  // verify over bytes already in the browser -- no fetch.
+  const identity = useRecomputedIdentity(localRecord, nodePubKeyPem)
+  // ONE set of check results for both the strip and the panel; the gate's
+  // verdict feeds the outcome row so the badge, strip and panel agree.
+  const checksRows = buildChecksRows(row.raw, identity, theirsRecompute, state.kind, checkpointCovered)
   // The bracket strip, drawn in words (UX §3): `Yours ● sealed —— Theirs ●
   // same`. Same state the badge renders.
   const strip = bracketStripText(bracketStrip(row.raw, state))
@@ -362,7 +371,7 @@ export function ExchangeStreamRow({
             ) : null}
           </div>
         </div>
-        <ExchangeRowChips onChipActivate={handleChipActivate} raw={row.raw} />
+        <ExchangeRowChips checks={checksRows} onChipActivate={handleChipActivate} />
         {/* [ledger-T4-inline-inspector] v3 §2's row footer: two independent
            disclosure toggles, never a modal. Always present, regardless of
            the right-cell state. */}
@@ -458,6 +467,7 @@ export function ExchangeStreamRow({
         ) : null}
         {checksExpanded ? (
           <SecurityChecksView
+            checksRows={checksRows}
             highlightedPropertyKey={highlightedCheckKey}
             identity={identity}
             localRecord={localRecord}

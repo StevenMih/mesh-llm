@@ -112,7 +112,7 @@ describe('SecurityChecksView — two labelled groups, no counts', () => {
 describe('SecurityChecksView — L-L: every check row names its inputs and policy inline', () => {
   it('never renders a bare state word with nothing beside it', () => {
     render(<SecurityChecksView identity={RECOMPUTED_MATCH} localRecord={null} row={ledgerRow(paneCRow())} />)
-    expect(screen.getAllByText('recomputed in browser').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('recomputed here').length).toBeGreaterThan(0)
     expect(screen.getByText('Range facts: no checkpoint covers this record — see Integrity.')).toBeInTheDocument()
     expect(screen.getAllByText('no checkpoint covers this record').length).toBeGreaterThan(0)
     expect(screen.getByText('no receipt covers this record')).toBeInTheDocument()
@@ -123,7 +123,7 @@ describe('SecurityChecksView — L-L: every check row names its inputs and polic
 describe('SecurityChecksView — L-M: recomputed-here vs from-sidecar are visually distinct', () => {
   it('content_binding/producer_signature carry a different class + data-source than a sidecar property', () => {
     render(<SecurityChecksView identity={RECOMPUTED_MATCH} localRecord={null} row={ledgerRow(paneCRow())} />)
-    const recomputedCell = screen.getAllByText('recomputed in browser')[0].closest('[data-source]')
+    const recomputedCell = screen.getAllByText('recomputed here')[0].closest('[data-source]')
     const sidecarCell = screen
       .getByText('Range facts: no checkpoint covers this record — see Integrity.')
       .closest('[data-source]')

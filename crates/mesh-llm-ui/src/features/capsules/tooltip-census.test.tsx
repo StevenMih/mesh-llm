@@ -14,7 +14,12 @@ import { describe, expect, it, vi } from 'vitest'
 import type { PaneCListJson, PaneCRow } from '@/features/capsules/api/sidecarTypes'
 import { HARNESS_PANE_B_PAYLOAD } from '@/features/capsules/lib/peer-fixtures'
 import { fixtureMineCell, fixtureTheirsCell } from '@/features/capsules/lib/pushed-half-fixtures'
-import { buildSetupSteps, chainStripCaption } from '@/features/capsules/lib/integrity-view'
+import {
+  buildSetupSteps,
+  chainStripCaption,
+  continuityFact,
+  sealedBreakdownText
+} from '@/features/capsules/lib/integrity-view'
 import {
   rightCellAction,
   rightCellStatusLabel,
@@ -200,7 +205,7 @@ describe('tooltip census -- every chip type the Evidence tab ships has a plain o
     expectCovered(REQUIRED.hero, seen, 'face')
     expectCovered(REQUIRED.peers, seen, 'face')
     // The live/local chip: one of the two, whichever state the page is in.
-    expect(seen.has('hero:live') || seen.has('hero:local')).toBe(true)
+    expect(seen.has('hero:live') || seen.has('hero:local') || seen.has('hero:sample')).toBe(true)
     // No generic warning glyph anywhere on the Peers face (§8).
     expect(document.body.textContent).not.toContain('⚠')
   })
@@ -287,7 +292,17 @@ describe('tooltip census -- the copy itself', () => {
       chainStripCaption(5, 1, 3),
       chainStripCaption(5, 2, null),
       chainStripCaption(2, null, null),
-      chainStripCaption(1, 0, null)
+      chainStripCaption(1, 0, null),
+      chainStripCaption(8, 1, 8),
+      ...buildSetupSteps({ checkpoint_count: 1 }, { verified: true }, 3).flatMap((step) => [
+        step.title,
+        step.status,
+        step.body ?? ''
+      ]),
+      continuityFact(null),
+      continuityFact(1),
+      continuityFact(3),
+      sealedBreakdownText(5, 3)
     ]
     expect(texts.flatMap((text) => checkWords(text, 'face'))).toEqual([])
   })

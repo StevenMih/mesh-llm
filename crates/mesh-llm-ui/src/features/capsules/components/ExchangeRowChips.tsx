@@ -14,7 +14,7 @@ import {
   ENTRY_ROW_CHIP_ORDER
 } from '@/features/capsules/lib/entry-row-chips'
 import type { EntryRowChipMark } from '@/features/capsules/lib/entry-row-chips'
-import type { PaneCRow } from '@/features/capsules/api/sidecarTypes'
+import type { ChecksRow } from '@/features/capsules/lib/security-checks-view'
 import { HoverChip } from '@/features/capsules/components/HoverChip'
 import { ENTRY_CHIP_TOOLTIPS } from '@/features/capsules/lib/tooltip-copy'
 
@@ -25,10 +25,12 @@ const MARK_COLOR: Record<EntryRowChipMark, string> = {
 }
 
 export function ExchangeRowChips({
-  raw,
+  checks,
   onChipActivate
 }: {
-  raw: PaneCRow
+  /** The row's check results -- the same `buildChecksRows` output the
+   *  `▸ checks` panel renders, so the two can never disagree. */
+  checks: readonly ChecksRow[]
   /** The property key (`security-checks-view.ts`'s `ChecksRow.key`) this
    *  chip links to, not the chip's own short label. */
   onChipActivate: (propertyKey: string) => void
@@ -36,7 +38,7 @@ export function ExchangeRowChips({
   return (
     <div aria-label="checks summary" className="flex flex-wrap items-center gap-2.5" role="group">
       {ENTRY_ROW_CHIP_ORDER.map((chip) => {
-        const mark = entryRowChipMark(raw, chip)
+        const mark = entryRowChipMark(checks, chip)
         const propertyKey = entryRowChipPropertyKey(chip)
         // Hover for the meaning, click for the full check (UX §8 rule 2).
         return (

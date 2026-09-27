@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import type { PaneCRow } from '@/features/capsules/api/sidecarTypes'
+import type { RightCellStateKind } from '@/features/capsules/lib/exchange-row-state'
+import type { RecomputedIdentity } from '@/features/capsules/lib/recompute-identity'
+import { buildChecksRows } from '@/features/capsules/lib/security-checks-view'
 import {
   ENTRY_ROW_CHIP_ORDER,
   entryRowChipMark,
@@ -34,34 +37,39 @@ describe('entryRowChipPropertyKey', () => {
   })
 })
 
-describe('entryRowChipMark', () => {
-  it('PASS -> ✓', () => {
-    const row = rowWithProperties({ content_binding: { state: 'PASS' } })
-    expect(entryRowChipMark(row, 'content')).toBe('✓')
-  })
+const NOT_RUN = { idMatch: null, signatureOk: null } as RecomputedIdentity
+const RECOMPUTED_OK = { idMatch: true, signatureOk: true } as RecomputedIdentity
 
-  it('FAIL -> ✗', () => {
-    const row = rowWithProperties({ producer_signature: { state: 'FAIL' } })
-    expect(entryRowChipMark(row, 'sig')).toBe('✗')
+function marks(row: PaneCRow, identity: RecomputedIdentity, gateKind?: RightCellStateKind) {
+  const checks = buildChecksRows(row, identity, undefined, gateKind)
+  return ENTRY_ROW_CHIP_ORDER.map((chip) => entryRowChipMark(checks, chip)).join(' ')
+}
+
+describe('entryRowChipMark -- reads the SAME check results as the checks panel (look finding 1)', () => {
+  it('PASS -> ✓, FAIL -> ✗, from the panel rows', () => {
+    const row = rowWithProperties({ local_inclusion: { state: 'PASS' }, external_registration: { state: 'FAIL' } })
+    expect(marks(row, NOT_RUN)).toBe('– – ✓ ✗ –')
   })
 
   it.each(['NOT_PRESENT', 'NOT_CHECKED', 'INCONCLUSIVE'])(
     '%s -> the neutral dash, never a fabricated pass/fail',
     (state) => {
-      const row = rowWithProperties({ local_inclusion: { state } })
-      expect(entryRowChipMark(row, 'inclusion')).toBe('–')
+      expect(marks(rowWithProperties({ local_inclusion: { state } }), NOT_RUN)).toBe('– – – – –')
     }
   )
 
-  it('a `properties` object entirely absent the property -> the neutral dash', () => {
-    const row = rowWithProperties({ content_binding: { state: 'PASS' } })
-    expect(entryRowChipMark(row, 'registered')).toBe('–')
+  it('REGRESSION: the native pane (`properties: null`) still shows the in-browser recompute -- never all dashes while the panel says established', () => {
+    const row = rowWithProperties(null)
+    expect(marks(row, RECOMPUTED_OK)).toBe('✓ ✓ – – –')
+    const panel = buildChecksRows(row, RECOMPUTED_OK)
+    expect(panel.find((r) => r.key === 'content_binding')?.yours?.state).toBe('PASS')
+    expect(panel.find((r) => r.key === 'producer_signature')?.yours?.state).toBe('PASS')
   })
 
-  it('`properties: null` (no map at all) -> the neutral dash for every chip', () => {
+  it('the theirs chip follows the ONE gate: CLOSED -> ✓, CONTRADICTED -> ✗, OPEN -> –', () => {
     const row = rowWithProperties(null)
-    for (const chip of ENTRY_ROW_CHIP_ORDER) {
-      expect(entryRowChipMark(row, chip)).toBe('–')
-    }
+    expect(marks(row, RECOMPUTED_OK, 'closed')).toBe('✓ ✓ – – ✓')
+    expect(marks(row, RECOMPUTED_OK, 'contradicted')).toBe('✓ ✓ – – ✗')
+    expect(marks(row, RECOMPUTED_OK, 'open_not_held')).toBe('✓ ✓ – – –')
   })
 })

@@ -8,7 +8,7 @@ import { ExchangeStreamRow } from '@/features/capsules/components/ExchangeStream
 import { exchangeRowDomId } from '@/features/capsules/lib/exchange-pages'
 import type { ExchangeLedgerRow } from '@/features/capsules/lib/exchange-ledger'
 import { ASK_FOR_RECORD_AFTER_MS, type RightCellStateKind } from '@/features/capsules/lib/exchange-row-state'
-import { durationText, tokenFlowText } from '@/features/capsules/lib/serving-provenance'
+import { durationText, formatModelIdentity, tokenFlowText } from '@/features/capsules/lib/serving-provenance'
 import type { RailSegment } from '@/features/capsules/lib/exchange-stream'
 import type { PaneCRow } from '@/features/capsules/api/sidecarTypes'
 import type { CapsuleRecord } from '@/features/capsules/api/types'
@@ -977,6 +977,10 @@ describe('ExchangeStreamRow — [mesh-evidence-ui-entry-row-and-chips] §3A mode
     )
     const modelEl = screen.getByText('local-gguf/7089c7…')
     expect(modelEl).toHaveAttribute('title', 'local-gguf/7089c7abcdef0123456789')
+  })
+
+  it('drops a sha256- algorithm prefix before shortening -- never "local-gguf/sha256…"', () => {
+    expect(formatModelIdentity('local-gguf/sha256-6c1a2b41161032677be168d354123594')).toBe('local-gguf/6c1a2b…')
   })
 
   it('renders nothing for the model when the record carries no model ref -- never a placeholder', () => {
