@@ -1408,7 +1408,10 @@ export function LedgerPageContent({ focusExchangeKey }: { focusExchangeKey?: str
           witnessed: checkpointRegistration(paneACard).registered
         })
       : null
-  const capsuleIds = useMemo(() => [...recordsById.keys()], [recordsById])
+  const capsuleIds = useMemo(
+    () => (ledgerQuery.isSuccess ? [...recordsById.keys()] : null),
+    [ledgerQuery.isSuccess, recordsById]
+  )
   const yourRecords = useYourRecords({ sample: source === 'sample', capsuleIds })
   const prompts = promptsPill(yourRecords.storedTextCount)
   const [recordsOpen, setRecordsOpen] = useState(false)

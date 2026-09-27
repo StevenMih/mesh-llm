@@ -30,7 +30,8 @@ export function useYourRecords({
   capsuleIds
 }: {
   sample: boolean
-  capsuleIds: readonly string[]
+  /** `null` until the ledger has loaded: 0 of 0 probed is not "not kept". */
+  capsuleIds: readonly string[] | null
 }): YourRecords {
   const statusQuery = useQuery({
     queryKey: RECORDS_STATUS_QUERY_KEY,
@@ -40,7 +41,7 @@ export function useYourRecords({
     retry: false
   })
   const status = statusQuery.data ?? null
-  const needProbe = status === null && (sample || statusQuery.isError)
+  const needProbe = status === null && capsuleIds !== null && (sample || statusQuery.isError)
   const probeIds = needProbe ? capsuleIds.slice(0, STORED_TEXT_PROBE_LIMIT) : []
   const probeQuery = useQuery({
     queryKey: ['capsules', 'stored-text-probe', probeIds],
@@ -51,7 +52,10 @@ export function useYourRecords({
 
   if (status) return { status, storedTextCount: status.stored_text_count }
   if (needProbe && probeQuery.data !== undefined) {
-    return { status: null, storedTextCount: storedTextFromProbe(probeQuery.data, probeIds.length, capsuleIds.length) }
+    return {
+      status: null,
+      storedTextCount: storedTextFromProbe(probeQuery.data, probeIds.length, capsuleIds?.length ?? 0)
+    }
   }
   return { status: null, storedTextCount: null }
 }

@@ -59,7 +59,16 @@ export function YourRecordsDialog({
 }: YourRecordsDialogProps) {
   return (
     <SharedModal open={open} onOpenChange={onOpenChange}>
-      <SharedModalContent className="w-[min(560px,calc(100vw-2rem))]" aria-describedby="your-records-description">
+      <SharedModalContent
+        aria-describedby="your-records-description"
+        className="w-[min(560px,calc(100vw-2rem))]"
+        // Focus the panel, not its first (i): a focused (i) opens its tooltip
+        // over the facts the person opened the panel to read.
+        onOpenAutoFocus={(event) => {
+          event.preventDefault()
+          ;(event.currentTarget as HTMLElement | null)?.focus()
+        }}
+      >
         <SharedModalHeader>
           <SharedModalTitle>Your records</SharedModalTitle>
           <SharedModalDescription id="your-records-description">
