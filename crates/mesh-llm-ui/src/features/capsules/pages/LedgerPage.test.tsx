@@ -118,18 +118,14 @@ describe('LedgerPageContent', () => {
   it('shows the premise line', () => {
     render(<LedgerPageContent />, { wrapper: makeWrapper() })
 
-    expect(
-      screen.getByText('Everything here is checked on this machine, from sealed records.')
-    ).toBeInTheDocument()
+    expect(screen.getByText('Everything here is checked on this machine, from sealed records.')).toBeInTheDocument()
   })
 
   it('Item 4: the honesty banner STAYS visible while the chip (i)s carry their detail (hovers explain, never hide, the banner)', () => {
     render(<LedgerPageContent />, { wrapper: makeWrapper() })
 
     // The load-bearing banner is still on the face -- hovers do not replace it.
-    expect(
-      screen.getByText('Everything here is checked on this machine, from sealed records.')
-    ).toBeInTheDocument()
+    expect(screen.getByText('Everything here is checked on this machine, from sealed records.')).toBeInTheDocument()
 
     // The Live/Local + "This node's copy" chips each carry an (i) whose
     // aria-describedby holds the moved honest sentence.
@@ -697,7 +693,7 @@ describe('LedgerPageContent — Part 3: Exchanges two-sided stream + row inspect
     // exchange whose peer is unrecorded), so the gated text names that truth.
     expect(screen.getByText('Other side: not known')).toBeInTheDocument()
     expect(screen.queryByText('nothing to ask yet')).not.toBeInTheDocument()
-    expect(screen.queryByText("You haven’t asked for their record.")).not.toBeInTheDocument()
+    expect(screen.queryByText('You haven’t asked for their record.')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Ask them for their record' })).not.toBeInTheDocument()
 
     // `▸ checks` expands the full nine-property detail inline, under the
@@ -781,7 +777,7 @@ describe('LedgerPageContent — Part 3: Exchanges two-sided stream + row inspect
     render(<LedgerPageContent />, { wrapper: makeWrapper() })
     await user.click(screen.getByRole('tab', { name: /exchanges/i }))
 
-    expect(await screen.findByText("You haven’t asked for their record.")).toBeInTheDocument()
+    expect(await screen.findByText('You haven’t asked for their record.')).toBeInTheDocument()
     const askButton = screen.getByRole('button', { name: 'Ask them for their record' })
 
     await user.click(askButton)
@@ -1156,12 +1152,19 @@ describe('LedgerPageContent — Part T6: Integrity section completion', () => {
     // Its own card: an earlier test's `mockResolvedValue` survives
     // `clearAllMocks`, and a reported checkpoint changes the sentence.
     const { fetchPaneA } = await import('@/features/capsules/api/sidecarClient')
-    vi.mocked(fetchPaneA).mockResolvedValue({ rows: [], operator: null, witness_checkpoint_supplied: false, card: null })
+    vi.mocked(fetchPaneA).mockResolvedValue({
+      rows: [],
+      operator: null,
+      witness_checkpoint_supplied: false,
+      card: null
+    })
     const user = userEvent.setup()
     render(<LedgerPageContent />, { wrapper: makeWrapper() })
     await user.click(screen.getByRole('tab', { name: /integrity/i }))
 
-    expect(await screen.findByText('Continuity: not established. It needs a prior checkpoint for the next one to bind to.')).toBeInTheDocument()
+    expect(
+      await screen.findByText('Continuity: not established. It needs a prior checkpoint for the next one to bind to.')
+    ).toBeInTheDocument()
     // Registration is explained once, in step 1 -- never repeated here (finding 7).
     expect(screen.queryByText(/^Registration is a separate step/)).not.toBeInTheDocument()
   })
@@ -1190,7 +1193,9 @@ describe('LedgerPageContent — Part T6: Integrity section completion', () => {
     const details = screen.getByTestId('integrity-details')
     expect(details.tagName).toBe('DETAILS')
     expect(details).not.toHaveAttribute('open')
-    expect(within(details).getByText(/^Capture boundary: the plugin at this node’s serving boundary/)).toBeInTheDocument()
+    expect(
+      within(details).getByText(/^Capture boundary: the plugin at this node’s serving boundary/)
+    ).toBeInTheDocument()
   })
 
   it('offers a range-wide "Save evidence file" action, distinct from the Exchanges one', async () => {

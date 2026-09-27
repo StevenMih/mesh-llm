@@ -3,11 +3,7 @@
 // OWN data source -- the capsule ledger the admission-policy plugin writes to
 // disk -- and never joins into mesh-llm's own log store.
 import { env } from '@/lib/env'
-import type {
-  CapsuleLedger,
-  CapsuleRecord,
-  DisclosurePreimage
-} from '@/features/capsules/api/types'
+import type { CapsuleLedger, CapsuleRecord, DisclosurePreimage } from '@/features/capsules/api/types'
 
 const LEDGER_BASE = `${env.managementApiUrl}/api/capsules/ledger`
 
@@ -71,4 +67,3 @@ export async function fetchDisclosurePreimage(capsuleId: string): Promise<Disclo
     return null
   }
 }
-

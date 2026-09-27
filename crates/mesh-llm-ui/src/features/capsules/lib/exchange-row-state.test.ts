@@ -167,7 +167,13 @@ describe('deriveRightCellState — the ONE gate: pushed and fetched halves take 
   // `pushed-half-recompute.test.ts`; here it is supplied as the pane query
   // delivers it.
   function pushedRow(theirs: PaneCRow['theirs'], overrides: Partial<PaneCRow> = {}): PaneCRow {
-    return paneCRow({ unilateral: false, mine: fixtureMineCell(), theirs, digest_match: { state: 'verified' }, ...overrides })
+    return paneCRow({
+      unilateral: false,
+      mine: fixtureMineCell(),
+      theirs,
+      digest_match: { state: 'verified' },
+      ...overrides
+    })
   }
 
   it('a pushed half that agrees closes on the LIST path (no recompute, no local record passed)', () => {
@@ -201,11 +207,15 @@ describe('deriveRightCellState — the ONE gate: pushed and fetched halves take 
   })
 
   it('a pushed body that does not recompute to its capsule_id -> CONTRADICTED', () => {
-    expect(deriveRightCellState(pushedRow({ ...fixtureTheirsCell('agrees'), id_match: false })).kind).toBe('contradicted')
+    expect(deriveRightCellState(pushedRow({ ...fixtureTheirsCell('agrees'), id_match: false })).kind).toBe(
+      'contradicted'
+    )
   })
 
   it('a door verdict other than true -> not CLOSED', () => {
-    expect(deriveRightCellState(pushedRow({ ...fixtureTheirsCell('agrees'), signature_ok: false })).kind).toBe('open_not_held')
+    expect(deriveRightCellState(pushedRow({ ...fixtureTheirsCell('agrees'), signature_ok: false })).kind).toBe(
+      'open_not_held'
+    )
   })
 
   it('PROVISIONAL provider check (i): a pushed body naming a different server -> not CLOSED', () => {
@@ -215,19 +225,23 @@ describe('deriveRightCellState — the ONE gate: pushed and fetched halves take 
   })
 
   it('the fetch path takes the SAME predicate: agreeing, signed, same provider -> CLOSED', () => {
-    expect(deriveRightCellState(paneCRow(), fetched({ peerRecord: citingPeerRecord() }), localRecordWithDigests()).kind).toBe(
-      'closed'
-    )
+    expect(
+      deriveRightCellState(paneCRow(), fetched({ peerRecord: citingPeerRecord() }), localRecordWithDigests()).kind
+    ).toBe('closed')
   })
 
   it('the fetch path takes the SAME predicate: digests differ -> CONTRADICTED', () => {
     const peerRecord = fixtureHalfBody({ capsuleId: 'a'.repeat(64), responseDigest: 'e'.repeat(64) })
-    expect(deriveRightCellState(paneCRow(), fetched({ peerRecord }), localRecordWithDigests()).kind).toBe('contradicted')
+    expect(deriveRightCellState(paneCRow(), fetched({ peerRecord }), localRecordWithDigests()).kind).toBe(
+      'contradicted'
+    )
   })
 
   it('the fetch path takes the SAME predicate: a different provider -> not CLOSED', () => {
     const peerRecord = fixtureHalfBody({ capsuleId: 'a'.repeat(64), servedBy: 'd'.repeat(64) })
-    expect(deriveRightCellState(paneCRow(), fetched({ peerRecord }), localRecordWithDigests()).kind).toBe('open_not_held')
+    expect(deriveRightCellState(paneCRow(), fetched({ peerRecord }), localRecordWithDigests()).kind).toBe(
+      'open_not_held'
+    )
   })
 
   it('a live fetch this browser ran wins over the pushed evidence on the same row', () => {
@@ -417,7 +431,9 @@ describe('rightCellDetail — Item 4: the fuller story behind each state, moved 
 
   it('never names a banned word, even to deny it, and none of the engineer’s words', () => {
     for (const kind of ALL_KINDS) {
-      expect(rightCellDetail(stateOf(kind))).not.toMatch(/\b(reputation|judgement|capsule id|half|halves|recomputed?)\b/i)
+      expect(rightCellDetail(stateOf(kind))).not.toMatch(
+        /\b(reputation|judgement|capsule id|half|halves|recomputed?)\b/i
+      )
     }
   })
 
@@ -450,9 +466,7 @@ describe('rightCellAction', () => {
     expect(rightCellAction(stateOf('closed'))).toBeNull()
     expect(rightCellAction(stateOf('open_not_held'))).toBeNull()
     expect(rightCellAction(stateOf('open_not_given'))).toBeNull()
-    for (const kind of ALL_KINDS.filter(
-      (k) => k !== 'closed' && k !== 'open_not_held' && k !== 'open_not_given'
-    )) {
+    for (const kind of ALL_KINDS.filter((k) => k !== 'closed' && k !== 'open_not_held' && k !== 'open_not_given')) {
       expect(rightCellAction(stateOf(kind))).not.toBeNull()
     }
   })

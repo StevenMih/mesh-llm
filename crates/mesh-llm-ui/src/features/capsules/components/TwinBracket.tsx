@@ -19,7 +19,11 @@ import type { ExchangeLedgerRow } from '@/features/capsules/lib/exchange-ledger'
 import { saveTextFile } from '@/features/capsules/lib/exchange-export'
 import { InfoHover } from '@/features/capsules/components/InfoHover'
 import { TWIN_NO_VERDICT_TOOLTIP } from '@/features/capsules/lib/tooltip-copy'
-import { twinComparisonParametersLine, twinDisclosureSentence, twinResponseTexts } from '@/features/capsules/lib/twin-bracket'
+import {
+  twinComparisonParametersLine,
+  twinDisclosureSentence,
+  twinResponseTexts
+} from '@/features/capsules/lib/twin-bracket'
 
 const diffViewerStyles = {
   diffContainer: {
@@ -56,7 +60,15 @@ export function TwinBracket({ bracketId, rows, twinSampleRateDenominator, childr
   const canCompare = textA !== null && textB !== null
 
   const handleSave = () => {
-    saveTextFile(`twin-bracket-${bracketId}.json`, JSON.stringify(rows.map((row) => row.raw), null, 2), 'application/json')
+    saveTextFile(
+      `twin-bracket-${bracketId}.json`,
+      JSON.stringify(
+        rows.map((row) => row.raw),
+        null,
+        2
+      ),
+      'application/json'
+    )
   }
 
   return (

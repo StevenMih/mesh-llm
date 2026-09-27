@@ -126,9 +126,17 @@ describe('buildSetupSteps — ledger-ux-from-the-user §6, three steps in value 
   it('p2 item 3: the checks panel binding fact and Integrity step 2 say the same thing from the same owner', () => {
     const binding = (linked: boolean) =>
       buildChecksRows(
-        { exchange_key: 'e', role_tag: 'ASKED', header_state: 'ok', properties: null, has_issue: false,
-          mine: { state: 'present', capsule_id: 'm' }, theirs: { state: 'absent', capsule_id: null },
-          unilateral: true, timestamp: null },
+        {
+          exchange_key: 'e',
+          role_tag: 'ASKED',
+          header_state: 'ok',
+          properties: null,
+          has_issue: false,
+          mine: { state: 'present', capsule_id: 'm' },
+          theirs: { state: 'absent', capsule_id: null },
+          unilateral: true,
+          timestamp: null
+        },
         { idMatch: null, signatureOk: null } as RecomputedIdentity,
         undefined,
         { ownerLinked: linked }
@@ -273,7 +281,9 @@ describe('once-per-node facts — never fabricated, never per-row', () => {
   })
 
   it('continuity default prose names what would establish it: a PRIOR checkpoint, not registration', () => {
-    expect(CONTINUITY_NOT_ESTABLISHED).toBe('Continuity: not established. It needs a prior checkpoint for the next one to bind to.')
+    expect(CONTINUITY_NOT_ESTABLISHED).toBe(
+      'Continuity: not established. It needs a prior checkpoint for the next one to bind to.'
+    )
     expect(CONTINUITY_NOT_ESTABLISHED).not.toMatch(/regist/i)
   })
 
@@ -284,7 +294,9 @@ describe('once-per-node facts — never fabricated, never per-row', () => {
       'Continuity: 1 checkpoint so far. The next one will be checked against it. A witness is what lets someone else check it too.'
     )
     // Never claims each checkpoint binds to the one before -- not reported.
-    expect(continuityFact(3)).toBe('Continuity: 3 checkpoints so far. A witness is what lets someone else check them too.')
+    expect(continuityFact(3)).toBe(
+      'Continuity: 3 checkpoints so far. A witness is what lets someone else check them too.'
+    )
   })
 
   it('the Sealed tile reconciles records with exchanges (finding 3)', () => {
