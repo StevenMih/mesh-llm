@@ -253,4 +253,25 @@ mod tests {
         assert_eq!(event.exchange_id, "exchange-two");
         assert_eq!(event.payment_hash.as_deref(), Some("public-hash"));
     }
+
+    /// A subscribing plugin recomputes `event_ref` with its own JCS and refuses
+    /// the event on a mismatch. The capsule-emit-mesh admission-policy plugin
+    /// pins this exact value for this exact event in its own test
+    /// (`event_ref_matches_an_independent_digest`), so the two sides are held
+    /// to one fixture.
+    #[test]
+    fn event_ref_matches_the_value_a_subscribing_plugin_pins() {
+        let (sender, mut receiver) = mpsc::channel(8);
+        let observations = Observations {
+            sender: Some(sender),
+            exchange_id: "exchange-one".into(),
+            terms_digest: "7d".repeat(32),
+        };
+        observations.accepted(100);
+        let event = receiver.try_recv().unwrap();
+        assert_eq!(
+            event.event_ref,
+            "f7c6847a6fbfcb6bc6ccc26bdb748b333e22946c70a4aa5684a60ba1c882b634"
+        );
+    }
 }

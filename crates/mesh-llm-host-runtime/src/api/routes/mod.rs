@@ -1,5 +1,6 @@
 mod capsule_panes;
 mod capsule_panes_native;
+mod capsule_panes_settlement;
 mod capsules;
 mod chat;
 mod control_apply_diagnostics;
@@ -55,7 +56,8 @@ pub(super) const DISPATCH_REQUEST: DispatchRequestFn =
                     Ok(true)
                 }
                 ("GET", route_path) if capsule_panes::is_route(route_path) => {
-                    capsule_panes::handle(stream, path, route_path).await?;
+                    let payments = capsule_panes::payments_presence(state).await;
+                    capsule_panes::handle(stream, path, route_path, payments).await?;
                     Ok(true)
                 }
                 ("GET", route_path) if capsules::is_route(route_path) => {

@@ -19,7 +19,11 @@
 //! bridge into `mesh-llm-log-store`, never a place that derives or caches a
 //! value itself.
 
-use super::super::http::{respond_bytes, respond_error};
+use super::super::{
+    MeshApi,
+    http::{respond_bytes, respond_error},
+};
+pub(super) use super::capsule_panes_native::PaymentsPresence;
 use tokio::net::TcpStream;
 use url::Url;
 
@@ -92,10 +96,36 @@ fn status_text(code: u16) -> &'static str {
     }
 }
 
+/// Asks the host's payments capability whether this node has a provider, so
+/// the panes can say "payments off" rather than show zero settled. Read once
+/// per pane request, like the ledger.
+pub(super) async fn payments_presence(state: &MeshApi) -> PaymentsPresence {
+    #[cfg(feature = "payments")]
+    {
+        let node = state.inner.lock().await.node.clone();
+        // No plugin manager yet means the node is still starting, not that
+        // payments are off.
+        let Some(plugins) = node.plugin_manager().await else {
+            return PaymentsPresence::Unknown;
+        };
+        match crate::network::payments::client::has_provider(&plugins).await {
+            Ok(true) => PaymentsPresence::On,
+            Ok(false) => PaymentsPresence::Off,
+            Err(_) => PaymentsPresence::Unknown,
+        }
+    }
+    #[cfg(not(feature = "payments"))]
+    {
+        let _ = state;
+        PaymentsPresence::Off
+    }
+}
+
 pub(super) async fn handle(
     stream: &mut TcpStream,
     path: &str,
     path_only: &str,
+    payments: PaymentsPresence,
 ) -> anyhow::Result<()> {
     let Some(pane) = path_only.strip_prefix(ROUTE_PREFIX) else {
         return respond_error(stream, 404, "Not found").await;
@@ -105,7 +135,7 @@ pub(super) async fn handle(
     }
 
     if panes_source() == PanesSource::Native {
-        return handle_native(stream, path, pane).await;
+        return handle_native(stream, path, pane, payments).await;
     }
     handle_sidecar_forward(stream, path, pane).await
 }
@@ -113,12 +143,20 @@ pub(super) async fn handle(
 /// [mesh-C3-ledger-tab-reads-plugin-not-sidecar]: local read of the
 /// plugin-written ledger -- no sidecar process, no network call, so an
 /// unreachable/absent sidecar cannot break this path.
-async fn handle_native(stream: &mut TcpStream, path: &str, pane: &str) -> anyhow::Result<()> {
+async fn handle_native(
+    stream: &mut TcpStream,
+    path: &str,
+    pane: &str,
+    payments: PaymentsPresence,
+) -> anyhow::Result<()> {
     let ledger_dir = super::capsules::ledger_dir();
     let exchange_id = exchange_id_query_param(path);
-    let Some(payload) =
-        super::capsule_panes_native::build_pane_json(pane, &ledger_dir, exchange_id.as_deref())
-    else {
+    let Some(payload) = super::capsule_panes_native::build_pane_json(
+        pane,
+        &ledger_dir,
+        exchange_id.as_deref(),
+        payments,
+    ) else {
         return respond_error(stream, 404, "Not found").await;
     };
     let body = match serde_json::to_vec(&payload) {
@@ -216,6 +254,7 @@ mod tests {
             &mut server,
             "/api/capsules/panes/pane-z",
             "/api/capsules/panes/pane-z",
+            PaymentsPresence::Off,
         )
         .await
         .unwrap();
@@ -246,6 +285,7 @@ mod tests {
             &mut server,
             "/api/capsules/panes/pane-a",
             "/api/capsules/panes/pane-a",
+            PaymentsPresence::Off,
         )
         .await
         .unwrap();
@@ -299,6 +339,7 @@ mod tests {
             &mut inbound_server,
             "/api/capsules/panes/pane-c?limit=5&evil=x&exchange_id=abc",
             "/api/capsules/panes/pane-c",
+            PaymentsPresence::Off,
         )
         .await
         .unwrap();
@@ -376,6 +417,7 @@ mod tests {
             &mut server,
             "/api/capsules/panes/pane-a",
             "/api/capsules/panes/pane-a",
+            PaymentsPresence::Off,
         )
         .await
         .unwrap();
