@@ -132,8 +132,8 @@ export const CHAT_EVIDENCE_CHIP_TOOLTIPS = {
   they_have_none: 'This node sealed a record of this exchange. The other side says they have no record of it.'
 } as const
 
-/** [mesh-chat-evidence-chip] The link on a Logs request row that has an
- *  exchange id. Evidence opens the row whose sealed record names that id. */
+/** [mesh-chat-evidence-chip] The link on a Logs request row, shown only when a
+ *  sealed record this node holds names the row's exchange id. */
 export const LOGS_EVIDENCE_LINK_TOOLTIP = 'Open the sealed record of this exchange in Evidence.'
 
 /** The row's chip strip (`content · sig · inclusion · registered · theirs`).
