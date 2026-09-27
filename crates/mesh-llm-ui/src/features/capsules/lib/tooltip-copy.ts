@@ -117,6 +117,24 @@ export const CLOSED_CELL_TOOLTIPS = {
   response: 'The same answer as in your record.'
 } as const
 
+/** [mesh-chat-evidence-chip] The chip under an assistant message in Chat,
+ *  one per state it can show. A click opens the exchange in Evidence. */
+export const CHAT_EVIDENCE_CHIP_TOOLTIPS = {
+  confirmed:
+    'This node sealed a record of this exchange. The other side sent their own signed record, it checks out on this machine, and it has the same request and answer.',
+  awaiting: 'This node sealed a record of this exchange. The other side’s record hasn’t arrived yet.',
+  not_asked: 'This node sealed a record of this exchange. You haven’t asked the other side for theirs.',
+  differs:
+    'This node sealed a record of this exchange. The other side’s record disagrees about the request or the answer.',
+  declined:
+    'This node sealed a record of this exchange. The other side declined to share theirs and signed the refusal.',
+  they_have_none: 'This node sealed a record of this exchange. The other side says they have no record of it.'
+} as const
+
+/** [mesh-chat-evidence-chip] The link on a Logs request row that has an
+ *  exchange id. Evidence opens the row whose sealed record names that id. */
+export const LOGS_EVIDENCE_LINK_TOOLTIP = 'Open the sealed record of this exchange in Evidence.'
+
 /** The row's chip strip (`content · sig · inclusion · registered · theirs`).
  *  Hover gives the meaning; a click still opens the full check. */
 export const ENTRY_CHIP_TOOLTIPS = {

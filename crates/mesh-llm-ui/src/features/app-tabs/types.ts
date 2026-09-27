@@ -178,6 +178,8 @@ export type ThreadMessage = {
   tokens?: string
   tokPerSec?: string
   ttft?: string
+  /** [mesh-chat-evidence-chip] finds this turn's sealed record. */
+  evidenceClientNonce?: string
   inspectMessage?: TransparencyMessage
   inspectLabel?: string
 }

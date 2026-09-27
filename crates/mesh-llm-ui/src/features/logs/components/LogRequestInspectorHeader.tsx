@@ -68,7 +68,7 @@ export function LogRequestInspectorHeader({ requestId, knownRequest }: LogReques
           type="button"
           variant="ghost"
         >
-          Open in Ledger
+          Open in Evidence
           <ArrowUpRight aria-hidden="true" className="size-3" />
         </Button>
       ) : null}

@@ -7,16 +7,35 @@ export type ChatResponseMetadata = {
   usage?: ChatUsage
   timings?: ChatTimings
   servedBy?: string
+  /** `x-capsule-client-nonce`, echoed by the serving frontend; on a turn sent
+   *  to a peer it is sealed into this node's requester record. */
+  evidenceClientNonce?: string
 }
 
 export type ThreadMessageMetadata = Pick<
   ThreadMessage,
-  'model' | 'route' | 'routeNode' | 'tokens' | 'tokPerSec' | 'ttft'
+  'model' | 'route' | 'routeNode' | 'tokens' | 'tokPerSec' | 'ttft' | 'evidenceClientNonce'
 >
 
-const metadataKeys = ['model', 'route', 'routeNode', 'tokens', 'tokPerSec', 'ttft'] satisfies Array<
-  keyof ThreadMessageMetadata
->
+const metadataKeys = [
+  'model',
+  'route',
+  'routeNode',
+  'tokens',
+  'tokPerSec',
+  'ttft',
+  'evidenceClientNonce'
+] satisfies Array<keyof ThreadMessageMetadata>
+
+/** [mesh-chat-evidence-chip] The client nonce the serving frontend echoes on
+ *  its responses, streaming or not (`openai-frontend` router.rs
+ *  `frontend_lifecycle_middleware`; the host's `/api/responses` proxy passes
+ *  headers through). A response the host writes itself carries none, and
+ *  absent stays absent. */
+export function evidenceNonceFromHeaders(headers: Headers): Pick<ChatResponseMetadata, 'evidenceClientNonce'> {
+  const nonce = headers.get('x-capsule-client-nonce')?.trim()
+  return nonce ? { evidenceClientNonce: nonce } : {}
+}
 
 function formatTokenCount(value: number | undefined): string | undefined {
   if (typeof value !== 'number' || !Number.isFinite(value)) return undefined
@@ -62,7 +81,8 @@ export function responseMetadataToThreadMessage(metadata: ChatResponseMetadata):
     routeNode: servedBy,
     tokens: formatTokenCount(outputTokens),
     tokPerSec: formatTokPerSec(outputTokens, metadata.timings?.decode_time_ms, metadata.timings?.total_time_ms),
-    ttft: formatMilliseconds(metadata.timings?.ttft_ms)
+    ttft: formatMilliseconds(metadata.timings?.ttft_ms),
+    evidenceClientNonce: metadata.evidenceClientNonce
   }
 }
 

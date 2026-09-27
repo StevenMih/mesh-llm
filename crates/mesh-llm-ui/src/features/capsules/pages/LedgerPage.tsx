@@ -24,6 +24,7 @@ import { fetchCapsuleLedger } from '@/features/capsules/api/client'
 import type { CapsuleRecord, JsonRecord } from '@/features/capsules/api/types'
 import { PaneFetchError, fetchPaneA, fetchPaneB, fetchPaneCList } from '@/features/capsules/api/sidecarClient'
 import { balanceCoverage } from '@/features/capsules/lib/balance-view'
+import { evidenceRowKeyForLink } from '@/features/capsules/lib/chat-evidence-link'
 import { LedgerPeersTable } from '@/features/capsules/components/LedgerPeersTable'
 import { InfoHover } from '@/features/capsules/components/InfoHover'
 import { ExchangeStreamRow } from '@/features/capsules/components/ExchangeStreamRow'
@@ -56,6 +57,7 @@ import {
   isTwinBracketGroup,
   pageBoundaryContinuity,
   pageIndexForGroupKey,
+  pageIndexForRowKey,
   pageRowRange,
   paginateGroups,
   windowBannerHeadline
@@ -557,18 +559,27 @@ function ExchangesSection({
   // highlight it, and expand its checks inline -- once per distinct key
   // (guarded by the ref) so a background refetch never silently re-expands a
   // panel the reader already collapsed.
+  // [mesh-chat-evidence-chip] The key may be a row key or the host-minted
+  // exchange id Logs carries; the latter resolves through the record naming it.
+  const focusRowKey = useMemo(
+    () =>
+      focusExchangeKey
+        ? evidenceRowKeyForLink(focusExchangeKey, query.data?.rows ?? [], [...recordsById.values()])
+        : null,
+    [focusExchangeKey, query.data, recordsById]
+  )
   useEffect(() => {
-    if (!focusExchangeKey || focusExchangeKey === handledFocusKeyRef.current) return
-    const targetPage = pageIndexForGroupKey(pages, focusExchangeKey)
+    if (!focusRowKey || focusRowKey === handledFocusKeyRef.current) return
+    const targetPage = pageIndexForRowKey(pages, focusRowKey)
     if (targetPage === null) return
-    handledFocusKeyRef.current = focusExchangeKey
+    handledFocusKeyRef.current = focusRowKey
     // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional deep-link (external URL) to state sync, guarded above to run once per key
     setPageIndex(targetPage)
-    setHighlightedKey(focusExchangeKey)
-    setChecksExpandedKey(focusExchangeKey)
-    const rowIndexOnPage = flattenPage(pages[targetPage]).findIndex((row) => row.exchangeKey === focusExchangeKey)
+    setHighlightedKey(focusRowKey)
+    setChecksExpandedKey(focusRowKey)
+    const rowIndexOnPage = flattenPage(pages[targetPage]).findIndex((row) => row.exchangeKey === focusRowKey)
     setFocusedRowIndex(rowIndexOnPage >= 0 ? rowIndexOnPage : 0)
-  }, [focusExchangeKey, pages])
+  }, [focusRowKey, pages])
 
   // Keeps the keyboard cursor (j/k) and any deep-link/next-contradiction
   // jump visible without relying on ref plumbing into each row.

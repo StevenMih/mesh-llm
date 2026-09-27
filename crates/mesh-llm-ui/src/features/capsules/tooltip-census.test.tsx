@@ -408,7 +408,11 @@ describe('tooltip census -- the copy itself', () => {
       ...Object.values(COPY.SETTLEMENT_SOURCE_TOOLTIPS),
       COPY.PEER_PAYMENTS_TOOLTIP,
       COPY.CLOSE_CARD_TOOLTIP,
-      ...Object.values(RECORDS.SHARING_GOVERNS)
+      ...Object.values(RECORDS.SHARING_GOVERNS),
+      // [mesh-chat-evidence-chip] the Chat chip and the Logs link sit on
+      // other tabs' faces, so the same face rules apply.
+      ...Object.values(COPY.CHAT_EVIDENCE_CHIP_TOOLTIPS),
+      COPY.LOGS_EVIDENCE_LINK_TOOLTIP
     ]
     const dig = Object.values(COPY.CHECK_CHIP_TOOLTIPS)
     for (const text of [...face, ...dig]) {

@@ -105,6 +105,8 @@ describe('LedgerPageContent', () => {
   // test's own comment on that).
   beforeEach(async () => {
     const { fetchPaneA, fetchPaneB, fetchPaneCList } = await import('@/features/capsules/api/sidecarClient')
+    const { fetchCapsuleLedger } = await import('@/features/capsules/api/client')
+    vi.mocked(fetchCapsuleLedger).mockResolvedValue({ records: [], nodePubKeyPem: null })
     vi.mocked(fetchPaneA).mockResolvedValue({
       rows: [],
       operator: null,
@@ -1394,6 +1396,35 @@ describe('LedgerPageContent — Part B3: windowed paging + sticky header', () =>
     const checksRegion = await screen.findByRole('region', { name: /Security checks for exch-75/ })
     expect(checksRegion).toHaveTextContent('exch-75')
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  })
+
+  it('[mesh-chat-evidence-chip] a deep link carrying the exchange id Logs holds opens the row whose sealed record names it', async () => {
+    const { fetchPaneCList } = await import('@/features/capsules/api/sidecarClient')
+    const { fetchCapsuleLedger } = await import('@/features/capsules/api/client')
+    const digest = '7'.repeat(64)
+    const hostExchangeId = '956801c1-df95-4942-8642-5b9b570663a4'
+    const rows = makeManyPaneCRows(120)
+    rows[75] = { ...rows[75], exchange_key: `digest:${digest}` }
+    vi.mocked(fetchPaneCList).mockResolvedValue(b3PaneCPayload(rows))
+    vi.mocked(fetchCapsuleLedger).mockResolvedValue({
+      records: [
+        {
+          capsule_id: 'mine-75',
+          effect: { request_digest: digest },
+          model_attestation: {
+            compute_attestation: { 'x-mesh-poc-v1': { serving_provenance: { exchange_id: hostExchangeId } } }
+          }
+        }
+      ],
+      nodePubKeyPem: null
+    })
+
+    render(<LedgerPageContent focusExchangeKey={hostExchangeId} />, { wrapper: makeWrapper() })
+
+    const row = await screen.findByLabelText(`Exchange digest:${digest}`)
+    expect(row).toHaveAttribute('aria-current', 'true')
+    expect(row).toHaveAttribute('data-highlighted', 'true')
+    expect(screen.queryByRole('group', { name: 'Exchange exch-0' })).not.toBeInTheDocument()
   })
 
   // [mesh-console-evidence-tab-honesty-defects] finding 1 side effect: a

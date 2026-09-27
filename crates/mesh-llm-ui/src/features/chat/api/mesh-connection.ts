@@ -8,7 +8,7 @@ import { getClientId } from '@/lib/api/client-id'
 import { generateRequestId } from '@/lib/api/request-id'
 import type { ChatSSEEvent } from '@/lib/api/types'
 import { buildResponsesInput, type AttachmentUploadCache } from '@/features/chat/api/build-input'
-import type { ChatResponseMetadata } from '@/features/chat/api/response-metadata'
+import { evidenceNonceFromHeaders, type ChatResponseMetadata } from '@/features/chat/api/response-metadata'
 import { isMeshVirtualModel, syntheticMoaProgressKey } from '@/features/chat/lib/moa-progress'
 
 function nowMs() {
@@ -303,6 +303,9 @@ async function* runConnect(
     throw new Error('Response body is null')
   }
 
+  // [mesh-chat-evidence-chip] kept so the turn can find its sealed record.
+  const evidenceNonce = evidenceNonceFromHeaders(response.headers)
+
   let messageStarted = false
   let reasoningOpen = false
   const seenMeshProgress = new Set<string>()
@@ -362,7 +365,8 @@ async function* runConnect(
           ttft_ms: event.response.timings?.ttft_ms ?? fallbackTimings.ttft_ms,
           total_time_ms: event.response.timings?.total_time_ms ?? fallbackTimings.total_time_ms
         },
-        servedBy: event.response.served_by
+        servedBy: event.response.served_by,
+        ...evidenceNonce
       })
     }
   }
