@@ -29,6 +29,7 @@ import { Input } from '@/components/ui/input'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import type { CapsuleRecord } from '@/features/capsules/api/types'
 import { PeerTableRow } from '@/features/capsules/components/PeerTableRow'
+import type { PeerRoutingControls } from '@/features/capsules/api/usePeerBlocks'
 import type { PeerExchangeSource } from '@/features/capsules/lib/peer-exchange-timeline'
 import { peerEvidenceBundle, peerRowsToCsv } from '@/features/capsules/lib/peer-export'
 import type { PeerMeshStatusIndex } from '@/features/capsules/lib/peer-mesh-status'
@@ -100,6 +101,8 @@ export type LedgerPeersTableProps = {
   meshStatus: PeerMeshStatusIndex
   exchangeSourcesFor: (peerId: string) => readonly PeerExchangeSource[]
   recordsById: ReadonlyMap<string, CapsuleRecord>
+  /** Local block controls (§7.5); absent where no host store is wired. */
+  routing?: PeerRoutingControls
 }
 
 export function LedgerPeersTable({
@@ -109,7 +112,8 @@ export function LedgerPeersTable({
   advertisedUnusedRawPeers,
   meshStatus,
   exchangeSourcesFor,
-  recordsById
+  recordsById,
+  routing
 }: LedgerPeersTableProps) {
   const [search, setSearch] = useState('')
   const [alarmFilter, setAlarmFilter] = useState<Set<string>>(new Set(ALL_ALARM_VALUES))
@@ -310,6 +314,7 @@ export function LedgerPeersTable({
                 key={view.key}
                 meshStatus={meshStatus.statusFor(view.displayId)}
                 recordsById={recordsById}
+                routing={routing}
                 view={view}
                 visibleColumns={visibleColumns}
               />

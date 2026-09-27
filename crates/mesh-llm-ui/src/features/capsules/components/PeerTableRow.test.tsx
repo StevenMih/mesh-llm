@@ -18,6 +18,7 @@ import {
 } from '@/features/capsules/lib/peer-fixtures'
 import { deriveMeshStatus } from '@/features/capsules/lib/peer-mesh-status'
 import { advertisedOnlyRowView, dealtWithRowView, SELF_REPORTED_NOTE } from '@/features/capsules/lib/peer-row-view'
+import { ROUTING_STOPPED_LABEL, ROUTING_STOPPED_TOOLTIP } from '@/features/capsules/lib/tooltip-copy'
 
 const [CLEAN_ROW, ALARMED_ROW] = HARNESS_PANE_B_PAYLOAD.rows
 
@@ -154,5 +155,34 @@ describe('PeerTableRow — advertised-but-unused peers (no Pane B row)', () => {
 
     await user.click(screen.getByText('node:unused-peer'))
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  })
+})
+
+describe('PeerTableRow -- a peer this node stopped routing to (§7.5)', () => {
+  const NODE = 'a70d3967bea3b22fa48a28f77c5d2b3764fc8bd5204a82c09ff8430f3f2a0a00'
+  const row = { ...CLEAN_ROW, identity: { node_id: NODE, node_id_source: 'your_records' as const } }
+  const routing = (until: number | null) => ({
+    blocks: { blocks: { [NODE]: { blocked_at_ms: 0, until_ms: until } }, choices: [] },
+    block: vi.fn(),
+    unblock: vi.fn(),
+    failedFor: null
+  })
+
+  it('says so on the row, as a fact with a one-sentence hover', () => {
+    renderInTable(<PeerTableRow meshStatus={null} routing={routing(null)} view={dealtWithRowView(row)} />)
+    const chip = screen.getByText(ROUTING_STOPPED_LABEL).closest('[aria-describedby]') as HTMLElement
+    const describedBy = chip.getAttribute('aria-describedby') as string
+    expect(document.getElementById(describedBy)?.textContent).toBe(ROUTING_STOPPED_TOOLTIP)
+  })
+
+  it('no chip for a peer the store does not list as blocked', () => {
+    renderInTable(
+      <PeerTableRow
+        meshStatus={null}
+        routing={{ ...routing(null), blocks: { blocks: {}, choices: [] } }}
+        view={dealtWithRowView(row)}
+      />
+    )
+    expect(screen.queryByText(ROUTING_STOPPED_LABEL)).not.toBeInTheDocument()
   })
 })

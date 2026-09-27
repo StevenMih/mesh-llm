@@ -301,6 +301,9 @@ describe('once-per-node facts — never fabricated, never per-row', () => {
 
   it('the Sealed tile reconciles records with exchanges (finding 3)', () => {
     expect(sealedBreakdownText(5, 3)).toBe('5 yours · 3 received from the other side')
+    // A block and its undo are sealed, counted apart from exchanges.
+    expect(sealedBreakdownText(5, 3, 2)).toBe('5 yours · 3 received from the other side · 2 routing choices')
+    expect(sealedBreakdownText(5, 3, 1)).toBe('5 yours · 3 received from the other side · 1 routing choice')
   })
 })
 

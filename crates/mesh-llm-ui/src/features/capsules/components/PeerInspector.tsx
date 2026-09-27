@@ -25,17 +25,12 @@ import type { PaneBRow } from '@/features/capsules/api/sidecarTypes'
 import { toneForState } from '@/features/capsules/lib/assurance-tone'
 import type { PeerTimelinePoint } from '@/features/capsules/lib/peer-exchange-timeline'
 import type { PeerMeshStatus } from '@/features/capsules/lib/peer-mesh-status'
-import {
-  adjudicationSummary,
-  adjudicationSummaryText,
-  meshMetaLine,
-  peerDisplayId,
-  theirChainSummary,
-  withYouCounts,
-  withYouCountsText
-} from '@/features/capsules/lib/peer-row-view'
+import { meshMetaLine, peerDisplayId, theirChainSummary } from '@/features/capsules/lib/peer-row-view'
+import { dealingsLines } from '@/features/capsules/lib/peer-routing-view'
 import { PeerExchangeInspector } from '@/features/capsules/components/PeerExchangeInspector'
-import { PEER_INSPECTOR_HEADER } from '@/features/capsules/lib/tooltip-copy'
+import { PeerRoutingSection } from '@/features/capsules/components/PeerRoutingSection'
+import type { PeerRoutingControls } from '@/features/capsules/api/usePeerBlocks'
+import { PEER_INSPECTOR_HEADER, YOUR_DEALINGS_TITLE } from '@/features/capsules/lib/tooltip-copy'
 import { PeerTimeline } from '@/features/capsules/components/PeerTimeline'
 
 export type PeerInspectorProps = {
@@ -44,13 +39,21 @@ export type PeerInspectorProps = {
   row: PaneBRow | null
   meshStatus: PeerMeshStatus | null
   points: readonly PeerTimelinePoint[]
+  /** Local block controls; absent where no host store is wired (tests). */
+  routing?: PeerRoutingControls
 }
 
 type PeerInspectorTab = 'overview' | 'timeline' | 'exchanges'
 
-function PeerOverviewTab({ row, meshStatus }: { row: PaneBRow; meshStatus: PeerMeshStatus | null }) {
-  const counts = withYouCounts(row)
-  const adjudication = adjudicationSummary(row)
+function PeerOverviewTab({
+  row,
+  meshStatus,
+  routing
+}: {
+  row: PaneBRow
+  meshStatus: PeerMeshStatus | null
+  routing: PeerRoutingControls | undefined
+}) {
   const chain = theirChainSummary(row)
   const metaLine = meshMetaLine(meshStatus)
   const latencyLabel = meshStatus?.latencyMs != null ? `${meshStatus.latencyMs} ms` : 'latency unknown'
@@ -68,9 +71,16 @@ function PeerOverviewTab({ row, meshStatus }: { row: PaneBRow; meshStatus: PeerM
         </p>
         <p className="mt-1 text-xs text-fg-faint">self-reported — not independently attested</p>
       </div>
-      <p>{withYouCountsText(counts)}</p>
-      <p>{adjudicationSummaryText(adjudication)}</p>
+      {/* §7.5: the drill answers "should I stop dealing with anyone?" --
+         your dealings with them, then the local block at the bottom. */}
+      <section aria-label={YOUR_DEALINGS_TITLE} className="flex flex-col gap-2">
+        <h3 className="text-xs font-medium text-foreground">{YOUR_DEALINGS_TITLE}</h3>
+        {dealingsLines(row).map((line) => (
+          <p key={line}>{line}</p>
+        ))}
+      </section>
       <p className="text-fg-faint">{chain.text}</p>
+      {routing ? <PeerRoutingSection routing={routing} row={row} /> : null}
     </div>
   )
 }
@@ -116,7 +126,7 @@ function PeerExchangesTab({
   )
 }
 
-export function PeerInspector({ open, onClose, row, meshStatus, points }: PeerInspectorProps) {
+export function PeerInspector({ open, onClose, row, meshStatus, points, routing }: PeerInspectorProps) {
   const [selectedPoint, setSelectedPoint] = useState<PeerTimelinePoint | null>(null)
 
   return (
@@ -153,7 +163,7 @@ export function PeerInspector({ open, onClose, row, meshStatus, points }: PeerIn
                   {
                     value: 'overview',
                     label: 'Overview',
-                    content: <PeerOverviewTab meshStatus={meshStatus} row={row} />
+                    content: <PeerOverviewTab meshStatus={meshStatus} routing={routing} row={row} />
                   },
                   {
                     value: 'timeline',

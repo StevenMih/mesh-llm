@@ -182,3 +182,27 @@ export const PEER_PAYMENTS_TOOLTIP =
 /** Integrity's Close card. */
 export const CLOSE_CARD_TOOLTIP =
   'Counts over the exchanges shown here: how many the other side confirmed, and how many were paid and settled by your wallet.'
+
+/** §7.5: the peer drill's routing section and its dialog. Local only, undoable,
+ *  and nobody is told; never a report, never a shared list. */
+export const ROUTING_BLOCK_COPY = {
+  sectionTitle: 'Routing to this peer',
+  routing: 'Your node sends requests to them as usual.',
+  noNodeId: 'Your own records don’t name this peer’s node id yet, so there is nothing to stop routing to.',
+  stopAction: 'Stop routing to this peer',
+  resumeAction: 'Resume routing',
+  dialogTitle: 'Stop routing to this peer?',
+  dialogLines: ['This is only on your node.', 'Nobody else is told.', 'You can undo it.'],
+  dialogDetail: 'Your node stops sending requests to them. They can still send requests to you.',
+  blockSevenDays: 'Block for 7 days',
+  blockUntilUndone: 'Block until I undo',
+  failed: 'That didn’t go through. The line above shows what is in force now.'
+} as const
+
+/** §7.2/§7.5: the drill section about what happened between you and this peer. */
+export const YOUR_DEALINGS_TITLE = 'Your dealings with them'
+
+/** The Peers row chip while routing to a peer is stopped. */
+export const ROUTING_STOPPED_LABEL = 'routing stopped'
+export const ROUTING_STOPPED_TOOLTIP =
+  'Your node isn’t sending requests to this peer, by your choice. Nobody else is told.'

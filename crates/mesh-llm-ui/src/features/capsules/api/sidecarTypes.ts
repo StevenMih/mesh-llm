@@ -157,6 +157,9 @@ export type PaneBPeerIdentity = {
   signing_key_id?: string | null
   endpoint_id?: string | null
   node_id?: string | null
+  /** Where `node_id` came from: this node's own records, or the peer's own
+   *  record naming itself. Absent on an older host. */
+  node_id_source?: 'your_records' | 'their_record' | null
 }
 
 export type PaneBRow = {

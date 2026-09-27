@@ -319,6 +319,15 @@ fn is_citing_record(record: &Value) -> bool {
     cited_counterparty_capsule_id(record).is_some()
 }
 
+/// True when `record` is this node's record of a local routing choice (the
+/// operator blocked or unblocked a peer; `peer_blocks`). Ours, and on the
+/// chain, but not an exchange: it never enters the Pane B/C correlation.
+fn is_local_routing_choice(record: &Value) -> bool {
+    record
+        .pointer("/model_attestation/compute_attestation/local_routing_choice")
+        .is_some()
+}
+
 /// The foreign `capsule_id` a citing record cites -- its `references[]` entry
 /// whose `citation_purpose == "counterparty_half"` (`references[].digest`, the
 /// CPB typed digest, which for a capsule IS its `capsule_id`). `None` when the
@@ -414,6 +423,7 @@ fn effective_ledger(ledger_dir: &Path) -> EffectiveLedger {
 
     let mut local_records: Vec<Value> = Vec::new();
     let mut citing_records: Vec<Value> = Vec::new();
+    let mut choice_records: Vec<Value> = Vec::new();
     let mut received_provenance: HashMap<String, ReceivedProvenance> = HashMap::new();
     let mut resolved_foreign: HashMap<String, Value> = HashMap::new();
     let mut settlement_records: Vec<Value> = Vec::new();
@@ -440,6 +450,9 @@ fn effective_ledger(ledger_dir: &Path) -> EffectiveLedger {
                     .or_insert_with(|| body.clone());
             }
             citing_records.push(record);
+        } else if is_local_routing_choice(&record) {
+            // Ours (Pane A), never an exchange half (Pane B/C).
+            choice_records.push(record);
         } else {
             // One of this node's own served/requester capsules.
             local_records.push(record);
@@ -454,6 +467,7 @@ fn effective_ledger(ledger_dir: &Path) -> EffectiveLedger {
     let mut our_records = local_records;
     our_records.extend(citing_records);
     our_records.extend(settlement_records);
+    our_records.extend(choice_records);
 
     EffectiveLedger {
         pane_bc_records,
@@ -722,6 +736,21 @@ pub(super) fn build_pane_a(records: &[Value], card: Value) -> Value {
                             "witness_checkpoint_supplied": false,
                         },
                     },
+                    "record": record,
+                });
+            }
+            if is_local_routing_choice(record) {
+                // The operator's own choice to stop (or resume) routing to a
+                // peer. Not a served model, no counterparty: an honest kind.
+                return json!({
+                    "capsule_id": record.get("capsule_id").cloned().unwrap_or(Value::Null),
+                    "timestamp": record.get("timestamp").cloned().unwrap_or(Value::Null),
+                    "kind": "local_routing_choice",
+                    "model_claimed": Value::Null,
+                    "hardware_claimed": Value::Null,
+                    "verify_ok": Value::Null,
+                    // No serving or counterparty facts to grade.
+                    "rungs": {},
                     "record": record,
                 });
             }
@@ -1241,6 +1270,10 @@ struct PeerIdentity {
     signing_key_id: Option<String>,
     endpoint_id: Option<String>,
     node_id: Option<String>,
+    /// `node_id` came from the peer's own record (a served half naming its
+    /// server), not from this node's records. A peer can name any node there,
+    /// so the console never offers to block by a self-asserted id.
+    node_id_self_asserted: bool,
 }
 
 impl PeerIdentity {
@@ -1255,6 +1288,7 @@ impl PeerIdentity {
         }
         if self.node_id.is_none() {
             self.node_id = other.node_id;
+            self.node_id_self_asserted = other.node_id_self_asserted;
         }
     }
 }
@@ -1273,7 +1307,9 @@ fn sibling_peer_identity(sibling: &Value, provenance: &ReceivedProvenance) -> Pe
     let endpoint_id = Some(provenance.received_from.trim())
         .filter(|s| !s.is_empty())
         .map(str::to_string);
-    let node_id = provenance.received_from_node_id.clone().or_else(|| {
+    let from_our_records = provenance.received_from_node_id.clone();
+    let node_id_self_asserted = from_our_records.is_none();
+    let node_id = from_our_records.or_else(|| {
         if label_role(sibling) == "served" {
             poc_block(sibling)
                 .and_then(|poc| poc.pointer("/serving_provenance/served_by_node_id"))
@@ -1284,10 +1320,12 @@ fn sibling_peer_identity(sibling: &Value, provenance: &ReceivedProvenance) -> Pe
             None
         }
     });
+    let node_id_self_asserted = node_id_self_asserted && node_id.is_some();
     PeerIdentity {
         signing_key_id,
         endpoint_id,
         node_id,
+        node_id_self_asserted,
     }
 }
 
@@ -1410,6 +1448,11 @@ fn identity_json(identity: Option<&PeerIdentity>) -> Value {
             "signing_key_id": identity.signing_key_id,
             "endpoint_id": identity.endpoint_id,
             "node_id": identity.node_id,
+            // Where the node id came from: this node's own records, or the
+            // peer's own record naming itself. Only the first can be blocked.
+            "node_id_source": identity.node_id.as_ref().map(|_| {
+                if identity.node_id_self_asserted { "their_record" } else { "your_records" }
+            }),
         }),
         None => Value::Null,
     }
@@ -2580,6 +2623,7 @@ mod tests {
             .find(|r| r["peer_id"] == json!(format!("node:{}", short_id(&their_node, 16))))
             .expect("the unlinked node row stays separate");
         assert_eq!(node_row["identity"]["node_id"], json!(their_node));
+        assert_eq!(node_row["identity"]["node_id_source"], json!("your_records"));
         assert_eq!(node_row["identity"]["signing_key_id"], Value::Null);
 
         // Exactly these two peers -- never an endpoint row AND a key row for
@@ -2595,6 +2639,38 @@ mod tests {
                 .any(|r| r["peer_id"] == json!("endpoint:e5ba9d1001"))
         );
         assert!(!rows.iter().any(|r| r["peer_id"] == Value::Null));
+    }
+
+    /// A pushed SERVED half naming its own server is the peer's claim, not
+    /// ours: the row carries that node id labelled `their_record`, so the
+    /// console never offers to block by it (a peer could name an honest node).
+    /// MUTANT: treat the served half's `served_by_node_id` as ours and the
+    /// source reads `your_records`.
+    #[test]
+    fn pane_b_labels_a_self_asserted_node_id_as_their_record() {
+        let peer_key = "71eb26f8e583ccc99e0ae72e1eee88ead06a81159d8e721ba98eeffe5c30550d";
+        let claimed = format!("b0b0{}", "4".repeat(60));
+        let local_requested = mesh_half_served_by(
+            "a".repeat(64).as_str(), "requested",
+            "d".repeat(64).as_str(), "e".repeat(64).as_str(), "me-1", &claimed);
+        let pushed_served = with_key(
+            mesh_half_served_by(
+                "b".repeat(64).as_str(), "served",
+                "d".repeat(64).as_str(), "e".repeat(64).as_str(), "them-1", &claimed),
+            peer_key,
+        );
+        let provenance: HashMap<String, ReceivedProvenance> =
+            [provenance_for("b".repeat(64).as_str(), "e5ba9d1001")].into_iter().collect();
+
+        let pane = build_pane_b(&[local_requested, pushed_served], &provenance);
+        let key_row = pane["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["peer_id"] == json!("key:71eb26f8e583ccc9"))
+            .expect("the pushing peer is keyed by its signing key");
+        assert_eq!(key_row["identity"]["node_id"], json!(claimed));
+        assert_eq!(key_row["identity"]["node_id_source"], json!("their_record"));
     }
 
     /// The bridge case: the citing record carries `received_from_node_id`
@@ -2656,6 +2732,7 @@ mod tests {
         assert_eq!(row["identity"]["signing_key_id"], json!(peer_key));
         assert_eq!(row["identity"]["endpoint_id"], json!("e5ba9d1001"));
         assert_eq!(row["identity"]["node_id"], json!(their_node));
+        assert_eq!(row["identity"]["node_id_source"], json!("your_records"));
         // exchange_count is DISTINCT exchanges by the ONE correlator, not the
         // record count: the served exchange's two halves (local_served +
         // pushed_requester) share request_digest d..d -> ONE exchange, and the
@@ -3115,6 +3192,48 @@ mod tests {
 
         let served = fixture_record("cap-1", "2026-09-01T00:00:00Z", "req-1", None);
         assert!(!is_citing_record(&served));
+    }
+
+    /// A routing-choice record is ours (Pane A) and never an exchange half
+    /// (Pane B/C), so blocking a peer never adds a row to Peers or Exchanges.
+    #[test]
+    fn routing_choice_records_are_ours_but_never_exchanges() {
+        let dir = tempfile::tempdir().unwrap();
+        let local = fixture_record("local-1", "2026-09-01T00:00:00Z", "req-1", None);
+        let choice = json!({
+            "capsule_id": "choice-1",
+            "timestamp": "2026-09-27T00:00:00Z",
+            "model_attestation": {"compute_attestation": {"local_routing_choice": {
+                "change": "block",
+                "peer_commitment": {"alg": "SHA-256", "digest": "d".repeat(64)},
+                "reason": "your_choice",
+                "until": null,
+                "scope": "this_node_only"
+            }}}
+        });
+        assert!(is_local_routing_choice(&choice));
+        assert!(!is_local_routing_choice(&local));
+        std::fs::write(
+            dir.path().join("capsules.jsonl"),
+            format!(
+                "{}\n{}\n",
+                serde_json::to_string(&local).unwrap(),
+                serde_json::to_string(&choice).unwrap()
+            ),
+        )
+        .unwrap();
+
+        let el = effective_ledger(dir.path());
+        let ids = |v: &[Value]| -> Vec<String> {
+            v.iter()
+                .map(|r| r["capsule_id"].as_str().unwrap().to_string())
+                .collect()
+        };
+        assert_eq!(ids(&el.pane_bc_records), vec!["local-1".to_string()]);
+        assert_eq!(
+            ids(&el.our_records),
+            vec!["local-1".to_string(), "choice-1".to_string()]
+        );
     }
 
     /// The held-artifact store reader: reads `received-capsules.jsonl` by

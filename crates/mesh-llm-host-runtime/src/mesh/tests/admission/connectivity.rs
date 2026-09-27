@@ -184,6 +184,62 @@ async fn test_on_demand_transitive_peer_connection_completes_gossip() -> Result<
     Ok(())
 }
 
+/// §7.5: a peer the operator blocked is skipped by the live host list, the
+/// any-host fallback and consultations, and routable again once unblocked.
+/// Split-serving stage selection is not covered (it reads `peers()`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn blocked_peer_is_skipped_by_routing_until_unblocked() -> Result<()> {
+    use crate::network::peer_blocks::{BlockLength, now_ms};
+    let host = make_test_node(super::super::NodeRole::Host { http_port: 9337 }).await?;
+    let client = make_test_node(super::super::NodeRole::Client).await?;
+    host.set_hosted_models(vec!["remote-coding-model".to_string()])
+        .await;
+    host.start_accepting();
+    client.start_accepting();
+    client.sync_from_peer_for_tests(&host).await;
+    wait_for_peer(&client, host.id()).await;
+    assert!(
+        client
+            .hosts_for_model("remote-coding-model")
+            .await
+            .contains(&host.id()),
+        "setup: the host is routable before any block"
+    );
+    assert_eq!(
+        client.any_host().await.map(|peer| peer.id),
+        Some(host.id()),
+        "setup: the host is the any-host fallback before any block"
+    );
+
+    client
+        .peer_blocks
+        .block(&host.id(), BlockLength::UntilUndone, now_ms())?;
+    assert!(
+        client.hosts_for_model("remote-coding-model").await.is_empty(),
+        "a blocked host is never offered for routing"
+    );
+    assert!(
+        client.any_host().await.is_none(),
+        "nor as the any-host fallback"
+    );
+    assert!(
+        client.routable_peers().await.iter().all(|peer| peer.id != host.id()),
+        "nor to a consultation (caption, audio, second opinion)"
+    );
+
+    client.peer_blocks.unblock(&host.id(), now_ms())?;
+    assert!(
+        client
+            .hosts_for_model("remote-coding-model")
+            .await
+            .contains(&host.id()),
+        "unblocking makes it routable again"
+    );
+    assert_eq!(client.any_host().await.map(|peer| peer.id), Some(host.id()));
+    assert!(client.routable_peers().await.iter().any(|peer| peer.id == host.id()));
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cached_unadmitted_connection_completes_gossip_before_reuse() -> Result<()> {
     let requester = make_test_node(super::super::NodeRole::Worker).await?;

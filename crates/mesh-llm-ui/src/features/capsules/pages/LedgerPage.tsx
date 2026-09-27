@@ -107,6 +107,7 @@ import {
 } from '@/features/capsules/lib/peer-row-view'
 import { useStatusQuery } from '@/features/network/api/use-status-query'
 import { useDataMode } from '@/lib/data-mode'
+import { usePeerRoutingControls } from '@/features/capsules/api/usePeerBlocks'
 import { HoverChip } from '@/features/capsules/components/HoverChip'
 import {
   CLOSE_CARD_TOOLTIP,
@@ -195,6 +196,7 @@ function PeersSection({ recordsById }: { recordsById: Map<string, CapsuleRecord>
   const navigate = useNavigate()
   const { mode } = useDataMode()
   const harnessMode = mode === 'harness'
+  const routing = usePeerRoutingControls()
   const query = useQuery({
     queryKey: ['ledger', 'pane-b', mode],
     queryFn: () => (harnessMode ? Promise.resolve(HARNESS_PANE_B_PAYLOAD) : fetchPaneB()),
@@ -301,6 +303,7 @@ function PeersSection({ recordsById }: { recordsById: Map<string, CapsuleRecord>
         exchangeSourcesFor={(peerId) => sourcesByPeerId.get(peerId) ?? []}
         meshStatus={meshStatus}
         recordsById={effectiveRecordsById}
+        routing={routing}
       />
     </div>
   )
@@ -1212,7 +1215,9 @@ function IntegritySection() {
   const receivedNoteCount = rows.filter((row) => row.kind === 'counterparty_half_citation').length
   // Payment records are this node's own log entries too, but not exchanges.
   const paymentRecordCount = rows.filter((row) => row.kind === 'settlement_observation').length
-  const ownExchangeCount = sealedCount - receivedNoteCount - paymentRecordCount
+  // §7.5: a block or unblock is sealed too, but it is not an exchange.
+  const routingChoiceCount = rows.filter((row) => row.kind === 'local_routing_choice').length
+  const ownExchangeCount = sealedCount - receivedNoteCount - paymentRecordCount - routingChoiceCount
   // Same predicate the Exchanges stream badge uses (`deriveRightCellState`,
   // called with no live fetch state here -- Integrity has no per-row peer
   // fetch to draw on) so the two sections can never again show
@@ -1270,7 +1275,7 @@ function IntegritySection() {
           <IntegrityStatCard
             info={INTEGRITY_TILE_INFO.sealed}
             label="Sealed"
-            sub={sealedBreakdownText(ownExchangeCount, receivedNoteCount, paymentRecordCount)}
+            sub={sealedBreakdownText(ownExchangeCount, receivedNoteCount, routingChoiceCount, paymentRecordCount)}
             value={sealedCount}
           />
           <IntegrityStatCard

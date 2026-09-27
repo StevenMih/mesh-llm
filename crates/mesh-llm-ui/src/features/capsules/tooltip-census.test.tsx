@@ -27,6 +27,7 @@ import {
   type RightCellStateKind
 } from '@/features/capsules/lib/exchange-row-state'
 import { peerAttention } from '@/features/capsules/lib/peer-row-view'
+import { dealingsLines, recordText, routingStateText } from '@/features/capsules/lib/peer-routing-view'
 import * as COPY from '@/features/capsules/lib/tooltip-copy'
 import { LedgerPageContent } from '@/features/capsules/pages/LedgerPage'
 
@@ -68,6 +69,7 @@ const REQUIRED = {
     'peer_column:witness',
     'peer_column:period',
     'peer:self_reported',
+    'peer:routing_stopped',
     'peer_attention:disagreements',
     'peer_attention:differingAnswers',
     'peer_attention:logFailed',
@@ -202,6 +204,9 @@ const PANE_C: PaneCListJson = {
 
 vi.mock('@/features/capsules/api/sidecarClient', () => ({
   fetchPaneA: vi.fn().mockResolvedValue({ rows: [], operator: null, witness_checkpoint_supplied: false, card: null }),
+  // Peer 0 carries settlement counts; peer 1 carries a full node id and a
+  // local block (§7.5), so both the payments line and the `routing stopped`
+  // chip are on screen for the census.
   fetchPaneB: vi.fn(async () => ({
     ...HARNESS_PANE_B_PAYLOAD,
     rows: HARNESS_PANE_B_PAYLOAD.rows.map((peer, index) =>
@@ -218,10 +223,20 @@ vi.mock('@/features/capsules/api/sidecarClient', () => ({
               provider_book: 'not_available'
             }
           }
-        : peer
+        : index === 1
+          ? { ...peer, identity: { node_id: 'f'.repeat(64), node_id_source: 'your_records' } }
+          : peer
     )
   })),
   fetchPaneCList: vi.fn(async () => PANE_C)
+}))
+vi.mock('@/features/capsules/api/peerBlocksClient', () => ({
+  fetchPeerBlocks: vi.fn(async () => ({
+    blocks: { ['f'.repeat(64)]: { blocked_at_ms: 0, until_ms: null } },
+    choices: []
+  })),
+  blockPeer: vi.fn(),
+  unblockPeer: vi.fn()
 }))
 vi.mock('@/features/capsules/api/client', () => ({
   fetchCapsuleLedger: vi.fn().mockResolvedValue({ records: [], nodePubKeyPem: null }),
@@ -324,6 +339,7 @@ describe('tooltip census -- the copy itself', () => {
       COPY.HERO_DESCRIPTION,
       ...Object.values(COPY.PEER_COLUMN_TOOLTIPS),
       COPY.SELF_REPORTED_TOOLTIP,
+      COPY.ROUTING_STOPPED_TOOLTIP,
       COPY.PEER_INSPECTOR_HEADER,
       ...Object.values(COPY.PEER_ATTENTION).flatMap((entry) => [entry.tooltip(1), entry.tooltip(2)]),
       ...Object.values(COPY.ROW_STATE_TOOLTIPS),
@@ -348,6 +364,24 @@ describe('tooltip census -- the copy itself', () => {
     }
     expect(face.flatMap((text) => checkWords(text, 'face'))).toEqual([])
     expect(dig.flatMap((text) => checkWords(text, 'dig'))).toEqual([])
+  })
+
+  it('the peer drill’s routing section and dialog carry no banned or engineer’s word, and never report or share', () => {
+    const texts = [
+      COPY.YOUR_DEALINGS_TITLE,
+      COPY.ROUTING_STOPPED_LABEL,
+      ...Object.values(COPY.ROUTING_BLOCK_COPY).flatMap((value) => (typeof value === 'string' ? [value] : [...value])),
+      // The composed lines the section shows, every variant.
+      routingStateText({ kind: 'stopped', untilMs: Date.UTC(2026, 9, 4), last: null }),
+      routingStateText({ kind: 'stopped', untilMs: null, last: null }),
+      routingStateText({ kind: 'routing', last: { change: 'unblock', peer: 'p', at_ms: 0, capsule_id: null } }),
+      ...(['block', 'unblock'] as const).flatMap((change) =>
+        [null, 'c'].map((capsule_id) => recordText({ change, peer: 'p', at_ms: 0, capsule_id }) ?? '')
+      ),
+      ...dealingsLines(HARNESS_PANE_B_PAYLOAD.rows[0])
+    ]
+    expect(texts.flatMap((text) => checkWords(text, 'face'))).toEqual([])
+    expect(texts.filter((text) => /\b(report|blocklist|flag|share|shared)\b/i.test(text))).toEqual([])
   })
 
   it('the row faces, actions and badges carry no banned or engineer’s word', () => {

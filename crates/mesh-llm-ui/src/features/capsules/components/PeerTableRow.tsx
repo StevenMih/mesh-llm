@@ -23,6 +23,9 @@ import {
 } from '@/features/capsules/lib/peer-row-view'
 import { HoverChip } from '@/features/capsules/components/HoverChip'
 import { PEER_PAYMENTS_TOOLTIP } from '@/features/capsules/lib/tooltip-copy'
+import type { PeerRoutingControls } from '@/features/capsules/api/usePeerBlocks'
+import { routableNodeId, routingState } from '@/features/capsules/lib/peer-routing-view'
+import { ROUTING_STOPPED_LABEL, ROUTING_STOPPED_TOOLTIP } from '@/features/capsules/lib/tooltip-copy'
 
 export type PeerTableRowProps = {
   view: PeerTableRowView
@@ -32,6 +35,8 @@ export type PeerTableRowProps = {
   /** Columns toggle ([ledger-T7-peers-table]'s toolbar) -- Peer/Alarm are
    *  never hideable, only the six accountability columns are. */
   visibleColumns?: ReadonlySet<PeerTableColumnKey>
+  /** Local block controls (§7.5); absent where no host store is wired. */
+  routing?: PeerRoutingControls
 }
 
 const EMPTY_SOURCES: readonly PeerExchangeSource[] = []
@@ -42,7 +47,8 @@ export function PeerTableRow({
   meshStatus,
   exchangeSources = EMPTY_SOURCES,
   recordsById = EMPTY_RECORDS,
-  visibleColumns = ALL_PEER_TABLE_COLUMNS
+  visibleColumns = ALL_PEER_TABLE_COLUMNS,
+  routing
 }: PeerTableRowProps) {
   const [inspectorOpen, setInspectorOpen] = useState(false)
   const points = useMemo(
@@ -50,6 +56,7 @@ export function PeerTableRow({
     [view.row, exchangeSources, recordsById]
   )
   const inspectable = view.row !== null
+  const routingStopped = view.row !== null && routingState(routableNodeId(view.row), routing?.blocks).kind === 'stopped'
   const openInspector = () => setInspectorOpen(true)
 
   return (
@@ -86,6 +93,17 @@ export function PeerTableRow({
             {/* Visible while collapsed (chooser-v2 §3-F), but as the specific
                thing, counted, with one sentence on hover -- never a generic
                warning glyph (UX §8). */}
+            {/* §7.5: a stopped peer says so on its row, as the fact -- the
+               operator's own choice, only on this node. */}
+            {routingStopped ? (
+              <HoverChip census="peer:routing_stopped" label={ROUTING_STOPPED_TOOLTIP}>
+                <span>
+                  <StatusBadge size="caption" tone="muted">
+                    {ROUTING_STOPPED_LABEL}
+                  </StatusBadge>
+                </span>
+              </HoverChip>
+            ) : null}
             {view.payments ? (
               <HoverChip census="peer:payments" label={PEER_PAYMENTS_TOOLTIP}>
                 <span className="text-xs text-fg-dim" data-peer-payments="true">
@@ -125,6 +143,7 @@ export function PeerTableRow({
           onClose={() => setInspectorOpen(false)}
           open={inspectorOpen}
           points={points}
+          routing={routing}
           row={view.row}
         />
       ) : null}

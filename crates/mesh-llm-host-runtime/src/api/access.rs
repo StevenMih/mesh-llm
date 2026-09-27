@@ -13,6 +13,11 @@ pub(crate) fn requires_trusted_local_access(method: &str, path: &str) -> bool {
     if path == "/api/capsules/ledger" || path.starts_with("/api/capsules/ledger/") {
         return true;
     }
+    // The operator's local routing blocks: reading them reveals whom this node
+    // avoids, and writing them changes routing.
+    if path == "/api/peer-blocks" || path.starts_with("/api/peer-blocks/") {
+        return true;
+    }
     if path == "/mcp"
         || path.starts_with("/api/plugins")
         || (method == "POST"
@@ -156,6 +161,9 @@ mod tests {
             ("POST", "/api/runtime/mesh-guardrails"),
             ("POST", "/api/model-interests"),
             ("DELETE", "/api/model-interests/qwen"),
+            ("GET", "/api/peer-blocks"),
+            ("POST", "/api/peer-blocks"),
+            ("POST", "/api/peer-blocks/unblock"),
         ] {
             assert!(
                 requires_trusted_local_access(method, path),

@@ -315,9 +315,15 @@ export function checkpointCoverageByRecord(
 
 /** Finding 3: the Sealed tile's sub-line, so Integrity's record count and
  *  Exchanges' exchange count reconcile on screen. */
-export function sealedBreakdownText(own: number, receivedNotes: number, paymentRecords = 0): string {
-  const base = `${own} yours · ${receivedNotes} received from the other side`
-  return paymentRecords > 0 ? `${base} · ${paymentRecords} payment records` : base
+/** `routingChoices`: records of your own choice to stop or resume routing to
+ *  a peer (§7.5). `paymentRecords`: this node's sealed payment lifecycle
+ *  records. Both are sealed like the rest, but not exchanges, so said apart,
+ *  and only when there are any. */
+export function sealedBreakdownText(own: number, receivedNotes: number, routingChoices = 0, paymentRecords = 0): string {
+  let text = `${own} yours · ${receivedNotes} received from the other side`
+  if (routingChoices > 0) text += ` · ${routingChoices} ${routingChoices === 1 ? 'routing choice' : 'routing choices'}`
+  if (paymentRecords > 0) text += ` · ${paymentRecords} payment records`
+  return text
 }
 
 export function identityFact(owner: StatusOwner | null | undefined): string {
