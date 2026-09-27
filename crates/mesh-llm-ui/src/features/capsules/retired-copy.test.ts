@@ -54,6 +54,7 @@ const RETIRED_PHRASES = [
 const HERE = dirname(fileURLToPath(import.meta.url))
 const EVIDENCE_UI_ROOT = HERE
 const NATIVE_PANE = resolve(HERE, '../../../../mesh-llm-host-runtime/src/api/routes/capsule_panes_native.rs')
+const SETTLEMENT_PANE = resolve(HERE, '../../../../mesh-llm-host-runtime/src/api/routes/capsule_panes_settlement.rs')
 
 function shippedSources(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
@@ -97,5 +98,8 @@ describe('retired Evidence copy stays retired', () => {
   it('the Rust pane that feeds the tab carries no retired phrase', () => {
     const code = withoutComments(rustShippedPart(readFileSync(NATIVE_PANE, 'utf8')))
     expect(offenders([{ label: 'capsule_panes_native.rs', code }])).toEqual([])
+    const settlement = withoutComments(rustShippedPart(readFileSync(SETTLEMENT_PANE, 'utf8')))
+    expect(settlement).toContain('fn payer_book')
+    expect(offenders([{ label: 'capsule_panes_settlement.rs', code: settlement }])).toEqual([])
   })
 })

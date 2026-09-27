@@ -15,6 +15,7 @@ import { cn } from '@/lib/cn'
 import type { CapsuleRecord } from '@/features/capsules/api/types'
 import { ExchangeRowChips } from '@/features/capsules/components/ExchangeRowChips'
 import { SecurityChecksView } from '@/features/capsules/components/SecurityChecksView'
+import { SettlementEntries, SettlementStrip } from '@/features/capsules/components/SettlementRow'
 import { buildChecksRows } from '@/features/capsules/lib/security-checks-view'
 import {
   theirContentAction,
@@ -380,6 +381,10 @@ export function ExchangeStreamRow({
           </div>
         </div>
         <ExchangeRowChips checks={checksRows} onChipActivate={handleChipActivate} />
+        {/* Payments sit beside the inference state, never inside it: CLOSED
+           is about the two records of the exchange; settlement is this
+           node's own payment records for it. */}
+        <SettlementStrip settlement={row.raw.settlement} />
         {/* [ledger-T4-inline-inspector] v3 §2's row footer: two independent
            disclosure toggles, never a modal. Always present, regardless of
            the right-cell state. */}
@@ -473,6 +478,7 @@ export function ExchangeStreamRow({
             )}
           </div>
         ) : null}
+        {checksExpanded ? <SettlementEntries settlement={row.raw.settlement} /> : null}
         {checksExpanded ? (
           <SecurityChecksView
             checksRows={checksRows}

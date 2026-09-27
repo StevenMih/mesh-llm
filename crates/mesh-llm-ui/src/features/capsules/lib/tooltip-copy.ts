@@ -147,3 +147,38 @@ export const CHECK_CHIP_TOOLTIPS: Record<string, string> = {
 export function checkChipTooltipKey(propertyKey: string, factKey?: 'binding' | 'authority'): string {
   return factKey ? `${propertyKey}:${factKey}` : propertyKey
 }
+
+/** Payments on an exchange row: the `paid` chip and its settlement state.
+ *  Only this node's records exist, so every sentence is about your side. */
+export const SETTLEMENT_PRICED_TOOLTIP = 'This exchange was priced, and no invoice was recorded for it.'
+
+export const SETTLEMENT_PAID_TOOLTIP =
+  'This exchange was priced, and this node recorded each payment step it saw. The wallet keeps the money; these are the records.'
+
+export const SETTLEMENT_STATE_TOOLTIPS = {
+  settled:
+    'Every invoice you saw for this exchange was reported paid by your wallet, under the same payment reference.',
+  settled_without_reference:
+    'Your wallet reported each invoice’s part of this exchange paid, but at least one report carried no payment reference to match on.',
+  no_settlement_seen: 'At least one invoice has no payment reported by your wallet. Your records alone can’t say why.',
+  terms_only: 'You accepted the terms, and no invoice was recorded.',
+  unmatched_settlement: 'Your wallet reported a payment that no invoice for this exchange names.'
+} as const
+
+export const SETTLEMENT_PROVIDER_BOOK_TOOLTIP =
+  'The provider’s own record of this payment isn’t shared with this node, so only your side is shown.'
+
+/** Who stated each recorded payment value. */
+export const SETTLEMENT_SOURCE_TOOLTIPS = {
+  payer_asserted: 'Recorded by this node as what it agreed to or accounted.',
+  provider_asserted: 'What the provider stated, as it reached this node.',
+  wallet_reported: 'What your wallet reported.'
+} as const
+
+/** The Peers row's payments line. */
+export const PEER_PAYMENTS_TOOLTIP =
+  'Counts of your paid exchanges with this peer, from your own records. Lapsed payments and debts are kept in the provider’s book, which this node doesn’t have.'
+
+/** Integrity's Close card. */
+export const CLOSE_CARD_TOOLTIP =
+  'Counts over the exchanges shown here: how many the other side confirmed, and how many were paid and settled by your wallet.'

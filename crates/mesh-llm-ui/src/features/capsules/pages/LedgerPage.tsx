@@ -109,11 +109,19 @@ import { useStatusQuery } from '@/features/network/api/use-status-query'
 import { useDataMode } from '@/lib/data-mode'
 import { HoverChip } from '@/features/capsules/components/HoverChip'
 import {
+  CLOSE_CARD_TOOLTIP,
   HERO_DESCRIPTION,
   HERO_TOOLTIPS,
   NO_CONTRADICTION_REASON,
   SAMPLE_DATA_UNAVAILABLE
 } from '@/features/capsules/lib/tooltip-copy'
+import type { PaymentsPresence } from '@/features/capsules/api/sidecarTypes'
+import {
+  settlementCloseCounts,
+  settlementCloseLine,
+  type SettlementCloseCounts,
+  unjoinedSettlementText
+} from '@/features/capsules/lib/settlement-view'
 
 // ---------------------------------------------------------------------------
 // Error helper — honest fetch-failure messages, never "set the URL"
@@ -1116,6 +1124,39 @@ function SetupChecklist({ steps }: { steps: readonly SetupStep[] }) {
   )
 }
 
+/** The Close card: agreed periods need a Close record neither side has
+ *  sealed yet, so it says "none yet"; beneath, the counts so far over
+ *  inference and payment -- counts only, never an amount. */
+function CloseCard({
+  counts,
+  payments,
+  unjoined
+}: {
+  counts: SettlementCloseCounts
+  payments: PaymentsPresence | undefined
+  unjoined: string | null
+}) {
+  return (
+    <div
+      className="panel-shell flex flex-col gap-1 rounded-[var(--radius-lg)] border border-border bg-panel px-[var(--panel-x)] py-[var(--panel-y)]"
+      data-testid="close-card"
+    >
+      <span className="type-label inline-flex items-center gap-1 text-fg-faint">
+        <span>Agreed periods</span>
+        <InfoHover census="integrity:close_card" describes="Agreed periods" label={CLOSE_CARD_TOOLTIP} />
+      </span>
+      <p className="text-sm text-foreground">none yet</p>
+      <p className="type-caption text-fg-dim" data-close-inference="true">
+        So far: {counts.exchanges} exchanges · {counts.closed} confirmed by the other side
+      </p>
+      <p className="type-caption text-fg-dim" data-close-settlement="true">
+        {settlementCloseLine(counts, payments)}
+      </p>
+      {unjoined ? <p className="type-caption text-fg-faint">{unjoined}</p> : null}
+    </div>
+  )
+}
+
 function IntegritySection() {
   const { mode } = useDataMode()
   const harnessMode = mode === 'harness'
@@ -1169,7 +1210,9 @@ function IntegritySection() {
   // counts exchanges. The difference is the records that note a record
   // received from the other side -- said on the tile so 8 and 5 reconcile.
   const receivedNoteCount = rows.filter((row) => row.kind === 'counterparty_half_citation').length
-  const ownExchangeCount = sealedCount - receivedNoteCount
+  // Payment records are this node's own log entries too, but not exchanges.
+  const paymentRecordCount = rows.filter((row) => row.kind === 'settlement_observation').length
+  const ownExchangeCount = sealedCount - receivedNoteCount - paymentRecordCount
   // Same predicate the Exchanges stream badge uses (`deriveRightCellState`,
   // called with no live fetch state here -- Integrity has no per-row peer
   // fetch to draw on) so the two sections can never again show
@@ -1180,6 +1223,12 @@ function IntegritySection() {
   // Exchanges asserted CLOSED on the same rows from an unrelated bug).
   const closedByOtherSideCount = paneCRows.filter((row) => deriveRightCellState(row).kind === 'closed').length
   const contradictedCount = paneCRows.filter((row) => deriveRightCellState(row).kind === 'contradicted').length
+  // The Close card counts over the same rows with the same gate.
+  const closeCounts = settlementCloseCounts(paneCRows, (row) => deriveRightCellState(row).kind === 'closed')
+  const unjoinedPayments = unjoinedSettlementText(
+    paneCQuery.data?.settlement_unjoined,
+    paneCQuery.data?.settlement_missing_exchange_id ?? 0
+  )
 
   const setupSteps = buildSetupSteps(card ?? null, owner, closedByOtherSideCount)
   const registrationCopy = buildRegistrationCopy(card ?? null)
@@ -1221,7 +1270,7 @@ function IntegritySection() {
           <IntegrityStatCard
             info={INTEGRITY_TILE_INFO.sealed}
             label="Sealed"
-            sub={sealedBreakdownText(ownExchangeCount, receivedNoteCount)}
+            sub={sealedBreakdownText(ownExchangeCount, receivedNoteCount, paymentRecordCount)}
             value={sealedCount}
           />
           <IntegrityStatCard
@@ -1242,6 +1291,8 @@ function IntegritySection() {
             value={contradictedCount}
           />
         </div>
+
+        <CloseCard counts={closeCounts} payments={paneCQuery.data?.payments} unjoined={unjoinedPayments} />
 
         <SetupChecklist steps={setupSteps} />
 

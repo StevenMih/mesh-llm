@@ -6,6 +6,7 @@
 import type { PaneBConfirmedSibling, PaneBRow, PaneCRow } from '@/features/capsules/api/sidecarTypes'
 import { deriveRightCellState } from '@/features/capsules/lib/exchange-row-state'
 import type { PeerMeshStatus } from '@/features/capsules/lib/peer-mesh-status'
+import { peerSettlementText } from '@/features/capsules/lib/settlement-view'
 import { PEER_ATTENTION, PEER_COLUMN_TOOLTIPS, SELF_REPORTED_TOOLTIP } from '@/features/capsules/lib/tooltip-copy'
 
 export const STATE_NOT_CHECKED = 'NOT_CHECKED'
@@ -377,10 +378,20 @@ export function peerAttention(
     })
   }
   if (row.history?.state === STATE_FAILED) {
-    items.push({ key: 'logFailed', label: PEER_ATTENTION.logFailed.label(), tooltip: PEER_ATTENTION.logFailed.tooltip(), tone: 'bad' })
+    items.push({
+      key: 'logFailed',
+      label: PEER_ATTENTION.logFailed.label(),
+      tooltip: PEER_ATTENTION.logFailed.tooltip(),
+      tone: 'bad'
+    })
   }
   if (row.history?.state === STATE_REFUSED || row.served?.state === STATE_REFUSED) {
-    items.push({ key: 'refused', label: PEER_ATTENTION.refused.label(), tooltip: PEER_ATTENTION.refused.tooltip(), tone: 'warn' })
+    items.push({
+      key: 'refused',
+      label: PEER_ATTENTION.refused.label(),
+      tooltip: PEER_ATTENTION.refused.tooltip(),
+      tone: 'warn'
+    })
   }
   return items
 }
@@ -482,6 +493,9 @@ export type PeerTableRowView = {
   /** What needs a look, each named and counted -- replaces the old generic
    *  ⚠ chip on the face (UX §8). Empty when nothing does. */
   attention: PeerAttentionItem[]
+  /** Payments with this peer, counted (`peerSettlementText`); `null` when
+   *  there is no paid exchange on record. */
+  payments: string | null
   row: PaneBRow | null
 }
 
@@ -510,6 +524,7 @@ export function dealtWithRowView(
     period: periodRangeText(row.last_seen, row.last_seen),
     alarm: alarmSignal(row, resolveTimestamp),
     attention: peerAttention(row, resolveTimestamp),
+    payments: peerSettlementText(row.settlement),
     row
   }
 }
@@ -558,6 +573,7 @@ export function advertisedOnlyRowView(displayId: string): PeerTableRowView {
     period: '—',
     alarm: { present: false, text: '', tone: 'warn' },
     attention: [],
+    payments: null,
     row: null
   }
 }

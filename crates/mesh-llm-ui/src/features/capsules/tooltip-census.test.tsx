@@ -11,7 +11,7 @@ import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
 import { describe, expect, it, vi } from 'vitest'
-import type { PaneCListJson, PaneCRow } from '@/features/capsules/api/sidecarTypes'
+import type { PaneCListJson, PaneCRow, PayerBook } from '@/features/capsules/api/sidecarTypes'
 import { HARNESS_PANE_B_PAYLOAD } from '@/features/capsules/lib/peer-fixtures'
 import { fixtureMineCell, fixtureTheirsCell } from '@/features/capsules/lib/pushed-half-fixtures'
 import {
@@ -70,7 +70,8 @@ const REQUIRED = {
     'peer:self_reported',
     'peer_attention:disagreements',
     'peer_attention:differingAnswers',
-    'peer_attention:logFailed'
+    'peer_attention:logFailed',
+    'peer:payments'
   ],
   exchanges: [
     ...ALL_KINDS.map((kind) => `row_state:${kind}`),
@@ -79,7 +80,10 @@ const REQUIRED = {
     'entry_chip:inclusion',
     'entry_chip:registered',
     'entry_chip:theirs',
-    'twin:no_verdict'
+    'twin:no_verdict',
+    'settlement:paid',
+    'settlement_state:settled',
+    'settlement:provider_book'
   ],
   // The checks panel always shows at least these two (they are always
   // checked in the browser); every other chip it shows must carry one too.
@@ -90,14 +94,18 @@ const REQUIRED = {
     'closed_cell:request',
     'closed_cell:response',
     'check_chip:content_binding',
-    'check_chip:producer_signature'
+    'check_chip:producer_signature',
+    'settlement_source:payer_asserted',
+    'settlement_source:provider_asserted',
+    'settlement_source:wallet_reported'
   ],
   integrity: [
     'integrity_tile:Sealed',
     'integrity_tile:Shared with a witness',
     'integrity_tile:Confirmed by the other side',
     'integrity_tile:Disagreements',
-    'integrity:chain_strip'
+    'integrity:chain_strip',
+    'integrity:close_card'
   ]
 } as const
 
@@ -120,6 +128,42 @@ function row(key: string, overrides: Partial<PaneCRow>): PaneCRow {
   }
 }
 
+const CENSUS_SETTLEMENT: PayerBook = {
+  observed_by: 'payer',
+  state: 'settled',
+  terms_digests: ['t'.repeat(64)],
+  provider_book: 'not_available',
+  entries: [
+    {
+      capsule_id: 's1',
+      timestamp: null,
+      phase: 'terms_accepted',
+      source: 'payer_asserted',
+      segment: null,
+      payment_hash: null,
+      amount_msat: 900
+    },
+    {
+      capsule_id: 's2',
+      timestamp: null,
+      phase: 'input_invoice_issued',
+      source: 'provider_asserted',
+      segment: 0,
+      payment_hash: 'a'.repeat(64),
+      amount_msat: 120
+    },
+    {
+      capsule_id: 's3',
+      timestamp: null,
+      phase: 'input_settlement_observed',
+      source: 'wallet_reported',
+      segment: 0,
+      payment_hash: 'a'.repeat(64),
+      amount_msat: 120
+    }
+  ]
+}
+
 const PANE_C: PaneCListJson = {
   row_count: 10,
   default_sort: 'timestamp',
@@ -127,7 +171,12 @@ const PANE_C: PaneCListJson = {
   next_after_seq: null,
   archived_segments: [],
   rows: [
-    row('exch-closed', { mine: fixtureMineCell(), theirs: fixtureTheirsCell('agrees'), unilateral: false }),
+    row('exch-closed', {
+      mine: fixtureMineCell(),
+      theirs: fixtureTheirsCell('agrees'),
+      unilateral: false,
+      settlement: CENSUS_SETTLEMENT
+    }),
     row('exch-contradicted', { mine: fixtureMineCell(), theirs: fixtureTheirsCell('disagrees'), unilateral: false }),
     row('exch-refused', {
       theirs: { state: 'absent', capsule_id: null, evidence_outcome: 'signed_refusal', evidence_outcome_date: '4 Sep' }
@@ -153,7 +202,25 @@ const PANE_C: PaneCListJson = {
 
 vi.mock('@/features/capsules/api/sidecarClient', () => ({
   fetchPaneA: vi.fn().mockResolvedValue({ rows: [], operator: null, witness_checkpoint_supplied: false, card: null }),
-  fetchPaneB: vi.fn(async () => HARNESS_PANE_B_PAYLOAD),
+  fetchPaneB: vi.fn(async () => ({
+    ...HARNESS_PANE_B_PAYLOAD,
+    rows: HARNESS_PANE_B_PAYLOAD.rows.map((peer, index) =>
+      index === 0
+        ? {
+            ...peer,
+            settlement: {
+              paid_exchanges: 1,
+              settled_payer_observed: 1,
+              no_settlement_seen: 0,
+              settled_both_books: null,
+              lapsed: null,
+              debt: null,
+              provider_book: 'not_available'
+            }
+          }
+        : peer
+    )
+  })),
   fetchPaneCList: vi.fn(async () => PANE_C)
 }))
 vi.mock('@/features/capsules/api/client', () => ({
@@ -264,7 +331,14 @@ describe('tooltip census -- the copy itself', () => {
       ...Object.values(COPY.ENTRY_CHIP_TOOLTIPS),
       COPY.TWIN_NO_VERDICT_TOOLTIP,
       ...Object.values(COPY.INTEGRITY_TILE_TOOLTIPS),
-      COPY.CHAIN_STRIP_TOOLTIP
+      COPY.CHAIN_STRIP_TOOLTIP,
+      COPY.SETTLEMENT_PAID_TOOLTIP,
+      COPY.SETTLEMENT_PRICED_TOOLTIP,
+      ...Object.values(COPY.SETTLEMENT_STATE_TOOLTIPS),
+      COPY.SETTLEMENT_PROVIDER_BOOK_TOOLTIP,
+      ...Object.values(COPY.SETTLEMENT_SOURCE_TOOLTIPS),
+      COPY.PEER_PAYMENTS_TOOLTIP,
+      COPY.CLOSE_CARD_TOOLTIP
     ]
     const dig = Object.values(COPY.CHECK_CHIP_TOOLTIPS)
     for (const text of [...face, ...dig]) {
@@ -319,5 +393,61 @@ describe('tooltip census -- the copy itself', () => {
     expect(failedLog.map((item) => item.label)).toEqual(['log didn’t check out'])
     const refused = peerAttention({ ...clean, served: { ...clean.served, state: 'refused' } })
     expect(refused.map((item) => item.label)).toEqual(['refused a request'])
+  })
+})
+
+describe('settlement on the Evidence tab', () => {
+  it('a paid exchange shows CLOSED (inference) and settled (your wallet) on one row; an unpaid-looking free row shows neither', async () => {
+    const user = userEvent.setup()
+    render(<LedgerPageContent />, { wrapper })
+    await user.click(await screen.findByRole('tab', { name: /exchanges/i }))
+    const closedRow = await screen.findByRole('group', { name: 'Exchange exch-closed' })
+    expect(closedRow.getAttribute('data-right-cell-state')).toBe('closed')
+    expect(within(closedRow).getByText('CLOSED')).toBeInTheDocument()
+    const payment = within(closedRow).getByRole('group', { name: 'payment' })
+    expect(payment.getAttribute('data-settlement-state')).toBe('settled')
+    expect(within(payment).getByText('settled · your wallet')).toBeInTheDocument()
+    expect(within(payment).getByText('provider’s book: not available')).toBeInTheDocument()
+    // A row with no payment records carries no payment strip at all -- never "unpaid".
+    const freeRow = screen.getByRole('group', { name: 'Exchange exch-not-asked' })
+    expect(within(freeRow).queryByRole('group', { name: 'payment' })).toBeNull()
+    expect(document.body.textContent).not.toMatch(/unpaid/i)
+  })
+
+  it('the checks expansion lists each payment step with who stated it and the amount as recorded', async () => {
+    const user = userEvent.setup()
+    render(<LedgerPageContent />, { wrapper })
+    await user.click(await screen.findByRole('tab', { name: /exchanges/i }))
+    const closedRow = await screen.findByRole('group', { name: 'Exchange exch-closed' })
+    await user.click(within(closedRow).getByRole('button', { name: /checks/ }))
+    const records = within(closedRow).getByRole('group', { name: 'payment records' })
+    expect(within(records).getByText('recorded 900 msat')).toBeInTheDocument()
+    expect(within(records).getAllByText('recorded 120 msat')).toHaveLength(2)
+    expect(within(records).getByText('your wallet reported')).toBeInTheDocument()
+    // Amounts are facts on entries; nothing adds them up.
+    expect(records.textContent).not.toMatch(/1140|total/i)
+  })
+
+  it('the Close card counts CLOSED and settled over the same rows', async () => {
+    const user = userEvent.setup()
+    render(<LedgerPageContent />, { wrapper })
+    await user.click(await screen.findByRole('tab', { name: /integrity/i }))
+    const card = await screen.findByTestId('close-card')
+    expect(within(card).getByText('none yet')).toBeInTheDocument()
+    expect(card.querySelector('[data-close-inference]')?.textContent).toBe(
+      'So far: 10 exchanges · 1 confirmed by the other side'
+    )
+    expect(card.querySelector('[data-close-settlement]')?.textContent).toBe(
+      '1 paid · 1 settled by your wallet · provider’s book: not available'
+    )
+  })
+
+  it('the Peers row counts paid and settled, and never counts lapsed or debts it cannot see', async () => {
+    render(<LedgerPageContent />, { wrapper })
+    await screen.findByText(/Nodes you have dealt with/)
+    const line = document.querySelector('[data-peer-payments]')
+    expect(line?.textContent).toBe(
+      'Payments: 1 paid · 1 settled by your wallet · lapsed and debts: provider’s book: not available'
+    )
   })
 })

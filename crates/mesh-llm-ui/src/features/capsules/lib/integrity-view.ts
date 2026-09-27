@@ -165,11 +165,7 @@ export function buildSetupSteps(
       // Finding 7: the count is the "Confirmed by the other side" tile's to
       // say; the step says only that it's done.
       status:
-        closedByOtherSideCount > 0
-          ? 'received'
-          : askedPeerAt !== null
-            ? `asked ${askedPeerAt}`
-            : 'none received yet',
+        closedByOtherSideCount > 0 ? 'received' : askedPeerAt !== null ? `asked ${askedPeerAt}` : 'none received yet',
       body:
         closedByOtherSideCount > 0 || askedPeerAt !== null
           ? null
@@ -319,8 +315,9 @@ export function checkpointCoverageByRecord(
 
 /** Finding 3: the Sealed tile's sub-line, so Integrity's record count and
  *  Exchanges' exchange count reconcile on screen. */
-export function sealedBreakdownText(own: number, receivedNotes: number): string {
-  return `${own} yours · ${receivedNotes} received from the other side`
+export function sealedBreakdownText(own: number, receivedNotes: number, paymentRecords = 0): string {
+  const base = `${own} yours · ${receivedNotes} received from the other side`
+  return paymentRecords > 0 ? `${base} · ${paymentRecords} payment records` : base
 }
 
 export function identityFact(owner: StatusOwner | null | undefined): string {
@@ -334,7 +331,8 @@ export function identityFact(owner: StatusOwner | null | undefined): string {
  *  continuity is a chain of checkpoints, each binding to the one before it,
  *  so it needs a PRIOR checkpoint; registration is what lets someone else
  *  detect a later rewrite. */
-export const CONTINUITY_NOT_ESTABLISHED = 'Continuity: not established. It needs a prior checkpoint for the next one to bind to.'
+export const CONTINUITY_NOT_ESTABLISHED =
+  'Continuity: not established. It needs a prior checkpoint for the next one to bind to.'
 
 /** UX §4: continuity stated from the checkpoint count, separately from
  *  registration (step 1 already explains that, so it is not repeated). With

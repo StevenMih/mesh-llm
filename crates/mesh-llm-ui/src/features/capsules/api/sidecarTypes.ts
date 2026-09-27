@@ -182,13 +182,81 @@ export type PaneBRow = {
     pair_ledger?: Array<{ exchange_id: string; state: string }>
     their_card?: PaneState
   }
+  /** Present only when this node holds settlement records at all. */
+  settlement?: PeerSettlementCounts
   [key: string]: unknown
 }
 
 export type PaneBJson = {
   peer_count: number
   rows: PaneBRow[]
+  /** See `PaymentsPresence`. */
+  payments?: PaymentsPresence
   [key: string]: unknown
+}
+
+// ---------------------------------------------------------------------------
+// Settlement (`capsule_panes_settlement.rs`): this node's own sealed records
+// of the payer-side payment lifecycle, joined to exchanges by `exchange_id`.
+// ---------------------------------------------------------------------------
+
+/** Whether this node has a payments provider, as the host answers it. `off`
+ *  is the free-only configuration; `unknown` means the lookup failed. */
+export type PaymentsPresence = 'on' | 'off' | 'unknown'
+
+/** Who asserted a recorded value: this node, the provider (as relayed to this
+ *  node), or this node's wallet. */
+export type SettlementSource = 'payer_asserted' | 'provider_asserted' | 'wallet_reported'
+
+export type SettlementPhase =
+  | 'terms_accepted'
+  | 'input_invoice_issued'
+  | 'output_invoice_issued'
+  | 'input_settlement_observed'
+  | 'output_settlement_observed'
+  | 'final_accounted'
+
+/** One sealed observation, values as recorded (amounts are never summed). */
+export type SettlementEntry = {
+  capsule_id: string | null
+  timestamp: string | null
+  phase: SettlementPhase | string
+  source: SettlementSource | string | null
+  segment: number | null
+  payment_hash: string | null
+  amount_msat: number | null
+}
+
+/** The payer's book for one exchange: every invoice settled by this node's
+ *  wallet (`settled`), an invoice with no settlement seen, terms with no
+ *  invoice, or a settlement that names no invoice of this exchange. */
+export type PayerBookState = 'settled' | 'no_settlement_seen' | 'terms_only' | 'unmatched_settlement'
+
+export type PayerBook = {
+  observed_by: 'payer'
+  state: PayerBookState | string
+  terms_digests: string[]
+  entries: SettlementEntry[]
+  /** True when a settlement carried no payment hash and could only be matched
+   *  to its segment's invoice. */
+  matched_by_segment_only?: boolean
+  /** `not_available` until the provider side emits its own observations. */
+  provider_book: string
+}
+
+/** Per-peer counts. Provider-side states are `null`: this node cannot see
+ *  them, so they are not available rather than zero. */
+export type PeerSettlementCounts = {
+  /** Exchanges with at least one invoice recorded. */
+  paid_exchanges: number
+  /** Exchanges whose terms were accepted with no invoice: priced, not paid. */
+  terms_only?: number
+  settled_payer_observed: number
+  no_settlement_seen: number
+  settled_both_books: number | null
+  lapsed: number | null
+  debt: number | null
+  provider_book: string
 }
 
 // ---------------------------------------------------------------------------
@@ -323,6 +391,10 @@ export type PaneCRow = {
   /** The comparison facts for this row's half of the bracket -- see
    *  `TwinComparison`. Present only alongside a real `twin_bracket_id`. */
   twin_comparison?: TwinComparison | null
+  /** The payer-book summary of the settlement records this exchange's ids
+   *  join. `null`/absent means no payment lifecycle was recorded for it --
+   *  free, payments off, or failed before authorization -- never unpaid. */
+  settlement?: PayerBook | null
 }
 
 export type PaneCListJson = {
@@ -341,6 +413,12 @@ export type PaneCListJson = {
    *  renders without it, just without a specific N in the sentence, never
    *  a hardcoded "50". */
   twin_sample_rate_denominator?: number | null
+  /** See `PaymentsPresence`. */
+  payments?: PaymentsPresence
+  /** Exchange ids with settlement records that no row carries. */
+  settlement_unjoined?: string[]
+  /** Settlement records with no exchange id at all. */
+  settlement_missing_exchange_id?: number
 }
 
 export type PaneCDrilldownJson =
