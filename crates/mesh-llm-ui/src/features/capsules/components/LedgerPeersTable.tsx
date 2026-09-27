@@ -37,26 +37,23 @@ import type { PaneBRow } from '@/features/capsules/api/sidecarTypes'
 import {
   ALL_PEER_TABLE_COLUMNS,
   PEER_COLUMN_INFO,
-  peersWindowText,
+  SELF_REPORTED_DETAIL,
+  SELF_REPORTED_NOTE,
   type PeerTableColumnKey,
   type PeerTableRowView
 } from '@/features/capsules/lib/peer-row-view'
 import { InfoHover } from '@/features/capsules/components/InfoHover'
 import type { Peer } from '@/features/app-tabs/types'
 
-// The period column's header is the actual date window (computed per render
-// from the rows on screen), not the word "Period". The Columns toggle can't
-// render a window as a menu item, so it falls back to the one permitted word,
-// "When" -- never "Period"/"Window" (both bookkeeping vocabulary we keep off
-// screen). `COLUMN_LABELS` therefore drives the Columns dropdown; the table
-// header for `period` is rendered from `peersWindowText` instead.
+// Plain-language column names (UX §2). One label drives both the header and
+// the Columns dropdown -- never "Period"/"Window" (bookkeeping vocabulary).
 const COLUMN_LABELS: Record<PeerTableColumnKey, string> = {
   exchanges: 'Exchanges',
-  confirmed: 'Confirmed by the other side',
-  match: 'Match',
-  adjudication: 'Adjudication',
-  witness: 'Witness',
-  period: 'When'
+  confirmed: 'They confirmed',
+  match: 'Same request & answer',
+  adjudication: 'Disputes judged',
+  witness: 'Their records witnessed',
+  period: 'Last dealt with'
 }
 const ALL_COLUMNS: PeerTableColumnKey[] = [...ALL_PEER_TABLE_COLUMNS]
 
@@ -284,7 +281,7 @@ export function LedgerPeersTable({
                     {/* The period column's header is the real date window across
                        the visible rows (e.g. `22–26 Sep`), never the word
                        "Period"; every other column keeps its plain label. */}
-                    {column === 'period' ? peersWindowText(visibleRows) : COLUMN_LABELS[column]}
+                    {COLUMN_LABELS[column]}
                     {/* Terse header on the face; what the column means and what
                        evidence backs it live behind the (i). */}
                     <InfoHover
@@ -343,6 +340,12 @@ export function LedgerPeersTable({
           )}
         </TableBody>
       </Table>
+      {/* One legend line under the table: every peer name here is what that
+         peer says about itself (UX §2), said once rather than on each row. */}
+      <p className="mt-2 inline-flex items-center gap-1 text-fg-faint text-xs" data-testid="peers-legend">
+        Peer names are {SELF_REPORTED_NOTE}.
+        <InfoHover census="peer:self_reported" describes="the self-reported note" label={SELF_REPORTED_DETAIL} />
+      </p>
     </div>
   )
 }

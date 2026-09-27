@@ -14,7 +14,13 @@ import {
   PEER_TAB_HARNESS_MESH_PEERS
 } from '@/features/capsules/lib/peer-fixtures'
 import { advertisedOnlyPeers, deriveMeshStatus } from '@/features/capsules/lib/peer-mesh-status'
-import { advertisedOnlyRowView, dealtWithRowView, PEER_COLUMN_INFO } from '@/features/capsules/lib/peer-row-view'
+import {
+  advertisedOnlyRowView,
+  dealtWithRowView,
+  PEER_COLUMN_INFO,
+  SELF_REPORTED_DETAIL,
+  SELF_REPORTED_NOTE
+} from '@/features/capsules/lib/peer-row-view'
 
 const [CLEAN_ROW, ALARMED_ROW] = HARNESS_PANE_B_PAYLOAD.rows
 
@@ -130,28 +136,23 @@ describe('LedgerPeersTable — toolbar', () => {
 
     // Each header now carries an (i) info glyph, so its accessible name is the
     // label plus the glyph's description -- match on the label substring.
-    expect(screen.getByRole('columnheader', { name: /^Match/ })).toBeInTheDocument()
-    // RULED VOCAB copy-pin: "confirmed by THE other side" (never "by other
-    // side") -- consistent with LedgerPage's own count line and the Integrity
-    // rung status.
-    expect(screen.getByRole('columnheader', { name: /^Confirmed by the other side/ })).toBeInTheDocument()
+    expect(screen.getByRole('columnheader', { name: /^Same request & answer/ })).toBeInTheDocument()
+    // Plain-language names (UX §2).
+    expect(screen.getByRole('columnheader', { name: /^They confirmed/ })).toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: /columns/i }))
-    await user.click(screen.getByRole('menuitemcheckbox', { name: 'Match' }))
-    expect(screen.queryByRole('columnheader', { name: /^Match/ })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('menuitemcheckbox', { name: 'Same request & answer' }))
+    expect(screen.queryByRole('columnheader', { name: /^Same request & answer/ })).not.toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: /reset view/i }))
-    expect(screen.getByRole('columnheader', { name: /^Match/ })).toBeInTheDocument()
+    expect(screen.getByRole('columnheader', { name: /^Same request & answer/ })).toBeInTheDocument()
   })
 
-  it('the period column HEADER is the real date window across the rows, never the word "Period" or "Window"', () => {
+  it('the period column is "Last dealt with", never the word "Period" or "Window"', () => {
     const props = buildFixtureProps()
     render(<LedgerPeersTable {...props} />)
 
-    // The two dealt-with fixture rows span 2026-08-20 -> 2026-09-08. The
-    // header also carries the (i) glyph's description, so match on the window
-    // substring rather than the exact accessible name.
-    expect(screen.getByRole('columnheader', { name: /20 Aug – 8 Sep/ })).toBeInTheDocument()
+    expect(screen.getByRole('columnheader', { name: /^Last dealt with/ })).toBeInTheDocument()
     expect(screen.queryByRole('columnheader', { name: /^Period/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('columnheader', { name: /^Window/ })).not.toBeInTheDocument()
   })
@@ -161,26 +162,44 @@ describe('LedgerPeersTable — toolbar', () => {
     render(<LedgerPeersTable {...props} />)
 
     // The Confirmed header's (i) carries the UX §8 sentence verbatim.
-    const confirmedGlyph = screen.getByRole('button', { name: 'About Confirmed by the other side' })
+    const confirmedGlyph = screen.getByRole('button', { name: 'About They confirmed' })
     const confirmedDesc = document.getElementById(confirmedGlyph.getAttribute('aria-describedby') as string)
     expect(confirmedDesc).toHaveTextContent(PEER_COLUMN_INFO.confirmed)
     expect(PEER_COLUMN_INFO.confirmed).toContain('confirmed by their own signed record, checked on this machine')
 
     // Every visible accountability column header has its own (i) glyph.
-    for (const label of ['Exchanges', 'Confirmed by the other side', 'Match', 'Adjudication', 'Witness']) {
+    for (const label of [
+      'Exchanges',
+      'They confirmed',
+      'Same request & answer',
+      'Disputes judged',
+      'Their records witnessed'
+    ]) {
       expect(screen.getByRole('button', { name: `About ${label}` })).toBeInTheDocument()
     }
   })
 
-  it('the Columns toggle names the period column "When" (the one permitted word), never "Period"/"Window"', async () => {
+  it('the Columns toggle names the period column "Last dealt with", never "Period"/"Window"', async () => {
     const user = userEvent.setup()
     const props = buildFixtureProps()
     render(<LedgerPeersTable {...props} />)
 
     await user.click(screen.getByRole('button', { name: /columns/i }))
-    expect(screen.getByRole('menuitemcheckbox', { name: 'When' })).toBeInTheDocument()
+    expect(screen.getByRole('menuitemcheckbox', { name: 'Last dealt with' })).toBeInTheDocument()
     expect(screen.queryByRole('menuitemcheckbox', { name: 'Period' })).not.toBeInTheDocument()
     expect(screen.queryByRole('menuitemcheckbox', { name: 'Window' })).not.toBeInTheDocument()
+  })
+
+  it('says "self-reported" once, in a legend under the table, with the fuller sentence behind its (i)', () => {
+    const props = buildFixtureProps()
+    render(<LedgerPeersTable {...props} />)
+
+    expect(screen.getByTestId('peers-legend')).toHaveTextContent(SELF_REPORTED_NOTE)
+    expect(screen.getAllByText(new RegExp(SELF_REPORTED_NOTE))).toHaveLength(1)
+    const glyph = screen.getByRole('button', { name: 'About the self-reported note' })
+    expect(document.getElementById(glyph.getAttribute('aria-describedby') as string)).toHaveTextContent(
+      SELF_REPORTED_DETAIL
+    )
   })
 
   it('Reset view is disabled when the view is already at its default', () => {

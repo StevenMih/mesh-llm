@@ -83,6 +83,21 @@ export function plainTokenSplit(sp: ServingProvenance): string | null {
   return parts.length ? parts.join(' / ') : null
 }
 
+/** "46 → 2 tokens" from the record's own usage block; `null` when the record
+ *  carries neither count (never a placeholder). */
+export function tokenFlowText(promptTokens: number | null, completionTokens: number | null): string | null {
+  if (promptTokens == null && completionTokens == null) return null
+  return `${promptTokens ?? '?'} → ${completionTokens ?? '?'} tokens`
+}
+
+/** "1.4 s" / "320 ms" from the record's `latency_ms`; `null` when absent or
+ *  zero (a zero is "not measured" on this path, not an instant answer). */
+export function durationText(latencyMs: unknown): string | null {
+  const ms = typeof latencyMs === 'number' ? latencyMs : typeof latencyMs === 'string' ? Number(latencyMs) : Number.NaN
+  if (!Number.isFinite(ms) || ms <= 0) return null
+  return ms >= 1000 ? `${(ms / 1000).toFixed(1)} s` : `${Math.round(ms)} ms`
+}
+
 export function plainModelLine(sp: ServingProvenance): string {
   const bits: string[] = [sp.model ?? '(model not named in record)']
   if (sp.quantization && sp.quantization !== 'unknown') bits.push(`(${sp.quantization})`)

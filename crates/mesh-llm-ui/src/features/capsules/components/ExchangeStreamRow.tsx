@@ -23,6 +23,7 @@ import {
 import type { ExchangeLedgerRow } from '@/features/capsules/lib/exchange-ledger'
 import { checkRowDomId, exchangeRowDomId } from '@/features/capsules/lib/exchange-pages'
 import {
+  askForRecordIsDue,
   bracketStrip,
   bracketStripText,
   closedPropertyCellItems,
@@ -34,13 +35,18 @@ import {
   rightCellDetail,
   type RightCellStateKind,
   rightCellStatusLabel,
-  rightCellText,
-  rowStateMarker
+  rightCellText
 } from '@/features/capsules/lib/exchange-row-state'
 import { InfoHover } from '@/features/capsules/components/InfoHover'
 import type { RailSegment } from '@/features/capsules/lib/exchange-stream'
 import { usePeerLedgerRecompute, useRecomputedIdentity } from '@/features/capsules/lib/recompute-identity'
-import { formatModelIdentity, servingProvenance } from '@/features/capsules/lib/serving-provenance'
+import {
+  durationText,
+  formatModelIdentity,
+  pocBlock,
+  servingProvenance,
+  tokenFlowText
+} from '@/features/capsules/lib/serving-provenance'
 import { shortId } from '@/features/capsules/lib/short-id'
 import { copyStateLabel } from '@/lib/copyStateLabel'
 import { useClipboardCopy } from '@/lib/useClipboardCopy'
@@ -58,6 +64,17 @@ import { useClipboardCopy } from '@/lib/useClipboardCopy'
 const NO_OTHER_SIDE_TEXT = 'Local — no other side'
 const OTHER_SIDE_NOT_KNOWN_TEXT = 'Other side: not known'
 
+/** Wall-clock time for the ask timeout, re-read every 30 s so a waiting row
+ *  offers the ask once the timeout passes -- never `Date.now()` in render. */
+function useNowMs(): number {
+  const [nowMs, setNowMs] = useState(() => Date.now())
+  useEffect(() => {
+    const timer = window.setInterval(() => setNowMs(Date.now()), 30_000)
+    return () => window.clearInterval(timer)
+  }, [])
+  return nowMs
+}
+
 function formatExchangeTimestamp(timestamp: string | null): string {
   if (!timestamp) return 'timestamp unavailable'
   const match = timestamp.match(/T(\d{2}:\d{2}:\d{2})Z?/)
@@ -65,9 +82,9 @@ function formatExchangeTimestamp(timestamp: string | null): string {
 }
 
 function roleText(roleTag: string): string {
-  // `you served`/`you asked` are stated in words on every row -- never
+  // `You served`/`You asked` are stated in words on every row -- never
   // inferred from position or colour alone (v3 §2).
-  return roleTag === 'SERVED' ? 'you served' : 'you asked'
+  return roleTag === 'SERVED' ? 'You served' : 'You asked'
 }
 
 /** Design §3A: "one colour per state ... taken from the console palette,
@@ -191,25 +208,28 @@ export function ExchangeStreamRow({
   const gatedByCounterparty = isAskAction(state.kind) && !row.counterparty
   const gatedText = row.roleTag === 'SERVED' ? NO_OTHER_SIDE_TEXT : OTHER_SIDE_NOT_KNOWN_TEXT
   const cellText = gatedByCounterparty ? gatedText : rightCellText(state)
-  const action = gatedByCounterparty ? null : rightCellAction(state)
+  // UX §3: with push on, their record normally arrives when the exchange
+  // finishes -- the ask is offered only once that has had time to happen.
+  const nowMs = useNowMs()
+  const askWaiting = isAskAction(state.kind) && !askForRecordIsDue(row.timestamp, nowMs)
+  const action = gatedByCounterparty || askWaiting ? null : rightCellAction(state)
   // Only recompute while the security view is actually open -- the hook
   // itself must always be called (rules of hooks), but its effect no-ops on
   // a `null` record, so collapsed rows never pay for a fetch+verify.
   const identity = useRecomputedIdentity(checksExpanded ? localRecord : null, nodePubKeyPem)
-  // [mesh-citing-record-shots-four-defects] D4(b): the glyph draws the
-  // EXCHANGE state (both halves held -> ●, one half -> ◐) -- the role is
-  // stated in words below, never by glyph. (L-O's served-rows-carry-no-rail
-  // rule is unchanged; it lives in `buildRailSegments`.)
-  const marker = rowStateMarker(state)
-  // The design's bracket strip (double-entry design §7) -- how the state is
-  // drawn: `{ yours ● } ⟷ { theirs ● }`. Same state the badge renders.
+  // The bracket strip, drawn in words (UX §3): `Yours ● sealed —— Theirs ●
+  // same`. Same state the badge renders.
   const strip = bracketStripText(bracketStrip(row.raw, state))
-  // Design §3A: "model as `family/short-digest…` (full on hover/copy)" --
-  // this row's own record, same `localRecord` the checks panel recomputes
-  // against; `null` when the record hasn't been fetched or carries no model
-  // ref, never a placeholder.
-  const modelRef = localRecord ? servingProvenance(localRecord).model : null
+  // UX §3 "Left: the event in words" -- role, peer, model, tokens, duration,
+  // all read from this row's own record (the fetched `localRecord`, else the
+  // body the pane sent with the pair). Any field the record doesn't carry is
+  // left out, never a placeholder. The ids move into the expansion.
+  const ownRecord = localRecord ?? (row.raw.mine.record as CapsuleRecord | undefined) ?? null
+  const provenance = ownRecord ? servingProvenance(ownRecord) : null
+  const modelRef = provenance?.model ?? null
   const modelIdentity = formatModelIdentity(modelRef)
+  const tokens = provenance ? tokenFlowText(provenance.promptTokens, provenance.completionTokens) : null
+  const duration = ownRecord ? durationText(pocBlock(ownRecord).latency_ms) : null
   const tone = rowStateTone(state.kind)
 
   // Chip-strip -> checks-panel jump ([mesh-evidence-ui-entry-row-and-chips]
@@ -267,77 +287,68 @@ export function ExchangeStreamRow({
         data-role-tag={row.roleTag}
         role="group"
       >
-        <div className="flex flex-wrap items-center gap-2 text-xs text-fg-dim">
-          <span aria-hidden="true">{marker}</span>
-          <time className="font-mono tabular-nums" dateTime={row.timestamp ?? undefined}>
-            {formatExchangeTimestamp(row.timestamp)}
-          </time>
-          <span>{roleText(row.roleTag)}</span>
-          {modelIdentity ? (
-            <span className="font-mono" title={modelRef ?? undefined}>
-              {modelIdentity}
-            </span>
-          ) : null}
-          <span aria-hidden="true">→</span>
-          {row.counterparty ? (
-            <span className="font-mono">{row.counterparty}</span>
-          ) : (
-            <span>counterparty not recorded</span>
-          )}
-          <span className="ml-auto inline-flex items-center gap-1" data-row-tone={tone}>
-            {/* L-A/L-B: only CONTRADICTED gets the alarm dot; the tone
-               (§3A "one colour per state") still varies with CLOSED/
-               refused/absent, never just alarm-vs-muted. */}
-            <StatusBadge dot={alarm} size="caption" tone={tone}>
-              {rightCellStatusLabel(state)}
-            </StatusBadge>
-            {/* Terse state on the face; the fuller story (their half not held,
-               ✓ cites your half by digest, the CLOSED property cells) behind
-               the (i). */}
-            <InfoHover
-              census={`row_state:${state.kind}`}
-              describes={`the ${rightCellStatusLabel(state)} state`}
-              label={rightCellDetail(state)}
-              side="left"
-            />
-          </span>
-        </div>
         <div className="grid grid-cols-2 gap-0 rounded border border-border-soft">
           <div className="flex flex-col gap-1 border-r border-border-soft px-3 py-2">
-            <p className="flex flex-wrap items-center gap-1.5 font-mono text-xs text-foreground">
-              <CopyableId label="exch" value={row.exchangeKey} />
-              <span className="text-fg-faint">·</span>
-              {(row.raw.mine.capsule_id ?? row.raw.mine.text) ? (
-                <CopyableId label="rec" value={(row.raw.mine.capsule_id ?? row.raw.mine.text) as string} />
+            <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-fg-dim">
+              <time className="font-mono tabular-nums" dateTime={row.timestamp ?? undefined}>
+                {formatExchangeTimestamp(row.timestamp)}
+              </time>
+            </p>
+            {/* Real text separators (not CSS gaps), so a copy or a screen
+               reader gets "You asked key:… · model · 46 → 2 tokens". */}
+            <p className="text-xs text-foreground" data-event-line="true">
+              <span className="font-medium">{roleText(row.roleTag)}</span>{' '}
+              {row.counterparty ? (
+                <span className="font-mono">{row.counterparty}</span>
               ) : (
-                <span className="inline-flex items-center gap-1">
-                  <span className="text-fg-faint">rec</span>
-                  <span>—</span>
-                </span>
+                <span className="text-fg-dim">counterparty not recorded</span>
               )}
+              {modelIdentity ? (
+                <>
+                  <span className="text-fg-faint"> · </span>
+                  <span className="font-mono" title={modelRef ?? undefined}>
+                    {modelIdentity}
+                  </span>
+                </>
+              ) : null}
+              {tokens ? (
+                <>
+                  <span className="text-fg-faint"> · </span>
+                  <span className="tabular-nums">{tokens}</span>
+                </>
+              ) : null}
+              {duration ? (
+                <>
+                  <span className="text-fg-faint"> · </span>
+                  <span className="tabular-nums">{duration}</span>
+                </>
+              ) : null}
             </p>
           </div>
           <div className="flex flex-col gap-1.5 px-3 py-2">
-            <p aria-hidden="true" className="font-mono text-[11px] text-fg-faint">
-              {strip}
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="font-mono text-[11px] text-fg-faint" data-bracket-strip="true">
+                {strip}
+              </p>
+              <span className="inline-flex items-center gap-1" data-row-tone={tone}>
+                {/* L-A/L-B: only CONTRADICTED gets the alarm dot; the tone
+                   (§3A "one colour per state") still varies with CLOSED/
+                   refused/absent, never just alarm-vs-muted. */}
+                <StatusBadge dot={alarm} size="caption" tone={tone}>
+                  {rightCellStatusLabel(state)}
+                </StatusBadge>
+                {/* Terse state on the face; the fuller story behind the (i). */}
+                <InfoHover
+                  census={`row_state:${state.kind}`}
+                  describes={`the ${rightCellStatusLabel(state)} state`}
+                  label={rightCellDetail(state)}
+                  side="left"
+                />
+              </span>
+            </div>
+            <p className="text-xs text-foreground" data-right-cell-text="true">
+              {cellText}
             </p>
-            {state.kind === 'closed' ? (
-              // D4(d): CLOSED renders per-property cells, not one sentence --
-              // each cell restates a fact the gate's own inputs established.
-              <div className="flex flex-wrap gap-1" data-closed-property-cells="true">
-                {closedPropertyCellItems(row.raw).map((cell) => (
-                  <span
-                    className="inline-flex items-center gap-1 rounded border border-border-soft px-1.5 py-0.5 font-mono text-[11px] text-fg-dim"
-                    key={cell.key}
-                  >
-                    {cell.label}
-                    <InfoHover census={`closed_cell:${cell.key}`} describes={cell.label} label={cell.tooltip} />
-                  </span>
-                ))}
-              </div>
-            ) : (
-              <p className="text-xs text-fg-dim">{cellText}</p>
-            )}
             {action ? (
               <Button
                 className="ui-control h-7 w-fit gap-1 rounded-[var(--radius)] px-2 text-[length:var(--density-type-caption)]"
@@ -414,6 +425,35 @@ export function ExchangeStreamRow({
                 </Button>
               ) : null}
             </div>
+          </div>
+        ) : null}
+        {checksExpanded ? (
+          // UX §3: the engineer's facts lead the expansion -- the CLOSED
+          // per-property cells (each restating a fact the gate established),
+          // then the full ids that used to sit on the row face.
+          <div className="flex flex-wrap items-center gap-1.5 font-mono text-xs" data-expansion-head="true">
+            {state.kind === 'closed'
+              ? closedPropertyCellItems(row.raw).map((cell) => (
+                  <span
+                    className="inline-flex items-center gap-1 rounded border border-border-soft px-1.5 py-0.5 text-[11px] text-fg-dim"
+                    data-closed-property-cell={cell.key}
+                    key={cell.key}
+                  >
+                    {cell.label}
+                    <InfoHover census={`closed_cell:${cell.key}`} describes={cell.label} label={cell.tooltip} />
+                  </span>
+                ))
+              : null}
+            <CopyableId label="exch" value={row.exchangeKey} />
+            <span className="text-fg-faint">·</span>
+            {(row.raw.mine.capsule_id ?? row.raw.mine.text) ? (
+              <CopyableId label="rec" value={(row.raw.mine.capsule_id ?? row.raw.mine.text) as string} />
+            ) : (
+              <span className="inline-flex items-center gap-1">
+                <span className="text-fg-faint">rec</span>
+                <span>—</span>
+              </span>
+            )}
           </div>
         ) : null}
         {checksExpanded ? (

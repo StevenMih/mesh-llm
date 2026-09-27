@@ -23,6 +23,9 @@ export type PaneARow = {
   verify_ok: boolean | null
   rungs: Record<string, PaneState>
   record: CapsuleRecord
+  /** `counterparty_half_citation` on a record this node sealed to note a
+   *  record received from the other side; absent on its own exchanges. */
+  kind?: string | null
 }
 
 export type PaneAJson = {

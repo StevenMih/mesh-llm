@@ -26,11 +26,9 @@ import {
   peerAliasLine,
   peerDisplayId,
   periodRangeText,
-  peersWindowText,
   peerSortKey,
   PEER_COLUMN_INFO,
   SELF_REPORTED_DETAIL,
-  SELF_REPORTED_NOTE,
   sortPeerRows,
   theirChainSummary,
   unattributedExchangesLine,
@@ -121,7 +119,7 @@ describe('adjudicationSummary honesty invariants', () => {
     const text = adjudicationSummaryText(summary)
     expect(text).not.toMatch(/corroborated/)
     expect(text.toLowerCase()).toContain('not yet checked')
-    expect(adjudicationCompactText(summary)).toBe('none sealed')
+    expect(adjudicationCompactText(summary)).toBe('none')
   })
 
   it('always carries the exchange_count denominator alongside a real tally, compact form matches the full form', () => {
@@ -206,7 +204,7 @@ describe('confirmedByOtherSide — routed through the ONE gate, the same predica
     const row = baseRow({ exchange_count: 11, confirmed_siblings: [] })
     const summary = confirmedByOtherSide(row)
     expect(summary).toEqual({ confirmed: 0, total: 11, note: 'none confirmed yet' })
-    expect(confirmedByOtherSideText(summary)).toBe('0 / 11 (none confirmed yet)')
+    expect(confirmedByOtherSideText(summary)).toBe('0 of 11')
     // ADVERSARIAL: never resurrect the retired browser-peer-fetch framing.
     expect(confirmedByOtherSideText(summary)).not.toMatch(/pending|fetch/i)
   })
@@ -218,22 +216,22 @@ describe('confirmedByOtherSide — routed through the ONE gate, the same predica
     })
     const summary = confirmedByOtherSide(row)
     expect(summary).toEqual({ confirmed: 3, total: 3, note: null })
-    expect(confirmedByOtherSideText(summary)).toBe('3 / 3')
+    expect(confirmedByOtherSideText(summary)).toBe('3 of 3')
   })
 
-  it('[record-vs-exchange] denominator is the DISTINCT-exchange count, so 3 confirmed exchanges read "3 / 3", never "3 / 6"', () => {
+  it('[record-vs-exchange] denominator is the DISTINCT-exchange count, so 3 confirmed exchanges read "3 of 3", never "3 of 6"', () => {
     // The host now sends exchange_count as the distinct-exchange count
     // (`distinct_exchange_count` in capsule_panes_native.rs), NOT the record
-    // count -- 3 exchanges, whose 6 halves would have read "3 / 6" off a
+    // count -- 3 exchanges, whose 6 halves would have read "3 of 6" off a
     // record count. The peer-row view reads that field verbatim for both the
     // Exchanges cell and the Confirmed denominator, so both track the fix.
     const row = baseRow({
       exchange_count: 3,
       confirmed_siblings: [confirmedSibling(), confirmedSibling(), confirmedSibling()]
     })
-    expect(confirmedByOtherSideText(confirmedByOtherSide(row))).toBe('3 / 3')
+    expect(confirmedByOtherSideText(confirmedByOtherSide(row))).toBe('3 of 3')
     expect(dealtWithRowView(row).exchangeCount).toBe(3)
-    expect(dealtWithRowView(row).confirmedByOtherSide).toBe('3 / 3')
+    expect(dealtWithRowView(row).confirmedByOtherSide).toBe('3 of 3')
   })
 
   it('never closes a sibling the gate does not close (no signature, or no digest match)', () => {
@@ -251,7 +249,7 @@ describe('confirmedByOtherSide — routed through the ONE gate, the same predica
     })
     const summary = confirmedByOtherSide(row)
     expect(summary).toEqual({ confirmed: 1, total: 4, note: '1 contradicted' })
-    expect(confirmedByOtherSideText(summary)).toBe('1 / 4 (1 contradicted)')
+    expect(confirmedByOtherSideText(summary)).toBe('1 of 4 · 1 differ')
   })
 })
 
@@ -259,7 +257,7 @@ describe('matchTally — clean/mismatch of the halves the other side sent, via t
   it('always shows clean/mismatch even at zero, omits contradicted when zero', () => {
     const row = baseRow({ confirmed_siblings: Array.from({ length: 11 }, () => confirmedSibling()) })
     expect(matchTally(row)).toEqual({ clean: 11, mismatch: 0, contradicted: 0 })
-    expect(matchTallyText(matchTally(row))).toBe('11 clean · 0 mismatch')
+    expect(matchTallyText(matchTally(row))).toBe('11 · 0 differ')
   })
 
   it('counts a gate-contradicted sibling as a mismatch, and appends the adjudication contradicted count when nonzero', () => {
@@ -267,7 +265,7 @@ describe('matchTally — clean/mismatch of the halves the other side sent, via t
       confirmed_siblings: [...Array.from({ length: 9 }, () => confirmedSibling()), confirmedSibling({ matchState: 'failed' })],
       verdicts: { state: 'contradicted', text: '', tally: { corroborated: 6, contradicted: 1, inconclusive: 0 } }
     })
-    expect(matchTallyText(matchTally(row))).toBe('9 clean · 1 mismatch · 1 contradicted')
+    expect(matchTallyText(matchTally(row))).toBe('9 · 1 differ')
   })
 })
 
@@ -286,29 +284,6 @@ describe('periodRangeText', () => {
 
   it('spells out both years when the range crosses a year boundary', () => {
     expect(periodRangeText('2025-12-30T00:00:00Z', '2026-01-02T00:00:00Z')).toBe('30 Dec 2025 – 2 Jan 2026')
-  })
-})
-
-describe('peersWindowText — the Peers "When" column HEADER is the real window across rows, not the word "Period"', () => {
-  it('spans the earliest first_seen to the latest last_seen across the rows', () => {
-    const rows = [
-      dealtWithRowView(baseRow({ first_seen: '2026-09-23T00:00:00Z', last_seen: '2026-09-24T00:00:00Z' })),
-      dealtWithRowView(baseRow({ first_seen: '2026-09-22T00:00:00Z', last_seen: '2026-09-26T00:00:00Z' }))
-    ]
-    expect(peersWindowText(rows)).toBe('22–26 Sep')
-  })
-
-  it('is "—" when no row carries any exchange history (advertised-only)', () => {
-    expect(peersWindowText([advertisedOnlyRowView('node:unused')])).toBe('—')
-    expect(peersWindowText([])).toBe('—')
-  })
-
-  it('ignores advertised-only rows (null first/last_seen) when bounding the window', () => {
-    const rows = [
-      advertisedOnlyRowView('node:unused'),
-      dealtWithRowView(baseRow({ first_seen: '2026-09-22T00:00:00Z', last_seen: '2026-09-26T00:00:00Z' }))
-    ]
-    expect(peersWindowText(rows)).toBe('22–26 Sep')
   })
 })
 
@@ -488,14 +463,14 @@ describe('dealtWithRowView / advertisedOnlyRowView — one shape, honest degrada
     const view = dealtWithRowView(row)
     expect(view.hasDealings).toBe(true)
     expect(view.row).toBe(row)
-    expect(view.identityNote).toBe(SELF_REPORTED_NOTE)
+    expect(view.identityNote).toBe('')
     expect(view.exchangeCount).toBe(24)
-    expect(view.match).toBe('16 clean · 0 mismatch')
+    expect(view.match).toBe('16 · 0 differ')
     expect(view.adjudicationCompact).toBe('8 of 24 · 8 corroborated')
     expect(view.witnessCompact).toBe(WITNESS_COVERAGE_COMPACT_TEXT)
-    expect(view.period).toBe('1–3 Sep')
+    expect(view.period).toBe('3 Sep')
     // 16 halves closed through the gate, 24 exchanges total.
-    expect(view.confirmedByOtherSide).toBe('16 / 24')
+    expect(view.confirmedByOtherSide).toBe('16 of 24')
   })
 
   it('a zero-dealings advertised-only peer shows "no exchanges yet" and "—" for every accountability column, never a fabricated zero-of-zero', () => {

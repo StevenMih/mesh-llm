@@ -373,7 +373,7 @@ describe('LedgerPageContent', () => {
     expect(bodyText).not.toMatch(/33%/)
   })
 
-  it('[mesh-evidence-ui-headlines-and-empty-states] Exchanges headline states registration and never collides with the exceptions-first line below it', async () => {
+  it('UX §3: ONE Exchanges headline -- count, confirmed, disagreements; registration stays on Integrity', async () => {
     const { fetchPaneCList } = await import('@/features/capsules/api/sidecarClient')
     vi.mocked(fetchPaneCList).mockResolvedValue({
       rows: [
@@ -400,16 +400,11 @@ describe('LedgerPageContent', () => {
     render(<LedgerPageContent />, { wrapper: makeWrapper() })
     await user.click(screen.getByRole('tab', { name: /exchanges/i }))
 
-    const headerEl = await screen.findByText(/confirmed by the other side/i)
-    expect(headerEl.textContent).toBe('You sealed 1 exchange · 0 confirmed by the other side · not registered.')
-
-    // R4 negative: the headline says "You sealed", never the exceptions-
-    // first line's own "N sealed by you" phrase -- a regression that
-    // reintroduced that substring here would make `findByText` below throw
-    // on multiple matches instead of failing this specific assertion, so
-    // the check is a direct substring guard, not just a query.
-    expect(headerEl.textContent).not.toMatch(/sealed by you/)
-    expect(await screen.findByText(/^\d+ sealed by you/)).toBeInTheDocument()
+    const headerEl = await screen.findByTestId('exchanges-headline')
+    expect(headerEl.textContent).toBe('1 exchange · 0 confirmed by the other side · 0 disagreements')
+    expect(headerEl.textContent).not.toMatch(/registered/)
+    // Nothing needs attention, so no second line repeats the count.
+    expect(screen.queryByText(/sealed by you/)).not.toBeInTheDocument()
   })
 
   it('[mesh-evidence-ui-headlines-and-empty-states] "Get the other side’s record" and "Register a checkpoint" beside the Exchanges headline both open Integrity — the one place either setup step exists today', async () => {
@@ -520,7 +515,7 @@ describe('LedgerPageContent', () => {
     // in balance-view.test.ts — fetchPaneA is shared by three query sites
     // on this page, so asserting a specific override's exact caller here
     // would be an order-dependent test, not a real wiring check.
-    await screen.findByText(/exchanges need your attention|sealed by you/)
+    await screen.findByTestId('exchanges-headline')
     expect(screen.queryByText('No served-summary data available yet.')).not.toBeInTheDocument()
   })
 
@@ -530,7 +525,25 @@ describe('LedgerPageContent', () => {
     expect(bodyText).not.toMatch(/No served-summary data available yet\./)
   })
 
-  it('shows the exceptions-first line above the Exchanges table', async () => {
+  it('UX §2: the Peers intro is plain grey text that links to the Network tab', async () => {
+    render(<LedgerPageContent />, { wrapper: makeWrapper() })
+    const link = await screen.findByRole('link', { name: 'Network tab' })
+    expect(link).toHaveAttribute('href', '/')
+    expect(link.closest('p')?.className).not.toMatch(/emerald/)
+  })
+
+  it('UX §3: no range banner when every exchange is already on screen', async () => {
+    const { fetchPaneCList } = await import('@/features/capsules/api/sidecarClient')
+    vi.mocked(fetchPaneCList).mockResolvedValue(oneCleanExchangeRow())
+    const user = userEvent.setup()
+    render(<LedgerPageContent />, { wrapper: makeWrapper() })
+    await user.click(screen.getByRole('tab', { name: /exchanges/i }))
+    await screen.findByTestId('exchanges-headline')
+    expect(screen.queryByText(/^Showing /)).not.toBeInTheDocument()
+    expect(screen.queryByText(/Not shown here/)).not.toBeInTheDocument()
+  })
+
+  it('shows one headline, and no all-clear second line repeating its count', async () => {
     // [mesh-console-evidence-tab-honesty-defects] finding 7: the calm-state
     // line no longer claims "Nothing needs your attention... all recomputed
     // clean" -- it states the role-aware truth (sealed / confirmed by
@@ -542,7 +555,8 @@ describe('LedgerPageContent', () => {
     render(<LedgerPageContent />, { wrapper: makeWrapper() })
     await user.click(screen.getByRole('tab', { name: /exchanges/i }))
 
-    expect(await screen.findByText(/^\d+ sealed by you/)).toBeInTheDocument()
+    expect(await screen.findByTestId('exchanges-headline')).toHaveTextContent(/^1 exchange/)
+    expect(screen.queryByText(/sealed by you/)).not.toBeInTheDocument()
     expect(screen.queryByText(/Nothing needs your attention/)).not.toBeInTheDocument()
   })
 
@@ -614,8 +628,8 @@ describe('LedgerPageContent — Part 3: Exchanges two-sided stream + row inspect
     // bytes held or fetched), one OPEN (never asked, per L-C -- an absent
     // theirs record with no evidence_outcome carried can only honestly
     // resolve to "not asked").
-    expect(await screen.findByText('mine-clean')).toBeInTheDocument()
-    expect(screen.getByText('mine-alarm')).toBeInTheDocument()
+    expect(await screen.findByRole('group', { name: 'Exchange exch-clean-00' })).toBeInTheDocument()
+    expect(screen.getByRole('group', { name: 'Exchange exch-alarm-07' })).toBeInTheDocument()
     expect(screen.getByText('OPEN · not held')).toBeInTheDocument()
     expect(screen.queryByText('CLOSED')).not.toBeInTheDocument()
     expect(screen.getAllByText('OPEN').length).toBeGreaterThan(0)
@@ -750,7 +764,7 @@ describe('LedgerPageContent — Part 3: Exchanges two-sided stream + row inspect
     const user = userEvent.setup()
     render(<LedgerPageContent />, { wrapper: makeWrapper() })
     await user.click(screen.getByRole('tab', { name: /exchanges/i }))
-    await screen.findByText('exch-1')
+    await screen.findByRole('group', { name: 'Exchange exch-1' })
 
     const exportButton = screen.getByRole('button', { name: /export view \(csv\)/i })
     const evidenceButton = screen.getByRole('button', { name: /save evidence file/i })
@@ -807,7 +821,7 @@ describe('LedgerPageContent — Part 3: Exchanges two-sided stream + row inspect
     const user = userEvent.setup()
     render(<LedgerPageContent />, { wrapper: makeWrapper() })
     await user.click(screen.getByRole('tab', { name: /exchanges/i }))
-    await screen.findByText('mine-day2-a')
+    await screen.findByRole('group', { name: 'Exchange exch-day2-a' })
 
     // One header for the newer day (1 exchange, unconfirmed) and one for
     // the older day (2 exchanges, unconfirmed) -- never a header per row.
@@ -886,10 +900,10 @@ describe('LedgerPageContent — Part B1: Integrity chain strip', () => {
 
     // The four first-person stat cards, with real (non-literal) counts.
     expect(await screen.findByText('Sealed')).toBeInTheDocument()
-    expect(screen.getByText('Registered')).toBeInTheDocument()
-    expect(screen.getByText('Closed by the other side')).toBeInTheDocument()
-    expect(screen.getByText('Contradicted')).toBeInTheDocument()
-    expect(screen.getAllByText('2').length).toBeGreaterThan(0) // Sealed 2, Closed by the other side 2
+    expect(screen.getByText('Shared with a witness')).toBeInTheDocument()
+    expect(screen.getByText('Confirmed by the other side')).toBeInTheDocument()
+    expect(screen.getByText('Disagreements')).toBeInTheDocument()
+    expect(screen.getAllByText('2').length).toBeGreaterThan(0) // Sealed 2, Confirmed by the other side 2
     // A prominent, honest zero -- Registered 0 is present in the document,
     // not suppressed behind a muted "no data" fallback line.
     expect(screen.getAllByText('0').length).toBeGreaterThan(0)
@@ -906,11 +920,11 @@ describe('LedgerPageContent — Part B1: Integrity chain strip', () => {
     expect(document.getElementById(sealedGlyph.getAttribute('aria-describedby') as string)).toHaveTextContent(
       INTEGRITY_TILE_INFO.sealed
     )
-    const closedGlyph = screen.getByRole('button', { name: 'About Closed by the other side' })
+    const closedGlyph = screen.getByRole('button', { name: 'About Confirmed by the other side' })
     expect(document.getElementById(closedGlyph.getAttribute('aria-describedby') as string)).toHaveTextContent(
-      INTEGRITY_TILE_INFO.closedByOtherSide
+      INTEGRITY_TILE_INFO.confirmedByOtherSide
     )
-    for (const label of ['Sealed', 'Registered', 'Closed by the other side', 'Contradicted']) {
+    for (const label of ['Sealed', 'Shared with a witness', 'Confirmed by the other side', 'Disagreements']) {
       expect(screen.getByRole('button', { name: `About ${label}` })).toBeInTheDocument()
     }
     const chainGlyph = screen.getByRole('button', { name: 'About the chain coverage bar' })
@@ -930,9 +944,9 @@ describe('LedgerPageContent — Part B1: Integrity chain strip', () => {
     await user.click(screen.getByRole('tab', { name: /integrity/i }))
 
     expect(await screen.findByText('Sealed')).toBeInTheDocument()
-    expect(screen.getByText('Registered')).toBeInTheDocument()
-    expect(screen.getByText('Closed by the other side')).toBeInTheDocument()
-    expect(screen.getByText('Contradicted')).toBeInTheDocument()
+    expect(screen.getByText('Shared with a witness')).toBeInTheDocument()
+    expect(screen.getByText('Confirmed by the other side')).toBeInTheDocument()
+    expect(screen.getByText('Disagreements')).toBeInTheDocument()
 
     const bodyText = document.body.textContent ?? ''
     expect(bodyText).not.toMatch(/history is intact and registered with/i)
@@ -970,15 +984,16 @@ describe('LedgerPageContent — Part T6: Integrity section completion', () => {
     vi.mocked(useStatusQuery).mockReturnValue({ data: undefined } as never)
   })
 
-  it('Registered 0 renders at the same weight as any other value, never muted or suppressed', async () => {
+  it('Shared with a witness 0 renders at the same weight as any other value, with "off — your choice" under it', async () => {
     const user = userEvent.setup()
     render(<LedgerPageContent />, { wrapper: makeWrapper() })
     await user.click(screen.getByRole('tab', { name: /integrity/i }))
 
-    const registeredLabel = await screen.findByText('Registered')
-    const statCard = registeredLabel.closest('div')
+    const registeredLabel = await screen.findByText('Shared with a witness')
+    const statCard = registeredLabel.closest('.panel-shell')
     const zero = statCard?.querySelector('.font-mono')
     expect(zero?.textContent).toBe('0')
+    expect(statCard).toHaveTextContent('off — your choice')
     // Same element the "bad"-toned Contradicted card would use for a real
     // value -- no separate muted/apologetic class for a zero.
     expect(zero?.className).toMatch(/font-semibold/)
@@ -1071,23 +1086,53 @@ describe('LedgerPageContent — Part T6: Integrity section completion', () => {
     render(<LedgerPageContent />, { wrapper: makeWrapper() })
     await user.click(screen.getByRole('tab', { name: /integrity/i }))
 
-    expect(await screen.findByText('Owner: bound (self-asserted) — not bound to a person.')).toBeInTheDocument()
-    // The setup checklist's step 2 flips too -- same live owner data.
-    expect(screen.getByText('bound (self-asserted)')).toBeInTheDocument()
+    expect(await screen.findByText('Owner: linked (self-asserted) — not bound to a person.')).toBeInTheDocument()
+    // The setup checklist's step 2 flips too -- same live owner data, saying
+    // what binding established (UX §4).
+    expect(screen.getByText('linked (self-asserted)')).toBeInTheDocument()
+    expect(
+      screen.getByText('Your records are signed by this node’s key, linked to your owner account (self-asserted).')
+    ).toBeInTheDocument()
   })
 
   it('shows the default continuity sentence naming what would establish it', async () => {
+    // Its own card: an earlier test's `mockResolvedValue` survives
+    // `clearAllMocks`, and a reported checkpoint changes the sentence.
+    const { fetchPaneA } = await import('@/features/capsules/api/sidecarClient')
+    vi.mocked(fetchPaneA).mockResolvedValue({ rows: [], operator: null, witness_checkpoint_supplied: false, card: null })
     const user = userEvent.setup()
     render(<LedgerPageContent />, { wrapper: makeWrapper() })
     await user.click(screen.getByRole('tab', { name: /integrity/i }))
 
     expect(await screen.findByText('Continuity: not established. It needs a prior checkpoint for the next one to bind to.')).toBeInTheDocument()
-    // Registration is its own sentence, not folded into continuity.
+    // Registration is explained once, in step 1 -- never repeated here (finding 7).
+    expect(screen.queryByText(/^Registration is a separate step/)).not.toBeInTheDocument()
+  })
+
+  it('one checkpoint: continuity says so and what comes next (UX §4); the footer sits behind Details', async () => {
+    const { fetchPaneA } = await import('@/features/capsules/api/sidecarClient')
+    vi.mocked(fetchPaneA).mockResolvedValue({
+      rows: [],
+      operator: null,
+      witness_checkpoint_supplied: false,
+      card: { checkpoint_count: 1, witnesses: [] }
+    })
+    const user = userEvent.setup()
+    render(<LedgerPageContent />, { wrapper: makeWrapper() })
+    await user.click(screen.getByRole('tab', { name: /integrity/i }))
+
     expect(
-      screen.getByText(
-        'Registration is a separate step: registering a checkpoint with a service you don’t run is what makes a later rewrite detectable by someone else.'
+      await screen.findByText(
+        'Continuity: 1 checkpoint so far. The next one will be checked against it. A witness is what lets someone else check it too.'
       )
     ).toBeInTheDocument()
+    // Finding 7: the unwitnessed checkpoint is said by step 1 -- not again as
+    // a separate "Checkpointed locally" line.
+    expect(screen.getAllByText(/not registered \(witness: off\)/i)).toHaveLength(1)
+    const details = screen.getByTestId('integrity-details')
+    expect(details.tagName).toBe('DETAILS')
+    expect(details).not.toHaveAttribute('open')
+    expect(within(details).getByText(/^Capture boundary: the plugin at this node’s serving boundary/)).toBeInTheDocument()
   })
 
   it('offers a range-wide "Save evidence file" action, distinct from the Exchanges one', async () => {
@@ -1179,9 +1224,9 @@ describe('LedgerPageContent — Part B3: windowed paging + sticky header', () =>
     await user.click(screen.getByRole('tab', { name: /exchanges/i }))
 
     // Page 1: newest 50 (exch-0..exch-49), never exch-50.
-    expect(await screen.findByText('mine-0')).toBeInTheDocument()
-    expect(screen.getByText('mine-49')).toBeInTheDocument()
-    expect(screen.queryByText('mine-50')).not.toBeInTheDocument()
+    expect(await screen.findByRole('group', { name: 'Exchange exch-0' })).toBeInTheDocument()
+    expect(screen.getByRole('group', { name: 'Exchange exch-49' })).toBeInTheDocument()
+    expect(screen.queryByRole('group', { name: 'Exchange exch-50' })).not.toBeInTheDocument()
 
     // L-K — the full-range count states its own span, never a bare number.
     expect(screen.getByText(/Showing 50 of 120 exchanges/)).toBeInTheDocument()
@@ -1193,12 +1238,12 @@ describe('LedgerPageContent — Part B3: windowed paging + sticky header', () =>
     expect(newerButton).toBeDisabled()
 
     await user.click(screen.getByRole('button', { name: 'Older exchanges' }))
-    expect(await screen.findByText('mine-50')).toBeInTheDocument()
-    expect(screen.getByText('mine-99')).toBeInTheDocument()
-    expect(screen.queryByText('mine-0')).not.toBeInTheDocument()
+    expect(await screen.findByRole('group', { name: 'Exchange exch-50' })).toBeInTheDocument()
+    expect(screen.getByRole('group', { name: 'Exchange exch-99' })).toBeInTheDocument()
+    expect(screen.queryByRole('group', { name: 'Exchange exch-0' })).not.toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: 'Newer exchanges' }))
-    expect(await screen.findByText('mine-0')).toBeInTheDocument()
+    expect(await screen.findByRole('group', { name: 'Exchange exch-0' })).toBeInTheDocument()
   })
 
   it('the YOUR RECORD / THEIR RECORD column header is a single sticky header, never repeated per row', async () => {
@@ -1209,7 +1254,7 @@ describe('LedgerPageContent — Part B3: windowed paging + sticky header', () =>
     render(<LedgerPageContent />, { wrapper: makeWrapper() })
     await user.click(screen.getByRole('tab', { name: /exchanges/i }))
 
-    await screen.findByText('mine-0')
+    await screen.findByRole('group', { name: 'Exchange exch-0' })
     expect(screen.getAllByText('YOUR RECORD')).toHaveLength(1)
     expect(screen.getAllByText('THEIR RECORD, AS GIVEN TO YOU')).toHaveLength(1)
   })
@@ -1224,7 +1269,7 @@ describe('LedgerPageContent — Part B3: windowed paging + sticky header', () =>
     const row = await screen.findByLabelText('Exchange exch-75')
     expect(row).toHaveTextContent('mine-75')
     // Page 2 (exch-50..exch-99), never page 1's exch-0.
-    expect(screen.queryByText('mine-0')).not.toBeInTheDocument()
+    expect(screen.queryByRole('group', { name: 'Exchange exch-0' })).not.toBeInTheDocument()
 
     expect(row).toHaveAttribute('aria-current', 'true')
     expect(row).toHaveAttribute('data-highlighted', 'true')
@@ -1254,7 +1299,7 @@ describe('LedgerPageContent — Part B3: windowed paging + sticky header', () =>
     const user = userEvent.setup()
     render(<LedgerPageContent />, { wrapper: makeWrapper() })
     await user.click(screen.getByRole('tab', { name: /exchanges/i }))
-    await screen.findByText('mine-0')
+    await screen.findByRole('group', { name: 'Exchange exch-0' })
 
     expect(screen.getByRole('button', { name: 'Next contradiction ▸' })).toBeDisabled()
   })
@@ -1266,7 +1311,7 @@ describe('LedgerPageContent — Part B3: windowed paging + sticky header', () =>
     const user = userEvent.setup()
     render(<LedgerPageContent />, { wrapper: makeWrapper() })
     await user.click(screen.getByRole('tab', { name: /exchanges/i }))
-    await screen.findByText('mine-0')
+    await screen.findByRole('group', { name: 'Exchange exch-0' })
 
     expect(screen.getByRole('button', { name: 'Next contradiction ▸' })).toBeDisabled()
   })
@@ -1285,8 +1330,8 @@ describe('LedgerPageContent — Part B3: windowed paging + sticky header', () =>
     render(<LedgerPageContent />, { wrapper: makeWrapper() })
     await user.click(screen.getByRole('tab', { name: /exchanges/i }))
 
-    expect(await screen.findByText('mine-49')).toBeInTheDocument()
-    expect(screen.queryByText('mine-50')).not.toBeInTheDocument()
+    expect(await screen.findByRole('group', { name: 'Exchange exch-49' })).toBeInTheDocument()
+    expect(screen.queryByRole('group', { name: 'Exchange exch-50' })).not.toBeInTheDocument()
   })
 
   it('keyboard map: j/k moves the row cursor, o toggles content inline, c reveals Checks inline, / focuses search', async () => {
@@ -1296,7 +1341,7 @@ describe('LedgerPageContent — Part B3: windowed paging + sticky header', () =>
     const user = userEvent.setup()
     render(<LedgerPageContent />, { wrapper: makeWrapper() })
     await user.click(screen.getByRole('tab', { name: /exchanges/i }))
-    await screen.findByText('mine-0')
+    await screen.findByRole('group', { name: 'Exchange exch-0' })
 
     const rowAt = (exchangeKey: string) => screen.getByLabelText(`Exchange ${exchangeKey}`)
     expect(rowAt('exch-0')).toHaveAttribute('data-focused', 'true')
@@ -1331,7 +1376,7 @@ describe('LedgerPageContent — Part B3: windowed paging + sticky header', () =>
     const user = userEvent.setup()
     render(<LedgerPageContent />, { wrapper: makeWrapper() })
     await user.click(screen.getByRole('tab', { name: /exchanges/i }))
-    await screen.findByText('mine-0')
+    await screen.findByRole('group', { name: 'Exchange exch-0' })
 
     await user.keyboard('c')
     expect(await screen.findByRole('region', { name: /Security checks for exch-0/ })).toBeInTheDocument()
@@ -1355,7 +1400,7 @@ describe('LedgerPageContent — Part B3: windowed paging + sticky header', () =>
     const user = userEvent.setup()
     render(<LedgerPageContent />, { wrapper: makeWrapper() })
     await user.click(screen.getByRole('tab', { name: /exchanges/i }))
-    await screen.findByText('mine-0')
+    await screen.findByRole('group', { name: 'Exchange exch-0' })
 
     await user.click(screen.getByLabelText('Search exchanges'))
     // "exch" matches every exchange_key here (they all start with "exch-"),
@@ -1420,8 +1465,8 @@ describe('LedgerPageContent — [ledger-T11-twins-visible]: real twin bracket + 
     await user.click(screen.getByRole('tab', { name: /exchanges/i }))
 
     expect(await screen.findByText('TWIN · twin-abc · same request, two peers')).toBeInTheDocument()
-    expect(screen.getByText('twin-mine-0')).toBeInTheDocument()
-    expect(screen.getByText('twin-mine-1')).toBeInTheDocument()
+    expect(screen.getByRole('group', { name: 'Exchange twin-exch-0' })).toBeInTheDocument()
+    expect(screen.getByRole('group', { name: 'Exchange twin-exch-1' })).toBeInTheDocument()
     expect(
       screen.getByText('This comparison ran automatically — 1 in 50 exchanges is sent to a second peer.')
     ).toBeInTheDocument()
@@ -1439,7 +1484,7 @@ describe('LedgerPageContent — [ledger-T11-twins-visible]: real twin bracket + 
     render(<LedgerPageContent />, { wrapper: makeWrapper() })
     await user.click(screen.getByRole('tab', { name: /exchanges/i }))
 
-    expect(await screen.findByText('twin-mine-0')).toBeInTheDocument()
+    expect(await screen.findByRole('group', { name: 'Exchange twin-exch-0' })).toBeInTheDocument()
     expect(screen.queryByText(/TWIN ·/)).not.toBeInTheDocument()
   })
 
@@ -1466,8 +1511,8 @@ describe('LedgerPageContent — [ledger-T11-twins-visible]: real twin bracket + 
     await user.click(screen.getByRole('tab', { name: /exchanges/i }))
 
     // Before filtering: both the bracket and the plain rows are visible.
-    expect(await screen.findByText('twin-mine-0')).toBeInTheDocument()
-    expect(screen.getByText('mine-0')).toBeInTheDocument()
+    expect(await screen.findByRole('group', { name: 'Exchange twin-exch-0' })).toBeInTheDocument()
+    expect(screen.getByRole('group', { name: 'Exchange exch-0' })).toBeInTheDocument()
 
     await user.click(screen.getByLabelText('Filter exchanges'))
     const stateSection = (await screen.findByText('State')).closest('section')
@@ -1475,9 +1520,9 @@ describe('LedgerPageContent — [ledger-T11-twins-visible]: real twin bracket + 
     await user.click(within(stateSection).getByRole('button', { name: 'None' }))
     await user.click(within(stateSection).getByLabelText(/Twins only,/))
 
-    expect(await screen.findByText('twin-mine-0')).toBeInTheDocument()
-    expect(screen.getByText('twin-mine-1')).toBeInTheDocument()
-    expect(screen.queryByText('mine-0')).not.toBeInTheDocument()
-    expect(screen.queryByText('mine-1')).not.toBeInTheDocument()
+    expect(await screen.findByRole('group', { name: 'Exchange twin-exch-0' })).toBeInTheDocument()
+    expect(screen.getByRole('group', { name: 'Exchange twin-exch-1' })).toBeInTheDocument()
+    expect(screen.queryByRole('group', { name: 'Exchange exch-0' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('group', { name: 'Exchange exch-1' })).not.toBeInTheDocument()
   })
 })

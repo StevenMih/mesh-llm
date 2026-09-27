@@ -18,12 +18,9 @@ import { buildTimelinePoints, type PeerExchangeSource } from '@/features/capsule
 import type { PeerMeshStatus } from '@/features/capsules/lib/peer-mesh-status'
 import {
   ALL_PEER_TABLE_COLUMNS,
-  SELF_REPORTED_DETAIL,
-  SELF_REPORTED_NOTE,
   type PeerTableColumnKey,
   type PeerTableRowView
 } from '@/features/capsules/lib/peer-row-view'
-import { InfoHover } from '@/features/capsules/components/InfoHover'
 import { HoverChip } from '@/features/capsules/components/HoverChip'
 
 export type PeerTableRowProps = {
@@ -82,19 +79,9 @@ export function PeerTableRow({
                id spaces render as ALIASES on this one row -- signing key ·
                node · endpoint -- never as extra peer rows. */}
             {view.aliasLine ? <span className="font-mono text-fg-faint text-xs">{view.aliasLine}</span> : null}
-            <span className="inline-flex items-center gap-1 text-fg-faint text-xs">
-              {view.identityNote}
-              {/* The terse "self-reported — not independently attested" chip
-                 stays on the face; the fuller honest sentence moves behind the
-                 (i). Only the self-reported note carries the detail hover. */}
-              {view.identityNote === SELF_REPORTED_NOTE ? (
-                <InfoHover
-                  census="peer:self_reported"
-                  describes="the self-reported note"
-                  label={SELF_REPORTED_DETAIL}
-                />
-              ) : null}
-            </span>
+            {/* UX §2: "self-reported" is true of every row, so it is said
+               once in the legend under the table, not on each row. */}
+            {view.identityNote ? <span className="text-fg-faint text-xs">{view.identityNote}</span> : null}
             {/* Visible while collapsed (chooser-v2 §3-F), but as the specific
                thing, counted, with one sentence on hover -- never a generic
                warning glyph (UX §8). */}

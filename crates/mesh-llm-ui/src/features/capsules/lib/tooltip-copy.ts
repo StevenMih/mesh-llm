@@ -108,9 +108,9 @@ export const TWIN_NO_VERDICT_TOOLTIP =
 export const INTEGRITY_TILE_TOOLTIPS = {
   sealed:
     'Records this node has sealed into its own chain, checked on this machine. It says nothing about whether their contents are true.',
-  registered:
+  sharedWithWitness:
     'How many of your checkpoints a witness you don’t run is holding. Off by your choice until you turn one on.',
-  closedByOtherSide: 'Exchanges the other side confirmed with their own signed record, checked on this machine.',
+  confirmedByOtherSide: 'Exchanges the other side confirmed with their own signed record, checked on this machine.',
   contradicted: 'Exchanges where your record and theirs disagree.'
 } as const
 

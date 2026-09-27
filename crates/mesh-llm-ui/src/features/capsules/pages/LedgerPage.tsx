@@ -40,7 +40,11 @@ import {
   dayTalliesByKey,
   dayTallyLine
 } from '@/features/capsules/lib/exchange-day-groups'
-import { exceptionsFirstLine, exceptionsFirstTally } from '@/features/capsules/lib/exceptions-first-line'
+import {
+  exceptionsFirstLine,
+  exceptionsFirstTally,
+  exchangesHeadline
+} from '@/features/capsules/lib/exceptions-first-line'
 import {
   LEDGER_PAGE_SIZE,
   exchangeRowDomId,
@@ -73,10 +77,10 @@ import {
   CHAIN_BAR_INFO,
   chainStripCaption,
   checkpointRegistration,
-  CONTINUITY_NOT_ESTABLISHED,
+  continuityFact,
   identityFact,
+  sealedBreakdownText,
   INTEGRITY_TILE_INFO,
-  REGISTRATION_IS_SEPARATE,
   RETENTION_FACT,
   type SetupStep
 } from '@/features/capsules/lib/integrity-view'
@@ -656,10 +660,8 @@ function ExchangesSection({
   // today, so that read was always 0 by coincidence, not by evidence).
   const total = query.data.row_count
   const confirmed = query.data.rows.filter((r) => deriveRightCellState(r).kind === 'closed').length
-  // THE one registration fact ([mesh-citing-record-shots-four-defects] D1):
-  // same `checkpointRegistration` derivation rung 1 and the witness line use,
-  // so this headline can never disagree with the Integrity tab.
-  const registered = checkpointRegistration(balanceQuery.data?.card ?? null).registered
+  const disagreements = query.data.rows.filter((r) => deriveRightCellState(r).kind === 'contradicted').length
+  const exceptionsTally = exceptionsFirstTally(allRows)
 
   const roleOptions: FilterValueOption[] = ALL_ROLE_VALUES.map((value) => ({
     value,
@@ -685,19 +687,14 @@ function ExchangesSection({
       {balanceHeader}
       {/* L3.1 — Exchanges section headline */}
       <p className="text-sm text-fg-dim">
-        Each exchange is a pair of sealed records — yours and theirs. Both sides keep a copy.
+        Each exchange is a pair of sealed records — yours and theirs. Their record normally arrives when the exchange
+        finishes. If it doesn’t, you can ask for it.
       </p>
-      {/* L3.8/§3E — Two counts plus registration, no ratio, with the one
-         action that changes each ("Get the other side’s record" / "Register a checkpoint"
-         both land on Integrity's setup checklist — see `onGoToIntegrity`'s
-         doc comment above). */}
+      {/* UX §3 — ONE headline: count, confirmed, disagreements. Registration
+         is an Integrity fact and lives there (and in the hero line). */}
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <p className="text-sm font-medium text-foreground">
-          {/* "You sealed N" not "N sealed by you" -- the exceptions-first
-             line below uses the latter phrase verbatim; a duplicate
-             substring here would make queries for either line ambiguous. */}
-          You sealed {total} exchange{total === 1 ? '' : 's'} · {confirmed} confirmed by the other side ·{' '}
-          {registered ? 'registered' : 'not registered'}.
+        <p className="text-sm font-medium text-foreground" data-testid="exchanges-headline">
+          {exchangesHeadline(total, confirmed, disagreements, allRowsRangeText)}
         </p>
         <div className="flex items-center gap-2">
           <Button
@@ -720,11 +717,11 @@ function ExchangesSection({
           </Button>
         </div>
       </div>
-      {/* Exceptions-first line — leads with what needs attention, range
-         stated, never a flat count that buries a failure below it. */}
-      <p className="text-sm text-fg-dim">
-        {exceptionsFirstLine(exceptionsFirstTally(allRows), allRowsRangeText)}
-      </p>
+      {/* Exceptions-first line — only when something needs attention; the
+         all-clear case would just repeat the headline's count. */}
+      {exceptionsTally.needingAttention > 0 ? (
+        <p className="text-sm text-fg-dim">{exceptionsFirstLine(exceptionsTally, allRowsRangeText)}</p>
+      ) : null}
 
       {/* [mesh-citing-record-shots-four-defects] D4(c): no "N shown" counter
          here -- the window banner below already states "Showing X of Y
@@ -842,40 +839,44 @@ function ExchangesSection({
           {/* v3 §2a — bounded-window banner (L-K): the full-range count and
              span are computed over `streamRows` (the full filtered set),
              never just the current page. */}
-          <div className="flex flex-col gap-1 rounded border border-border-soft bg-panel-strong/40 px-3 py-2">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <p className="type-caption font-mono text-fg-dim">
-                {windowBannerHeadline(currentPageRows.length, streamRows.length, fullRangeText)}
-              </p>
-              <div className="flex items-center gap-1">
-                <Button
-                  aria-label="Older exchanges"
-                  className="ui-control h-7 gap-1 rounded-[var(--radius)] px-2 text-[length:var(--density-type-caption)]"
-                  disabled={safePageIndex >= pages.length - 1}
-                  onClick={() => setPageIndex((prev) => Math.min(prev + 1, pages.length - 1))}
-                  size="sm"
-                  type="button"
-                  variant="outline"
-                >
-                  ← Older
-                </Button>
-                <Button
-                  aria-label="Newer exchanges"
-                  className="ui-control h-7 gap-1 rounded-[var(--radius)] px-2 text-[length:var(--density-type-caption)]"
-                  disabled={safePageIndex <= 0}
-                  onClick={() => setPageIndex((prev) => Math.max(prev - 1, 0))}
-                  size="sm"
-                  type="button"
-                  variant="outline"
-                >
-                  Newer →
-                </Button>
+          {/* UX §3: hidden when every row is already on screen -- a banner
+             over five rows saying "5 of 5" is chrome, not information. */}
+          {pages.length > 1 ? (
+            <div className="flex flex-col gap-1 rounded border border-border-soft bg-panel-strong/40 px-3 py-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="type-caption font-mono text-fg-dim">
+                  {windowBannerHeadline(currentPageRows.length, streamRows.length, fullRangeText)}
+                </p>
+                <div className="flex items-center gap-1">
+                  <Button
+                    aria-label="Older exchanges"
+                    className="ui-control h-7 gap-1 rounded-[var(--radius)] px-2 text-[length:var(--density-type-caption)]"
+                    disabled={safePageIndex >= pages.length - 1}
+                    onClick={() => setPageIndex((prev) => Math.min(prev + 1, pages.length - 1))}
+                    size="sm"
+                    type="button"
+                    variant="outline"
+                  >
+                    ← Older
+                  </Button>
+                  <Button
+                    aria-label="Newer exchanges"
+                    className="ui-control h-7 gap-1 rounded-[var(--radius)] px-2 text-[length:var(--density-type-caption)]"
+                    disabled={safePageIndex <= 0}
+                    onClick={() => setPageIndex((prev) => Math.max(prev - 1, 0))}
+                    size="sm"
+                    type="button"
+                    variant="outline"
+                  >
+                    Newer →
+                  </Button>
+                </div>
               </div>
+              <p className="type-caption text-fg-faint">
+                Not shown here: exchanges outside this range. Counts above are for the full range.
+              </p>
             </div>
-            <p className="type-caption text-fg-faint">
-              Not shown here: exchanges outside this range. Counts above are for the full range.
-            </p>
-          </div>
+          ) : null}
 
           {/* v3 §2a — the row list is its own bounded, independently
              scrolling panel: the enclosing Card uses `overflow-hidden` (for
@@ -1026,11 +1027,14 @@ type IntegrityStatCardProps = {
   /** The honest explanation of what this tile counts and what evidence backs
    *  it -- moved off the tile face and behind the (i) glyph. */
   readonly info: string
+  /** One plain line under the value -- what the number is made of, or why
+   *  it is what it is (UX §4 "off — your choice"). */
+  readonly sub?: string
 }
 
 /** One first-person stat card. A zero renders in the exact same size/weight
  *  as any other value -- never muted, never apologetic (Accept criterion). */
-function IntegrityStatCard({ label, value, tone = 'default', info }: IntegrityStatCardProps) {
+function IntegrityStatCard({ label, value, tone = 'default', info, sub }: IntegrityStatCardProps) {
   const valueColor = tone === 'bad' && value > 0 ? 'var(--color-bad)' : 'var(--color-foreground)'
   return (
     <div className="panel-shell min-w-0 rounded-[var(--radius-lg)] border border-border bg-panel px-[var(--panel-x)] py-[var(--panel-y)]">
@@ -1044,6 +1048,7 @@ function IntegrityStatCard({ label, value, tone = 'default', info }: IntegritySt
       >
         {value}
       </div>
+      {sub ? <p className="mt-1.5 type-caption text-fg-dim">{sub}</p> : null}
     </div>
   )
 }
@@ -1117,6 +1122,11 @@ function IntegritySection() {
   const ownerCardIndex = typeof card?.owner_card_index === 'number' ? card.owner_card_index : null
 
   const sealedCount = rows.length
+  // Finding 3: Integrity counts every record this node sealed; Exchanges
+  // counts exchanges. The difference is the records that note a record
+  // received from the other side -- said on the tile so 8 and 5 reconcile.
+  const receivedNoteCount = rows.filter((row) => row.kind === 'counterparty_half_citation').length
+  const ownExchangeCount = sealedCount - receivedNoteCount
   // Same predicate the Exchanges stream badge uses (`deriveRightCellState`,
   // called with no live fetch state here -- Integrity has no per-row peer
   // fetch to draw on) so the two sections can never again show
@@ -1130,6 +1140,7 @@ function IntegritySection() {
 
   const setupSteps = buildSetupSteps(card ?? null, owner, closedByOtherSideCount)
   const registrationCopy = buildRegistrationCopy(card ?? null)
+  const registration = checkpointRegistration(card ?? null)
 
   return (
     <Card>
@@ -1164,19 +1175,37 @@ function IntegritySection() {
       <CardContent className="flex flex-col gap-4 pt-0 text-sm text-fg-dim">
         <ChainStrip checkpointCount={checkpointCount} coveredLeafCount={coveredLeafCount} sealedCount={sealedCount} />
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-          <IntegrityStatCard info={INTEGRITY_TILE_INFO.sealed} label="Sealed" value={sealedCount} />
-          <IntegrityStatCard info={INTEGRITY_TILE_INFO.registered} label="Registered" value={witnessCount} />
           <IntegrityStatCard
-            info={INTEGRITY_TILE_INFO.closedByOtherSide}
-            label="Closed by the other side"
+            info={INTEGRITY_TILE_INFO.sealed}
+            label="Sealed"
+            sub={sealedBreakdownText(ownExchangeCount, receivedNoteCount)}
+            value={sealedCount}
+          />
+          <IntegrityStatCard
+            info={INTEGRITY_TILE_INFO.sharedWithWitness}
+            label="Shared with a witness"
+            sub={witnessCount === 0 ? 'off — your choice' : undefined}
+            value={witnessCount}
+          />
+          <IntegrityStatCard
+            info={INTEGRITY_TILE_INFO.confirmedByOtherSide}
+            label="Confirmed by the other side"
             value={closedByOtherSideCount}
           />
-          <IntegrityStatCard info={INTEGRITY_TILE_INFO.contradicted} label="Contradicted" tone="bad" value={contradictedCount} />
+          <IntegrityStatCard
+            info={INTEGRITY_TILE_INFO.contradicted}
+            label="Disagreements"
+            tone="bad"
+            value={contradictedCount}
+          />
         </div>
 
         <SetupChecklist steps={setupSteps} />
 
-        {registrationCopy ? (
+        {/* Finding 7 -- each thing said once: an unwitnessed checkpoint is
+           already stated by step 1's status and the witness tile, so the
+           summary line renders only once a witness actually holds one. */}
+        {registrationCopy && registration.registered ? (
           <div className="flex flex-col gap-0.5">
             <p>{registrationCopy.witnessSummary}</p>
             {registrationCopy.registeredNoLaterThan ? (
@@ -1190,20 +1219,19 @@ function IntegritySection() {
             Continuity: <span className="font-medium text-foreground">{continuity}</span>
           </p>
         ) : (
-          <>
-            <p>{CONTINUITY_NOT_ESTABLISHED}</p>
-            <p>{REGISTRATION_IS_SEPARATE}</p>
-          </>
+          <p>{continuityFact(checkpointCount)}</p>
         )}
 
-        {/* Once-per-node facts -- stated once here, never repeated per
-           exchange row (rows link back instead, see `security-checks-
-           view.ts`'s `local_inclusion` detail). */}
-        <div className="flex flex-col gap-1 border-t border-border-soft pt-3">
-          <p>{RETENTION_FACT}</p>
-          <p>{CAPTURE_BOUNDARY_FACT}</p>
-          <p>{identityFact(owner)}</p>
-        </div>
+        {/* Once-per-node facts -- engineering detail, so behind a Details
+           disclosure (UX §4); never repeated per exchange row. */}
+        <details className="border-t border-border-soft pt-3" data-testid="integrity-details">
+          <summary className="cursor-pointer select-none text-xs text-fg-dim">Details</summary>
+          <div className="mt-2 flex flex-col gap-1">
+            <p>{RETENTION_FACT}</p>
+            <p>{CAPTURE_BOUNDARY_FACT}</p>
+            <p>{identityFact(owner)}</p>
+          </div>
+        </details>
       </CardContent>
     </Card>
   )
@@ -1301,8 +1329,14 @@ export function LedgerPageContent({ focusExchangeKey }: { focusExchangeKey?: str
                     <p className="text-sm text-fg-dim">
                       What have the nodes you've dealt with shown you — and does it hold up?
                     </p>
-                    <p className="mb-3 text-sm text-emerald-500">
-                      Accountability only. Liveness, latency &amp; routing live in the Network tab.
+                    <p className="mb-3 text-sm text-fg-dim">
+                      Accountability only. Liveness, latency and routing are in the{' '}
+                      {/* A plain link: this component stays router-free
+                         (see `focusExchangeKey` above). */}
+                      <a className="underline underline-offset-2 hover:text-foreground" href="/">
+                        Network tab
+                      </a>
+                      .
                     </p>
                     <PeersSection recordsById={recordsById} />
                   </div>

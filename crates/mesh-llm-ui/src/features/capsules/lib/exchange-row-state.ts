@@ -234,54 +234,71 @@ function dateOrFallback(date: string | null): string {
 }
 
 // ---------------------------------------------------------------------------
-// Row glyph + bracket strip ([mesh-citing-record-shots-four-defects] D4(b),
-// mesh-evidence-tab-double-entry-design-2026-09-23 §7). The row's lone glyph
-// draws the EXCHANGE state -- the role is stated in words ("you asked"/"you
-// served", v3 §2), never by glyph: both halves held (closed/contradicted) is
-// the filled, complete glyph; one half is the half glyph. The strip is how
-// the state is *drawn* -- "left bracket always solid (we always have ours);
-// right bracket is the state; the arrow between is the handshake". Glyphs:
-// `◌` nothing · `◔` id known, bytes not held · `●` held · `◐` incomplete ·
-// `⊘` refused · `≠` contradicted. Pure derivations from the SAME row + state
-// the badge renders -- never a new predicate.
+// Bracket strip (mesh-evidence-tab-double-entry-design-2026-09-23 §7, redrawn
+// per the 2026-09-26 UX review §3). The row carries no leading glyph: the
+// right cell already states the exchange in a sentence, so a second, unlabelled
+// glyph was one more thing to decode. The strip is a pure derivation from the
+// SAME row + state the badge renders -- never a new predicate.
 // ---------------------------------------------------------------------------
 
-/** CLOSED/CONTRADICTED (both halves held) -> `●`; every OPEN state -> `◐`. */
-export function rowStateMarker(state: RightCellState): string {
-  return state.kind === 'closed' || state.kind === 'contradicted' ? '●' : '◐'
-}
+/** One side of the strip: a dot and the word that says what it means. */
+export type BracketSide = { glyph: '●' | '○'; word: string }
 
-export type BracketStrip = { yours: string; arrow: string; theirs: string }
+/** UX §3: the strip is drawn without notation -- two dots under two labels,
+ *  `Yours ● sealed` and `Theirs ○ not received`, joined by a line only when
+ *  both records are held. The word carries the meaning, so no glyph legend is
+ *  needed. */
+export type BracketStrip = { yours: BracketSide; joined: boolean; theirs: BracketSide }
 
-export function bracketStrip(row: PaneCRow, state: RightCellState): BracketStrip {
-  // Ours is solid whenever our half is held; `◌` only for the received-
-  // without-a-commitment row shape (`mine.state === 'absent'`).
-  const yours = row.mine.state === 'absent' ? '◌' : '●'
-  switch (state.kind) {
+function theirSide(kind: RightCellStateKind): BracketSide {
+  switch (kind) {
     case 'closed':
-      return { yours, arrow: '⟷', theirs: '●' }
+      return { glyph: '●', word: 'same' }
     case 'contradicted':
-      return { yours, arrow: '⇄≠', theirs: '●' }
+      return { glyph: '●', word: 'differs' }
     case 'open_refused':
-      return { yours, arrow: '⇥', theirs: '⊘' }
-    case 'open_asked':
-      return { yours, arrow: '⇢', theirs: '◌' }
-    case 'open_not_held':
-      // The honest rendering of a peer-asserted id: known, bytes not held.
-      return { yours, arrow: '→', theirs: '◔' }
+      return { glyph: '○', word: 'refused' }
     case 'open_absent':
+      return { glyph: '○', word: 'they have no record' }
+    case 'open_asked':
+      return { glyph: '○', word: 'asked, no reply yet' }
+    case 'open_not_held':
     case 'open_not_given':
+      return { glyph: '○', word: 'not received' }
     case 'open_not_asked':
-      return { yours, arrow: '→', theirs: '◌' }
+      return { glyph: '○', word: 'not asked for' }
     default: {
-      const exhaustiveCheck: never = state.kind
+      const exhaustiveCheck: never = kind
       return exhaustiveCheck
     }
   }
 }
 
+export function bracketStrip(row: PaneCRow, state: RightCellState): BracketStrip {
+  // Ours is sealed whenever our half is held; `mine.state === 'absent'` is the
+  // received-without-a-commitment row shape.
+  const yours: BracketSide = row.mine.state === 'absent' ? { glyph: '○', word: 'not held' } : { glyph: '●', word: 'sealed' }
+  const theirs = theirSide(state.kind)
+  return { yours, joined: yours.glyph === '●' && theirs.glyph === '●', theirs }
+}
+
 export function bracketStripText(strip: BracketStrip): string {
-  return `{ yours ${strip.yours} } ${strip.arrow} { theirs ${strip.theirs} }`
+  const link = strip.joined ? ' —— ' : '   '
+  return `Yours ${strip.yours.glyph} ${strip.yours.word}${link}Theirs ${strip.theirs.glyph} ${strip.theirs.word}`
+}
+
+/** UX §3 "Put `Ask for their record` on the row only after a timeout": with
+ *  push on, their record normally arrives when the exchange finishes, so an
+ *  ask is offered only once this long has passed without it. */
+export const ASK_FOR_RECORD_AFTER_MS = 10 * 60 * 1000
+
+/** True once the exchange is old enough that their record should have
+ *  arrived. A row with no parseable timestamp cannot be timed, so the ask is
+ *  offered rather than hidden. */
+export function askForRecordIsDue(timestamp: string | null, nowMs: number): boolean {
+  const at = timestamp ? Date.parse(timestamp) : Number.NaN
+  if (Number.isNaN(at)) return true
+  return nowMs - at >= ASK_FOR_RECORD_AFTER_MS
 }
 
 /** [mesh-citing-record-shots-four-defects] D4(d): the CLOSED right column as
@@ -307,15 +324,15 @@ export function closedPropertyCells(row: PaneCRow): string[] {
   return closedPropertyCellItems(row).map((cell) => cell.label)
 }
 
-/** The right cell's rendered sentence. Every OPEN variant reads as a
- *  presence fact, never a problem (L-A) -- only `contradicted` names an
- *  alarm word (`differs`). */
+/** The right cell's rendered sentence (UX §3: the state as a sentence).
+ *  Every OPEN variant reads as a presence fact, never a problem (L-A) -- only
+ *  `contradicted` names an alarm word (`differs`). */
 export function rightCellText(state: RightCellState): string {
   switch (state.kind) {
     case 'closed':
-      return '✓ same request and answer as yours'
+      return '✓ They recorded the same request and answer'
     case 'contradicted':
-      return '⚠ differs'
+      return '✗ Their record differs'
     case 'open_refused':
       return `They declined, and signed the refusal — ${dateOrFallback(state.date)}`
     case 'open_absent':

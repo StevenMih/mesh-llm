@@ -66,6 +66,10 @@ export function checkpointRegistration(card: JsonRecord | null | undefined): Che
   }
 }
 
+/** Step 2's done state (UX §4): what binding actually established. */
+export const OWNER_LINKED_SENTENCE =
+  'Your records are signed by this node’s key, linked to your owner account (self-asserted).'
+
 /** The honest rung-1/witness-line copy for a checkpoint no witness holds. */
 export const CHECKPOINTED_NOT_REGISTERED_STATUS = 'checkpointed locally · not registered (witness: off)'
 
@@ -133,9 +137,10 @@ export function buildSetupSteps(
       key: 'identity',
       title: 'Bind an owner identity',
       done: bound,
-      status: bound ? 'bound (self-asserted)' : 'not set up',
+      status: bound ? 'linked (self-asserted)' : 'not set up',
+      // UX §4: "bound" alone overclaims -- the done state says what it is.
       body: bound
-        ? null
+        ? OWNER_LINKED_SENTENCE
         : '`mesh-llm auth init` binds your records to a key you hold, so a later denial is harder. It is self-asserted: it does not prove who you are.'
     },
     {
@@ -227,7 +232,15 @@ export function chainStripCaption(
     // four-defects] D1 minor). If it did not, say so honestly rather than
     // reprint the checkpoint-line count as if it were leaves.
     if (coveredLeafCount !== null) {
-      return `${coveredLeafCount} ${coveredLeafCount === 1 ? 'record' : 'records'} sealed into a checkpoint · records since the last checkpoint are unshaded`
+      // UX §4: "All 8 records are sealed into a checkpoint." -- a tree word
+      // ("leaves") never reaches the face.
+      if (coveredLeafCount >= sealedCount) {
+        return sealedCount === 1
+          ? 'The 1 record is sealed into a checkpoint'
+          : `All ${sealedCount} records are sealed into a checkpoint`
+      }
+      const since = sealedCount - coveredLeafCount
+      return `${coveredLeafCount} of ${sealedCount} records are sealed into a checkpoint · ${since} since the last checkpoint ${since === 1 ? 'is' : 'are'} unshaded`
     }
     return 'records sealed into a checkpoint (count not reported) · records since the last checkpoint are unshaded'
   }
@@ -273,11 +286,17 @@ export const RETENTION_FACT =
  *  host's serve boundary (`security-checks-view.ts`'s per-record default
  *  says the same) -- stated once here instead of repeated on every row. */
 export const CAPTURE_BOUNDARY_FACT =
-  'Capture boundary: the plugin’s serve-boundary path. Rule: whatever passes through that path is what gets sealed; nothing upstream or downstream of it is captured.'
+  'Capture boundary: the plugin at this node’s serving boundary. Rule: whatever passes through it is what gets sealed; nothing upstream or downstream of it is captured.'
+
+/** Finding 3: the Sealed tile's sub-line, so Integrity's record count and
+ *  Exchanges' exchange count reconcile on screen. */
+export function sealedBreakdownText(own: number, receivedNotes: number): string {
+  return `${own} yours · ${receivedNotes} received from the other side`
+}
 
 export function identityFact(owner: StatusOwner | null | undefined): string {
   if (ownerBound(owner)) {
-    return 'Owner: bound (self-asserted) — not bound to a person.'
+    return 'Owner: linked (self-asserted) — not bound to a person.'
   }
   return 'Owner: not bound — not bound to a person.'
 }
@@ -288,5 +307,15 @@ export function identityFact(owner: StatusOwner | null | undefined): string {
  *  detect a later rewrite. */
 export const CONTINUITY_NOT_ESTABLISHED = 'Continuity: not established. It needs a prior checkpoint for the next one to bind to.'
 
-export const REGISTRATION_IS_SEPARATE =
-  'Registration is a separate step: registering a checkpoint with a service you don’t run is what makes a later rewrite detectable by someone else.'
+/** UX §4: continuity stated from the checkpoint count, separately from
+ *  registration (step 1 already explains that, so it is not repeated). With
+ *  no checkpoint -- or none reported -- continuity is not established. More
+ *  than one checkpoint does not by itself say each binds to the one before:
+ *  this node does not report that check, so the sentence doesn't claim it. */
+export function continuityFact(checkpointCount: number | null): string {
+  if (checkpointCount === null || checkpointCount <= 0) return CONTINUITY_NOT_ESTABLISHED
+  if (checkpointCount === 1) {
+    return 'Continuity: 1 checkpoint so far. The next one will be checked against it. A witness is what lets someone else check it too.'
+  }
+  return `Continuity: ${checkpointCount} checkpoints so far. A witness is what lets someone else check them too.`
+}

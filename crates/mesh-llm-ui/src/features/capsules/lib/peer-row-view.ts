@@ -172,7 +172,7 @@ export function adjudicationSummaryText(summary: AdjudicationSummary): string {
  *  narrower ADJUDICATION column -- same honesty invariant (never
  *  "corroborated"-sounding when `notChecked`), just terser wording. */
 export function adjudicationCompactText(summary: AdjudicationSummary): string {
-  if (summary.notChecked) return 'none sealed'
+  if (summary.notChecked) return 'none'
   const parts: string[] = []
   if (summary.corroborated) parts.push(`${summary.corroborated} corroborated`)
   if (summary.contradicted) parts.push(`${summary.contradicted} contradicted`)
@@ -277,9 +277,12 @@ export function confirmedByOtherSide(row: PaneBRow): ConfirmedByOtherSide {
   return { confirmed, total, note: null }
 }
 
+/** UX §2: "3 of 3" -- "of" reads as a count, "/" as a ratio. The one note
+ *  kept is a disagreement; "0 of 2" already says none are confirmed. */
 export function confirmedByOtherSideText(summary: ConfirmedByOtherSide): string {
-  const base = `${summary.confirmed} / ${summary.total}`
-  return summary.note ? `${base} (${summary.note})` : base
+  const base = `${summary.confirmed} of ${summary.total}`
+  const differ = /^(\d+) contradicted$/.exec(summary.note ?? '')
+  return differ ? `${base} · ${differ[1]} differ` : base
 }
 
 // ---------------------------------------------------------------------------
@@ -303,10 +306,11 @@ export function matchTally(row: PaneBRow): MatchTally {
   }
 }
 
+/** UX §2 "Same request & answer": how many of their records hold the same
+ *  request and answer as yours, and how many differ. Disputes are their own
+ *  column, so the adjudication tally is not repeated here. */
 export function matchTallyText(tally: MatchTally): string {
-  const parts = [`${tally.clean} clean`, `${tally.mismatch} mismatch`]
-  if (tally.contradicted) parts.push(`${tally.contradicted} contradicted`)
-  return parts.join(' · ')
+  return `${tally.clean} · ${tally.mismatch} differ`
 }
 
 // ---------------------------------------------------------------------------
@@ -385,8 +389,11 @@ export function peerAttention(
 // Sort -- closest-first, alarms float to top. Never a trust ordering.
 // ---------------------------------------------------------------------------
 
+/** Rows with something to look at -- a disagreement, a dispute that found a
+ *  difference, a log that didn't check out, a refusal -- come first (UX §2:
+ *  "should I stop dealing with anyone?"). Never a trust ordering. */
 export function peerSortKey(row: PaneBRow, latencyMs: number | null): readonly [number, number] {
-  const alarmRank = alarmSignal(row).present ? 0 : 1
+  const alarmRank = alarmSignal(row).present || peerAttention(row).length > 0 ? 0 : 1
   const latency = latencyMs ?? Number.POSITIVE_INFINITY
   return [alarmRank, latency] as const
 }
@@ -412,13 +419,12 @@ export const SELF_REPORTED_DETAIL = SELF_REPORTED_TOOLTIP
 // states the absence honestly instead of borrowing that field.
 // ---------------------------------------------------------------------------
 
-export const WITNESS_COVERAGE_COMPACT_TEXT = 'not available'
+export const WITNESS_COVERAGE_COMPACT_TEXT = 'not shown yet'
 
 // ---------------------------------------------------------------------------
-// When -- the first/last exchange dates a row (or a set of rows) spans. `—`
-// when there is no exchange history to bound (the "advertised but unused"
-// group). The Peers table renders the aggregate window as the column HEADER
-// (`peersWindowText`); each row's own span is `periodRangeText`.
+// Last dealt with -- the date of a row's latest exchange (UX §2), rendered by
+// `periodRangeText`. `—` when there is no exchange history (the "advertised
+// but unused" group).
 // ---------------------------------------------------------------------------
 
 function periodDateParts(iso: string): { day: number; month: string; year: number } {
@@ -428,24 +434,6 @@ function periodDateParts(iso: string): { day: number; month: string; year: numbe
     month: parsed.toLocaleString('en-US', { month: 'short', timeZone: 'UTC' }),
     year: parsed.getUTCFullYear()
   }
-}
-
-/** The real date window spanned by a set of rows' exchange timestamps -- the
- *  earliest `first_seen` to the latest `last_seen` across them, rendered by
- *  `periodRangeText` (e.g. `22–26 Sep`). This is what the Peers table shows as
- *  the "When" column's HEADER value, not the bookkeeping word "Period": the
- *  header is the actual window, computed from the rows on screen. `—` when no
- *  row carries any exchange history (the advertised-but-unused-only case). */
-export function peersWindowText(rows: readonly PeerTableRowView[]): string {
-  let earliest: string | null = null
-  let latest: string | null = null
-  for (const { row } of rows) {
-    const first = row?.first_seen ?? null
-    const last = row?.last_seen ?? null
-    if (first && (earliest === null || first < earliest)) earliest = first
-    if (last && (latest === null || last > latest)) latest = last
-  }
-  return periodRangeText(earliest, latest)
 }
 
 export function periodRangeText(firstSeen: string | null, lastSeen: string | null): string {
@@ -481,7 +469,7 @@ export type PeerTableRowView = {
    *  `null` when the row carries no identity evidence. */
   aliasLine: string | null
   /** One honesty caveat under the identity, stated once (chooser-v2 §3
-   *  discipline carried over): `SELF_REPORTED_NOTE` for a dealt-with peer,
+   *  discipline carried over): empty for a dealt-with peer (the legend says it once),
    *  "no exchanges yet" for one only advertised. */
   identityNote: string
   exchangeCount: number
@@ -511,13 +499,15 @@ export function dealtWithRowView(
     displayId,
     hasDealings: true,
     aliasLine: peerAliasLine(row),
-    identityNote: SELF_REPORTED_NOTE,
+    // UX §2: "self-reported" is true of every row, so it lives once in the
+    // table legend, not on each row.
+    identityNote: '',
     exchangeCount: row.exchange_count ?? 0,
     confirmedByOtherSide: confirmedByOtherSideText(confirmedByOtherSide(row)),
     match: matchTallyText(matchTally(row)),
     adjudicationCompact: adjudicationCompactText(adjudicationSummary(row)),
     witnessCompact: WITNESS_COVERAGE_COMPACT_TEXT,
-    period: periodRangeText(row.first_seen, row.last_seen),
+    period: periodRangeText(row.last_seen, row.last_seen),
     alarm: alarmSignal(row, resolveTimestamp),
     attention: peerAttention(row, resolveTimestamp),
     row

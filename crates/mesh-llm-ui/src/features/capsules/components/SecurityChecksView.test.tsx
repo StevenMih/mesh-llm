@@ -139,7 +139,7 @@ describe('SecurityChecksView — capture_coverage: sentence or not present, neve
   it('renders the fixed sentence when present', () => {
     render(<SecurityChecksView identity={RECOMPUTED_MATCH} localRecord={null} row={ledgerRow(paneCRow())} />)
     expect(
-      screen.getByText('captured at the plugin’s serve-boundary path (rule: every served exchange)')
+      screen.getByText('captured by the plugin at this node’s serving boundary (rule: every served exchange)')
     ).toBeInTheDocument()
   })
 

@@ -378,8 +378,8 @@ describe('rightCellText — the load-bearing distinction', () => {
   })
 
   it('renders the exact copy from v3 §2 for each state', () => {
-    expect(rightCellText(stateOf('closed'))).toBe('✓ same request and answer as yours')
-    expect(rightCellText(stateOf('contradicted'))).toBe('⚠ differs')
+    expect(rightCellText(stateOf('closed'))).toBe('✓ They recorded the same request and answer')
+    expect(rightCellText(stateOf('contradicted'))).toBe('✗ Their record differs')
     expect(rightCellText(stateOf('open_refused', '4 Sep'))).toBe('They declined, and signed the refusal — 4 Sep')
     expect(rightCellText(stateOf('open_absent', '4 Sep'))).toBe('They say they have no record of this — 4 Sep')
     expect(rightCellText(stateOf('open_asked', '3 Sep'))).toBe('Asked 3 Sep. No reply yet.')

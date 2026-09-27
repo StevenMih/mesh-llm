@@ -11,11 +11,11 @@ const CSV_COLUMNS = [
   'Peer',
   'Group',
   'Exchanges',
-  'Confirmed by the other side',
-  'Match',
-  'Adjudication',
-  'Witness',
-  'When'
+  'They confirmed',
+  'Same request & answer',
+  'Disputes judged',
+  'Their records witnessed',
+  'Last dealt with'
 ] as const
 
 function csvCell(value: string): string {

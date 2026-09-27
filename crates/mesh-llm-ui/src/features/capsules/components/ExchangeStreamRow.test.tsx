@@ -1,13 +1,14 @@
 // [mesh-ledger-b2-two-sided-row] — component-level enforcement of v3 §2's
 // normative rules, on top of the pure-function tests in
 // `exchange-row-state.test.ts` / `exchange-stream.test.ts`.
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ExchangeStreamRow } from '@/features/capsules/components/ExchangeStreamRow'
 import { exchangeRowDomId } from '@/features/capsules/lib/exchange-pages'
 import type { ExchangeLedgerRow } from '@/features/capsules/lib/exchange-ledger'
-import type { RightCellStateKind } from '@/features/capsules/lib/exchange-row-state'
+import { ASK_FOR_RECORD_AFTER_MS, type RightCellStateKind } from '@/features/capsules/lib/exchange-row-state'
+import { durationText, tokenFlowText } from '@/features/capsules/lib/serving-provenance'
 import type { RailSegment } from '@/features/capsules/lib/exchange-stream'
 import type { PaneCRow } from '@/features/capsules/api/sidecarTypes'
 import type { CapsuleRecord } from '@/features/capsules/api/types'
@@ -182,7 +183,7 @@ describe('ExchangeStreamRow — L-A/L-B alarm styling', () => {
 
 describe('ExchangeStreamRow — the states render distinct text/status/action', () => {
   const cases: Array<{ kind: RightCellStateKind; text: string; status: string; action: string | null }> = [
-    { kind: 'contradicted', text: '⚠ differs', status: 'CONTRADICTED', action: 'Compare' },
+    { kind: 'contradicted', text: '✗ Their record differs', status: 'CONTRADICTED', action: 'Compare' },
     {
       kind: 'open_refused',
       text: 'They declined, and signed the refusal — 4 Sep',
@@ -231,22 +232,36 @@ describe('ExchangeStreamRow — the states render distinct text/status/action', 
     })
   }
 
-  it('[mesh-citing-record-shots-four-defects] D4(d): CLOSED renders compact per-property cells fed from the gate inputs, not one sentence', () => {
-    render(<ExchangeStreamRow onAction={vi.fn()} {...toggleProps()} rail={NO_RAIL} row={makeRow('closed')} />)
+  it('UX §3: a CLOSED row says it in a sentence on the face; the per-property cells lead the expansion', () => {
+    const { rerender } = render(
+      <ExchangeStreamRow onAction={vi.fn()} {...toggleProps()} rail={NO_RAIL} row={makeRow('closed')} />
+    )
     expect(screen.getByText('CLOSED')).toBeInTheDocument()
+    expect(screen.getByText('✓ They recorded the same request and answer')).toBeInTheDocument()
+    // Collapsed: no engineer cells on the face -- the two toggles and the
+    // state (i) only.
+    expect(screen.queryByText('signature ✓')).not.toBeInTheDocument()
+    expect(screen.getAllByRole('button')).toHaveLength(3)
+
+    rerender(
+      <ExchangeStreamRow checksExpanded onAction={vi.fn()} {...toggleProps()} rail={NO_RAIL} row={makeRow('closed')} />
+    )
     // The four cells: their id · signature ✓ · request = · response = --
-    // each restating a fact the gate's own inputs established.
-    expect(screen.getByText(`their id ${'a'.repeat(12)}…`)).toBeInTheDocument()
-    expect(screen.getByText('signature ✓')).toBeInTheDocument()
-    expect(screen.getByText('request =')).toBeInTheDocument()
-    expect(screen.getByText('response =')).toBeInTheDocument()
-    // No action button on a closed row -- the two disclosure toggles, the
-    // state (i), and one (i) per property cell (UX §8).
-    expect(screen.getAllByRole('button')).toHaveLength(7)
+    // each restating a fact the gate's own inputs established -- first in
+    // the expansion, ahead of the checks panel.
+    const head = document.querySelector('[data-expansion-head="true"]') as HTMLElement
+    expect(within(head).getByText(`their id ${'a'.repeat(12)}…`)).toBeInTheDocument()
+    expect(within(head).getByText('signature ✓')).toBeInTheDocument()
+    expect(within(head).getByText('request =')).toBeInTheDocument()
+    expect(within(head).getByText('response =')).toBeInTheDocument()
+    const firstCell = head.querySelector('[data-closed-property-cell]') as HTMLElement
+    expect(firstCell).toHaveAttribute('data-closed-property-cell', 'their_id')
   })
 
   it('UX §8: each CLOSED property cell carries its own one-sentence (i)', () => {
-    render(<ExchangeStreamRow onAction={vi.fn()} {...toggleProps()} rail={NO_RAIL} row={makeRow('closed')} />)
+    render(
+      <ExchangeStreamRow checksExpanded onAction={vi.fn()} {...toggleProps()} rail={NO_RAIL} row={makeRow('closed')} />
+    )
     const expected: Array<[string, string]> = [
       [`their id ${'a'.repeat(12)}…`, 'The id of their record; it’s a fingerprint of the record itself.'],
       ['signature ✓', 'Signed with the key this peer announces.'],
@@ -557,9 +572,9 @@ describe('ExchangeStreamRow — [mesh-ledger-b3-paging] focus/highlight/checks t
   })
 })
 
-describe('ExchangeStreamRow — [mesh-citing-record-shots-four-defects] D4(b): the glyph draws the exchange STATE; the role is stated in words', () => {
-  it('an OPEN served row renders the half glyph (◐) and "you served" in words', () => {
-    render(
+describe('ExchangeStreamRow — UX §3: the left cell is the event in words; no leading glyph', () => {
+  it('states the role in words, and carries no unlabelled leading ◐/● glyph', () => {
+    const { unmount } = render(
       <ExchangeStreamRow
         onAction={vi.fn()}
         {...toggleProps()}
@@ -567,67 +582,105 @@ describe('ExchangeStreamRow — [mesh-citing-record-shots-four-defects] D4(b): t
         row={makeRow('open_not_asked', { roleTag: 'SERVED' })}
       />
     )
-    expect(screen.getByText('◐')).toBeInTheDocument()
-    expect(screen.getByText('you served')).toBeInTheDocument()
-  })
+    expect(screen.getByText('You served')).toBeInTheDocument()
+    expect(screen.queryByText('◐')).not.toBeInTheDocument()
+    unmount()
 
-  it('a CLOSED row renders the filled glyph (●) — both halves held', () => {
     render(<ExchangeStreamRow onAction={vi.fn()} {...toggleProps()} rail={NO_RAIL} row={makeRow('closed')} />)
-    expect(screen.getByText('●')).toBeInTheDocument()
-    expect(screen.getByText('you asked')).toBeInTheDocument()
+    expect(screen.getByText('You asked')).toBeInTheDocument()
+    expect(screen.queryByText('●')).not.toBeInTheDocument()
   })
 
-  it('MUTANT (glyph orientation): a CLOSED served row is ●, an OPEN asked row is ◐ — the glyphs follow state, never role', () => {
-    // Under the old role-marker semantics these two would render exactly
-    // inverted (SERVED -> ◐, ASKED -> ●): the live shots' defect.
+  it('reads peer · model · tokens · duration from the record, and keeps the ids off the face', () => {
+    render(
+      <ExchangeStreamRow
+        onAction={vi.fn()}
+        {...toggleProps()}
+        localRecord={{
+          capsule_id: 'mine-1',
+          model_attestation: {
+            model_id: 'local-gguf/7089c7abcdef0123456789',
+            compute_attestation: {
+              'x-mesh-poc-v1': {
+                latency_ms: 1432,
+                serving_provenance: { usage: { prompt_tokens: 212, completion_tokens: 256 } }
+              }
+            }
+          }
+        }}
+        rail={NO_RAIL}
+        row={makeRow('closed', { counterparty: 'key:71eb26f8' })}
+      />
+    )
+    const line = document.querySelector('[data-event-line="true"]') as HTMLElement
+    expect(line).toHaveTextContent('You asked key:71eb26f8 · local-gguf/7089c7… · 212 → 256 tokens · 1.4 s')
+    expect(screen.queryByText('exch-closed')).not.toBeInTheDocument()
+    expect(screen.queryByText('mine-1')).not.toBeInTheDocument()
+  })
+
+  it('leaves out a duration the record never measured (latency 0), never "0 ms"', () => {
+    expect(durationText(0)).toBeNull()
+    expect(durationText('0.000')).toBeNull()
+    expect(durationText(undefined)).toBeNull()
+    expect(durationText(320)).toBe('320 ms')
+    expect(tokenFlowText(null, null)).toBeNull()
+    expect(tokenFlowText(46, 2)).toBe('46 → 2 tokens')
+  })
+
+  it('offers "Ask them for their record" only after the timeout -- a fresh exchange just waits for the push', () => {
+    const fresh = new Date(Date.now() - 60_000).toISOString()
     const { unmount } = render(
       <ExchangeStreamRow
         onAction={vi.fn()}
         {...toggleProps()}
         rail={NO_RAIL}
-        row={makeRow('closed', { roleTag: 'SERVED' })}
+        row={makeRow('open_not_asked', { timestamp: fresh })}
       />
     )
-    expect(screen.getByText('●')).toBeInTheDocument()
-    expect(screen.queryByText('◐')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Ask them for their record' })).not.toBeInTheDocument()
     unmount()
 
+    const stale = new Date(Date.now() - ASK_FOR_RECORD_AFTER_MS - 1000).toISOString()
     render(
       <ExchangeStreamRow
         onAction={vi.fn()}
         {...toggleProps()}
         rail={NO_RAIL}
-        row={makeRow('open_not_asked', { roleTag: 'ASKED' })}
+        row={makeRow('open_not_asked', { timestamp: stale })}
       />
     )
-    expect(screen.getByText('◐')).toBeInTheDocument()
-    expect(screen.queryByText('●')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Ask them for their record' })).toBeInTheDocument()
   })
 })
 
-describe('ExchangeStreamRow — D4(b): the bracket strip (double-entry design §7) draws the state on the row', () => {
-  it('CLOSED: both brackets solid, handshake arrow', () => {
+describe('ExchangeStreamRow — UX §3: the bracket strip is drawn in words, without notation', () => {
+  function stripText(): string {
+    return (document.querySelector('[data-bracket-strip="true"]') as HTMLElement).textContent ?? ''
+  }
+
+  it('CLOSED: both records held, joined by a line', () => {
     render(<ExchangeStreamRow onAction={vi.fn()} {...toggleProps()} rail={NO_RAIL} row={makeRow('closed')} />)
-    expect(screen.getByText('{ yours ● } ⟷ { theirs ● }')).toBeInTheDocument()
+    expect(stripText()).toBe('Yours ● sealed —— Theirs ● same')
   })
 
-  it('OPEN · not held: their id is known but bytes are not held — the ◔ glyph, never a solid bracket', () => {
+  it('OPEN · not held: theirs is an open dot, "not received", never joined', () => {
     render(<ExchangeStreamRow onAction={vi.fn()} {...toggleProps()} rail={NO_RAIL} row={makeRow('open_not_held')} />)
-    expect(screen.getByText('{ yours ● } → { theirs ◔ }')).toBeInTheDocument()
+    expect(stripText()).toBe('Yours ● sealed   Theirs ○ not received')
   })
 
-  it('refused / asked / contradicted each draw their own strip', () => {
+  it('refused / asked / contradicted / not asked each say their own word; no braces or arrows anywhere', () => {
     const cases: Array<[RightCellStateKind, string]> = [
-      ['open_refused', '{ yours ● } ⇥ { theirs ⊘ }'],
-      ['open_asked', '{ yours ● } ⇢ { theirs ◌ }'],
-      ['contradicted', '{ yours ● } ⇄≠ { theirs ● }'],
-      ['open_not_asked', '{ yours ● } → { theirs ◌ }']
+      ['open_refused', 'Yours ● sealed   Theirs ○ refused'],
+      ['open_asked', 'Yours ● sealed   Theirs ○ asked, no reply yet'],
+      ['contradicted', 'Yours ● sealed —— Theirs ● differs'],
+      ['open_not_asked', 'Yours ● sealed   Theirs ○ not asked for']
     ]
     for (const [kind, strip] of cases) {
       const { unmount } = render(
         <ExchangeStreamRow onAction={vi.fn()} {...toggleProps()} rail={NO_RAIL} row={makeRow(kind)} />
       )
-      expect(screen.getByText(strip)).toBeInTheDocument()
+      expect(stripText()).toBe(strip)
+      expect(stripText()).not.toMatch(/[{}⟷⇄⇥⇢→◔◌⊘]/)
       unmount()
     }
   })
@@ -670,7 +723,8 @@ describe('ExchangeStreamRow — [mesh-ledger-b4-toggle-content] toggle ① conte
       } as PaneCRow
     })
     render(<ExchangeStreamRow contentExpanded onAction={vi.fn()} {...toggleProps()} rail={NO_RAIL} row={row} />)
-    expect(screen.getByText(/You asked/)).toBeInTheDocument()
+    const content = document.querySelector('[data-content-toggle="expanded"]') as HTMLElement
+    expect(within(content).getByText(/You asked/)).toBeInTheDocument()
     expect(screen.getByText(/Summarise this thread/)).toBeInTheDocument()
     expect(screen.getByText(/They streamed back/)).toBeInTheDocument()
     expect(screen.getByText(/The thread covers three/)).toBeInTheDocument()
@@ -930,10 +984,13 @@ describe('ExchangeStreamRow — [mesh-evidence-ui-entry-row-and-chips] §3A mode
     expect(screen.queryByText(/local-gguf/)).not.toBeInTheDocument()
   })
 
-  it('a short exchange key/record id renders unchanged (never truncated for an already-short id)', () => {
-    render(<ExchangeStreamRow onAction={vi.fn()} {...toggleProps()} rail={NO_RAIL} row={makeRow('closed')} />)
-    expect(screen.getByText('exch-closed')).toBeInTheDocument()
-    expect(screen.getByText('mine-1')).toBeInTheDocument()
+  it('a short exchange key/record id renders unchanged in the expansion (never truncated for an already-short id)', () => {
+    render(
+      <ExchangeStreamRow checksExpanded onAction={vi.fn()} {...toggleProps()} rail={NO_RAIL} row={makeRow('closed')} />
+    )
+    const head = document.querySelector('[data-expansion-head="true"]') as HTMLElement
+    expect(within(head).getByText('exch-closed')).toBeInTheDocument()
+    expect(within(head).getByText('mine-1')).toBeInTheDocument()
   })
 
   it('a long (real digest-shaped) exchange key renders short, with the full string on hover and copy', async () => {
@@ -943,6 +1000,7 @@ describe('ExchangeStreamRow — [mesh-evidence-ui-entry-row-and-chips] §3A mode
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
     render(
       <ExchangeStreamRow
+        checksExpanded
         onAction={vi.fn()}
         {...toggleProps()}
         rail={NO_RAIL}

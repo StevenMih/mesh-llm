@@ -17,12 +17,7 @@ import {
   PEER_TAB_HARNESS_MESH_PEERS
 } from '@/features/capsules/lib/peer-fixtures'
 import { deriveMeshStatus } from '@/features/capsules/lib/peer-mesh-status'
-import {
-  advertisedOnlyRowView,
-  dealtWithRowView,
-  SELF_REPORTED_DETAIL,
-  SELF_REPORTED_NOTE
-} from '@/features/capsules/lib/peer-row-view'
+import { advertisedOnlyRowView, dealtWithRowView, SELF_REPORTED_NOTE } from '@/features/capsules/lib/peer-row-view'
 
 const [CLEAN_ROW, ALARMED_ROW] = HARNESS_PANE_B_PAYLOAD.rows
 
@@ -41,28 +36,16 @@ describe('PeerTableRow — dealt-with peers', () => {
 
     expect(screen.getByText('24')).toBeInTheDocument()
     // 16 of the 24 exchanges have a pushed half that closed through the gate.
-    expect(screen.getByText('16 / 24')).toBeInTheDocument()
-    expect(screen.getByText('16 clean · 0 mismatch')).toBeInTheDocument()
+    expect(screen.getByText('16 of 24')).toBeInTheDocument()
+    expect(screen.getByText('16 · 0 differ')).toBeInTheDocument()
     expect(screen.getByText('8 of 24 · 8 corroborated')).toBeInTheDocument()
-    expect(screen.getByText('not available')).toBeInTheDocument()
-    expect(screen.getByText('20 Aug – 8 Sep')).toBeInTheDocument()
-    expect(screen.getByText(SELF_REPORTED_NOTE)).toBeInTheDocument()
+    expect(screen.getByText('not shown yet')).toBeInTheDocument()
+    expect(screen.getByText('8 Sep')).toBeInTheDocument()
+    // Said once in the table legend, never on each row (UX §2).
+    expect(screen.queryByText(SELF_REPORTED_NOTE)).not.toBeInTheDocument()
     expect(screen.queryByText(/⚠/)).not.toBeInTheDocument()
     expect(screen.queryByText(/online/)).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Route here' })).not.toBeInTheDocument()
-  })
-
-  it('Item 4: the self-reported note carries an (i) whose aria-describedby holds the fuller honest sentence', () => {
-    const view = dealtWithRowView(CLEAN_ROW)
-    renderInTable(<PeerTableRow meshStatus={null} view={view} />)
-
-    // Terse chip on the face...
-    expect(screen.getByText(SELF_REPORTED_NOTE)).toBeInTheDocument()
-    // ...the (i) glyph, present and named for what it describes...
-    const glyph = screen.getByRole('button', { name: 'About the self-reported note' })
-    // ...wired by aria-describedby to the moved full sentence.
-    const description = document.getElementById(glyph.getAttribute('aria-describedby') as string)
-    expect(description).toHaveTextContent(SELF_REPORTED_DETAIL)
   })
 
   it('names what needs a look on an alarmed peer, counted, with no generic ⚠ glyph -- and the counts agree with the gate', () => {
@@ -79,8 +62,8 @@ describe('PeerTableRow — dealt-with peers', () => {
       '1 exchange where your record and theirs disagree.'
     )
     // 9 of 14 confirmed, 1 pushed half the gate reads as CONTRADICTED.
-    expect(screen.getByText('9 / 14 (1 contradicted)')).toBeInTheDocument()
-    expect(screen.getByText('9 clean · 1 mismatch · 1 contradicted')).toBeInTheDocument()
+    expect(screen.getByText('9 of 14 · 1 differ')).toBeInTheDocument()
+    expect(screen.getByText('9 · 1 differ')).toBeInTheDocument()
     expect(screen.getByText('7 of 14 · 6 corroborated · 1 contradicted')).toBeInTheDocument()
   })
 
@@ -151,7 +134,7 @@ describe('PeerTableRow — dealt-with peers', () => {
     const view = dealtWithRowView(CLEAN_ROW)
     renderInTable(<PeerTableRow meshStatus={null} view={view} visibleColumns={new Set(['match'])} />)
 
-    expect(screen.getByText('16 clean · 0 mismatch')).toBeInTheDocument()
+    expect(screen.getByText('16 · 0 differ')).toBeInTheDocument()
     expect(screen.queryByText('24 / 24')).not.toBeInTheDocument()
     expect(screen.queryByText(/8 of 24/)).not.toBeInTheDocument()
   })

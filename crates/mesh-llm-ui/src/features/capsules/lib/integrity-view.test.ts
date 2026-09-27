@@ -8,7 +8,8 @@ import {
   CHECKPOINTED_NOT_REGISTERED_STATUS,
   checkpointRegistration,
   CONTINUITY_NOT_ESTABLISHED,
-  REGISTRATION_IS_SEPARATE,
+  continuityFact,
+  sealedBreakdownText,
   identityFact,
   INTEGRITY_TILE_INFO,
   RETENTION_FACT
@@ -99,11 +100,13 @@ describe('buildSetupSteps — ledger-ux-from-the-user §6, three steps in value 
     expect(buildRegistrationCopy(witnessed)?.witnessSummary).toMatch(/^Registered with 1 witness/)
   })
 
-  it('step 2 flips to "bound (self-asserted)" once the live owner is verified', () => {
+  it('step 2 says what binding established once the live owner is verified -- never "bound" alone (UX §4)', () => {
     const steps = buildSetupSteps(null, { status: 'verified', verified: true })
     expect(steps[1].done).toBe(true)
-    expect(steps[1].status).toBe('bound (self-asserted)')
-    expect(steps[1].body).toBeNull()
+    expect(steps[1].status).toBe('linked (self-asserted)')
+    expect(steps[1].body).toBe(
+      'Your records are signed by this node’s key, linked to your owner account (self-asserted).'
+    )
   })
 
   it('step 2 stays "not set up" when the wire carries no owner at all', () => {
@@ -169,17 +172,25 @@ describe('buildRegistrationCopy — only renders once a checkpoint exists', () =
 })
 
 describe('chainStripCaption — leaf pluralization + the three absence states', () => {
-  it('pluralizes correctly off the COVERED-LEAF count, in records: "1 record", never "1 records" (and never "leaves")', () => {
+  it('partial coverage says how many of how many, and how many are unshaded (never "leaves")', () => {
     // 3rd arg is the covered-leaf count; 2nd is the checkpoint-LINE count.
-    expect(chainStripCaption(5, 1, 1)).toBe('1 record sealed into a checkpoint · records since the last checkpoint are unshaded')
-    expect(chainStripCaption(5, 1, 3)).toBe('3 records sealed into a checkpoint · records since the last checkpoint are unshaded')
+    expect(chainStripCaption(5, 1, 1)).toBe(
+      '1 of 5 records are sealed into a checkpoint · 4 since the last checkpoint are unshaded'
+    )
+    expect(chainStripCaption(5, 1, 4)).toBe(
+      '4 of 5 records are sealed into a checkpoint · 1 since the last checkpoint is unshaded'
+    )
+  })
+
+  it('full coverage reads "All N records are sealed into a checkpoint" (UX §4)', () => {
+    expect(chainStripCaption(1, 1, 1)).toBe('The 1 record is sealed into a checkpoint')
   })
 
   it('renders the covered-leaf count, NOT the checkpoint-line count', () => {
     // The bug: a SINGLE checkpoint line covering 8 leaves read "1 leaves"
     // because the caption printed checkpoint_count. It must print the covered
     // leaf count (8), against the live-ledger reshoot: mmr_size 15 -> 8 leaves.
-    expect(chainStripCaption(8, 1, 8)).toBe('8 records sealed into a checkpoint · records since the last checkpoint are unshaded')
+    expect(chainStripCaption(8, 1, 8)).toBe('All 8 records are sealed into a checkpoint')
   })
 
   it('says so honestly when a checkpoint exists but no covered-leaf count was reported', () => {
@@ -204,8 +215,8 @@ describe('Item 4 — Integrity tile + chain-bar (i) copy: evidence, never a scor
     }
     // The witness tile names the witness; the closed tile names their signed
     // record, checked on this machine.
-    expect(INTEGRITY_TILE_INFO.registered).toMatch(/witness/i)
-    expect(INTEGRITY_TILE_INFO.closedByOtherSide).toMatch(/their own signed record, checked on this machine/)
+    expect(INTEGRITY_TILE_INFO.sharedWithWitness).toMatch(/witness/i)
+    expect(INTEGRITY_TILE_INFO.confirmedByOtherSide).toMatch(/their own signed record, checked on this machine/)
   })
 
   it('the chain-bar (i) carries the checkpoint-coverage explanation (moved off the caption)', () => {
@@ -224,7 +235,7 @@ describe('once-per-node facts — never fabricated, never per-row', () => {
   it('identity fact renders bound vs. not-bound, always ending "not bound to a person"', () => {
     expect(identityFact(null)).toBe('Owner: not bound — not bound to a person.')
     expect(identityFact({ status: 'verified', verified: true })).toBe(
-      'Owner: bound (self-asserted) — not bound to a person.'
+      'Owner: linked (self-asserted) — not bound to a person.'
     )
   })
 
@@ -233,9 +244,18 @@ describe('once-per-node facts — never fabricated, never per-row', () => {
     expect(CONTINUITY_NOT_ESTABLISHED).not.toMatch(/regist/i)
   })
 
-  it('registration is stated as its own sentence: what makes a rewrite detectable by others', () => {
-    expect(REGISTRATION_IS_SEPARATE).toMatch(/^Registration is a separate step/)
-    expect(REGISTRATION_IS_SEPARATE).toMatch(/detectable by someone else/)
+  it('continuity is stated from the checkpoint count, separately from registration (UX §4)', () => {
+    expect(continuityFact(null)).toBe(CONTINUITY_NOT_ESTABLISHED)
+    expect(continuityFact(0)).toBe(CONTINUITY_NOT_ESTABLISHED)
+    expect(continuityFact(1)).toBe(
+      'Continuity: 1 checkpoint so far. The next one will be checked against it. A witness is what lets someone else check it too.'
+    )
+    // Never claims each checkpoint binds to the one before -- not reported.
+    expect(continuityFact(3)).toBe('Continuity: 3 checkpoints so far. A witness is what lets someone else check them too.')
+  })
+
+  it('the Sealed tile reconciles records with exchanges (finding 3)', () => {
+    expect(sealedBreakdownText(5, 3)).toBe('5 yours · 3 received from the other side')
   })
 })
 

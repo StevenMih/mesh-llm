@@ -69,10 +69,6 @@ const REQUIRED = {
   ],
   exchanges: [
     ...ALL_KINDS.map((kind) => `row_state:${kind}`),
-    'closed_cell:their_id',
-    'closed_cell:signature',
-    'closed_cell:request',
-    'closed_cell:response',
     'entry_chip:content',
     'entry_chip:sig',
     'entry_chip:inclusion',
@@ -82,12 +78,20 @@ const REQUIRED = {
   ],
   // The checks panel always shows at least these two (they are always
   // checked in the browser); every other chip it shows must carry one too.
-  checks: ['check_chip:content_binding', 'check_chip:producer_signature'],
+  // UX §3: the CLOSED per-property cells lead the expansion of a CLOSED row.
+  checks: [
+    'closed_cell:their_id',
+    'closed_cell:signature',
+    'closed_cell:request',
+    'closed_cell:response',
+    'check_chip:content_binding',
+    'check_chip:producer_signature'
+  ],
   integrity: [
     'integrity_tile:Sealed',
-    'integrity_tile:Registered',
-    'integrity_tile:Closed by the other side',
-    'integrity_tile:Contradicted',
+    'integrity_tile:Shared with a witness',
+    'integrity_tile:Confirmed by the other side',
+    'integrity_tile:Disagreements',
     'integrity:chain_strip'
   ]
 } as const

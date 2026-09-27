@@ -82,3 +82,18 @@ export function exceptionsFirstLine(tally: ExceptionsFirstTally, rangeLabel: str
   const needNoun = needingAttention === 1 ? 'exchange needs' : 'exchanges need'
   return `${needingAttention} ${needNoun} your attention — ${total} ${noun}${rangeSuffix}. ${breakdown}.`
 }
+
+/** UX §3 "One headline": `5 exchanges, 26 Sep · 3 confirmed by the other side
+ *  · 0 disagreements`. Registration is an Integrity fact and is not repeated
+ *  here. `disagreements` is the CONTRADICTED count, the same gate the rows use. */
+export function exchangesHeadline(
+  total: number,
+  confirmed: number,
+  disagreements: number,
+  rangeLabel: string | null
+): string {
+  const noun = total === 1 ? 'exchange' : 'exchanges'
+  const rangeSuffix = rangeLabel ? `, ${rangeLabel}` : ''
+  const disagreementNoun = disagreements === 1 ? 'disagreement' : 'disagreements'
+  return `${total} ${noun}${rangeSuffix} · ${confirmed} confirmed by the other side · ${disagreements} ${disagreementNoun}`
+}

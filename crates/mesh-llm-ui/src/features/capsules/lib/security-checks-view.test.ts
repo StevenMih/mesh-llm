@@ -167,7 +167,7 @@ describe('buildChecksRows — capture_coverage: fixed sentence or not present, n
     const rows = buildChecksRows(paneCRow({ properties: { capture_coverage: { state: 'PASS' } } }), NOT_RECOMPUTED)
     const captureCoverage = rows.find((r) => r.key === 'capture_coverage')
     expect(captureCoverage?.singleLine).toBe(
-      'captured at the plugin’s serve-boundary path (rule: every served exchange)'
+      'captured by the plugin at this node’s serving boundary (rule: every served exchange)'
     )
     expect(captureCoverage?.yours).toBeNull()
     expect(captureCoverage?.theirs).toBeNull()
