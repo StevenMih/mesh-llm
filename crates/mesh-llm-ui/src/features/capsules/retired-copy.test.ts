@@ -48,7 +48,11 @@ const RETIRED_PHRASES = [
   'Registration is a separate step', // said once, in step 1
   // [mesh-evidence-look-findings-2026-09-26-p2]
   'no key bound', // records ARE signed by the node key -> "not linked to an owner"
-  'open in Logs' // an inert control; returns only when it can link
+  'open in Logs', // an inert control; returns only when it can link
+  // [mesh-evidence-hero-your-history-and-cleanup] the dead pill -> the
+  // `Your records` button that opens the panel
+  "This node's copy",
+  'This node’s copy'
 ] as const
 
 const HERE = dirname(fileURLToPath(import.meta.url))

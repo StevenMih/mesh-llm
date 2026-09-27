@@ -15,9 +15,14 @@ export const HERO_TOOLTIPS = {
   live: 'Reading this node’s records over its running local API. They update as this node seals them.',
   local: 'Reading a saved local copy. This node’s API is not connected, so the records are not updating.',
   sample: 'Showing a saved sample run, not this node’s records. Nothing here updates.',
-  // §8 adds "Open to see where they are and what you share." -- held back
-  // until the pill opens something (rule 5: never ask for what can't be done).
-  yourRecords: 'The records this node keeps, sealed and checkpointed.'
+  yourRecords: 'The records this node keeps, sealed and checkpointed. Open to see where they are and what you share.',
+  // [mesh-evidence-hero-your-history-and-cleanup]: the storage-posture pills,
+  // mirroring Logs. Facts, not features.
+  localOnly: 'Nothing is sent from this machine unless a switch under What you share says so.',
+  digestsOnly: 'Each record holds a fingerprint of the prompt and the answer, never the words themselves.',
+  promptsKept: 'The words of your prompts and answers are stored on this machine only, apart from the records.',
+  promptsNotKept: 'No prompt or answer text is stored on this machine. The records hold fingerprints only.',
+  promptsUnknown: 'This view can’t tell whether prompt and answer text is stored on this machine.'
 } as const
 
 /** p2 item 3: the owner-link fact, worded once for Integrity's step 2 and

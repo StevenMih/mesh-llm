@@ -29,6 +29,7 @@ import {
 import { peerAttention } from '@/features/capsules/lib/peer-row-view'
 import { dealingsLines, recordText, routingStateText } from '@/features/capsules/lib/peer-routing-view'
 import * as COPY from '@/features/capsules/lib/tooltip-copy'
+import * as RECORDS from '@/features/capsules/lib/your-records'
 import { LedgerPageContent } from '@/features/capsules/pages/LedgerPage'
 
 // ---------------------------------------------------------------------------
@@ -60,7 +61,10 @@ const ALL_KINDS: RightCellStateKind[] = [
 ]
 
 const REQUIRED = {
-  hero: ['hero:your_records'],
+  hero: ['hero:your_records', 'hero:local_only', 'hero:digests_only', 'hero:prompts_kept'],
+  // [mesh-evidence-hero-your-history-and-cleanup] the Your records panel's
+  // four sharing switches.
+  yourRecords: ['share:record_at_completion', 'share:history_segments', 'share:adjudications', 'share:witness'],
   peers: [
     'peer_column:exchanges',
     'peer_column:confirmed',
@@ -238,6 +242,23 @@ vi.mock('@/features/capsules/api/peerBlocksClient', () => ({
   blockPeer: vi.fn(),
   unblockPeer: vi.fn()
 }))
+vi.mock('@/features/capsules/api/recordsClient', () => ({
+  fetchRecordsStatus: vi.fn().mockResolvedValue({
+    records_path: '/data/ledger',
+    record_count: 10,
+    head: null,
+    log_id: 'capsule-emit-mesh',
+    stored_text_count: 3,
+    new_history_pending: null,
+    sharing: {
+      record_at_completion: { value: 'counterparty', source: 'default' },
+      history_segments: { value: 'prospective', source: 'default' },
+      adjudications: { value: 'deliver_to_subjects', source: 'default' },
+      witness: { value: null, source: 'default' }
+    }
+  }),
+  runCleanup: vi.fn()
+}))
 vi.mock('@/features/capsules/api/client', () => ({
   fetchCapsuleLedger: vi.fn().mockResolvedValue({ records: [], nodePubKeyPem: null }),
   fetchSignedStatement: vi.fn().mockResolvedValue(null)
@@ -283,6 +304,7 @@ describe('tooltip census -- every chip type the Evidence tab ships has a plain o
   it('Peers + hero: every column header, the identity note and each counted badge', async () => {
     render(<LedgerPageContent />, { wrapper })
     await screen.findByText(/Nodes you have dealt with/)
+    await screen.findByText('Your prompts · kept here')
     const seen = censusOnScreen()
     expectCovered(REQUIRED.hero, seen, 'face')
     expectCovered(REQUIRED.peers, seen, 'face')
@@ -323,6 +345,14 @@ describe('tooltip census -- every chip type the Evidence tab ships has a plain o
     expect(await screen.findByText(/What this means:/)).toBeInTheDocument()
   })
 
+  it('Your records panel: every sharing switch', async () => {
+    const user = userEvent.setup()
+    render(<LedgerPageContent />, { wrapper })
+    await user.click(await screen.findByRole('button', { name: /Your records/ }))
+    await screen.findByRole('dialog', { name: 'Your records' })
+    expectCovered(REQUIRED.yourRecords, censusOnScreen(), 'face')
+  })
+
   it('Integrity: every tile and the chain strip', async () => {
     const user = userEvent.setup()
     render(<LedgerPageContent />, { wrapper })
@@ -354,7 +384,8 @@ describe('tooltip census -- the copy itself', () => {
       COPY.SETTLEMENT_PROVIDER_BOOK_TOOLTIP,
       ...Object.values(COPY.SETTLEMENT_SOURCE_TOOLTIPS),
       COPY.PEER_PAYMENTS_TOOLTIP,
-      COPY.CLOSE_CARD_TOOLTIP
+      COPY.CLOSE_CARD_TOOLTIP,
+      ...Object.values(RECORDS.SHARING_GOVERNS)
     ]
     const dig = Object.values(COPY.CHECK_CHIP_TOOLTIPS)
     for (const text of [...face, ...dig]) {
@@ -389,6 +420,31 @@ describe('tooltip census -- the copy itself', () => {
       const state = { kind, date: '4 Sep' }
       return [rightCellText(state), rightCellStatusLabel(state), rightCellAction(state) ?? '']
     })
+    expect(texts.flatMap((text) => checkWords(text, 'face'))).toEqual([])
+  })
+
+  it('Your records and Clean up records faces carry no banned or engineer’s word', () => {
+    const texts = [
+      RECORDS.NO_SINGLE_RECORD_DELETE,
+      RECORDS.CLEANUP_IS_ON_THE_RECORD,
+      RECORDS.START_NEW_LOG_CONFIRM,
+      RECORDS.NEW_LOG_PENDING,
+      RECORDS.SHARING_NOT_SHOWN,
+      ...RECORDS.CLEANUP_OPTIONS.flatMap((o) => [o.title, o.consequence, o.button]),
+      ...RECORDS.sharingRows(null).flatMap((r) => [r.label, r.whatLeaves]),
+      ...['counterparty', 'off'].flatMap((v) =>
+        RECORDS.sharingRows({
+          sharing: {
+            record_at_completion: { value: v, source: 'set' },
+            history_segments: { value: v === 'off' ? 'off' : 'peers', source: 'set' },
+            adjudications: { value: v, source: 'set' },
+            witness: { value: v === 'off' ? null : 'https://witness.example', source: 'set' }
+          }
+        } as never).flatMap((r) => [r.state ?? '', r.whatLeaves])
+      ),
+      RECORDS.heroStatusLine({ records: 1, confirmed: 1, disagreements: 1, witnessed: true }),
+      RECORDS.heroStatusLine({ records: 8, confirmed: 3, disagreements: 0, witnessed: false })
+    ]
     expect(texts.flatMap((text) => checkWords(text, 'face'))).toEqual([])
   })
 

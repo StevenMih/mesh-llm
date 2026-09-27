@@ -12,8 +12,10 @@
 //   5. The Balance header strip on Exchanges never crashes on an absent
 //      served-summary and never fabricates a number; per [ledger-T8-header-
 //      copy] it renders NOTHING on a null card rather than a "no data" line
-//   6. The exceptions-first line above the table, and the Ledger badge's
-//      "This node's copy" rename ([ledger-T8-header-copy])
+//   6. The exceptions-first line above the table, and the hero: storage
+//      pills, the whole-tab line, and `Your records` / `Clean up records`
+//      ([mesh-evidence-hero-your-history-and-cleanup], retiring the dead
+//      "This node's copy" label)
 import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -44,7 +46,27 @@ vi.mock('@/features/capsules/api/sidecarClient', () => ({
 }))
 
 vi.mock('@/features/capsules/api/client', () => ({
-  fetchCapsuleLedger: vi.fn().mockResolvedValue({ records: [], nodePubKeyPem: null })
+  fetchCapsuleLedger: vi.fn().mockResolvedValue({ records: [], nodePubKeyPem: null }),
+  fetchDisclosurePreimage: vi.fn().mockResolvedValue(null)
+}))
+
+// The owner's records tool (`owner_maintenance.rs` via the plugin tool route).
+vi.mock('@/features/capsules/api/recordsClient', () => ({
+  fetchRecordsStatus: vi.fn().mockResolvedValue({
+    records_path: '/data/admission-policy-data/ledger',
+    record_count: 0,
+    head: null,
+    log_id: 'capsule-emit-mesh',
+    stored_text_count: 2,
+    new_history_pending: null,
+    sharing: {
+      record_at_completion: { value: 'counterparty', source: 'default' },
+      history_segments: { value: 'prospective', source: 'default' },
+      adjudications: { value: 'deliver_to_subjects', source: 'default' },
+      witness: { value: null, source: 'default' }
+    }
+  }),
+  runCleanup: vi.fn()
 }))
 
 // Owner identity is live `/api/status` data ([ledger-T6-integrity-
@@ -127,11 +149,13 @@ describe('LedgerPageContent', () => {
     // The load-bearing banner is still on the face -- hovers do not replace it.
     expect(screen.getByText('Everything here is checked on this machine, from sealed records.')).toBeInTheDocument()
 
-    // The Live/Local + "This node's copy" chips each carry an (i) whose
-    // aria-describedby holds the moved honest sentence.
-    const copyGlyph = screen.getByRole('button', { name: "About This node's copy" })
-    const copyDesc = document.getElementById(copyGlyph.getAttribute('aria-describedby') as string)
-    expect(copyDesc).toHaveTextContent('The records this node keeps, sealed and checkpointed.')
+    // The storage pills and `Your records` each carry their one sentence in
+    // a persistent aria-describedby (HoverChip), not only mid-hover.
+    const recordsButton = screen.getByRole('button', { name: /Your records/ })
+    const recordsDesc = document.getElementById(recordsButton.getAttribute('aria-describedby') as string)
+    expect(recordsDesc).toHaveTextContent(
+      'The records this node keeps, sealed and checkpointed. Open to see where they are and what you share.'
+    )
 
     // The connectivity chip's (i) is present too (Live or Local depending on
     // the harness's sidecar-connected state).
@@ -349,17 +373,17 @@ describe('LedgerPageContent', () => {
     // Navigate to Exchanges tab
     await user.click(screen.getByRole('tab', { name: /exchanges/i }))
 
-    // Wait for data. Matched on "confirmed by the other side" (unique to
-    // this line) rather than "3 exchange" -- the exceptions-first line
-    // below it also states the same total, so a bare "3 exchange" query is
-    // ambiguous between the two.
+    // Wait for data. Read off the Exchanges headline itself: the
+    // exceptions-first line below it states the same total, and the hero's
+    // whole-tab line uses the same "confirmed by the other side" words (one
+    // count vocabulary everywhere, UX §7.6).
     //
     // [mesh-console-evidence-tab-honesty-defects] finding 1: `theirs.state
     // !== 'absent'` is a peer-asserted id, not a held/confirmed artifact --
     // none of these three rows carry a real fetch, so `confirmed` is
     // honestly 0, not 1 (the old count treated exc-1's bare `theirs.state:
     // 'present'` as a confirmation).
-    const headerEl = await screen.findByText(/confirmed by the other side/i)
+    const headerEl = await screen.findByTestId('exchanges-headline')
     expect(headerEl.textContent).toMatch(/3 exchange/)
     expect(headerEl.textContent).toMatch(/0 confirmed by the other side/)
 
@@ -429,13 +453,13 @@ describe('LedgerPageContent', () => {
     const user = userEvent.setup()
     render(<LedgerPageContent />, { wrapper: makeWrapper() })
     await user.click(screen.getByRole('tab', { name: /exchanges/i }))
-    await screen.findByText(/confirmed by the other side/i)
+    await screen.findByTestId('exchanges-headline')
 
     await user.click(screen.getByRole('button', { name: 'Get the other side’s record' }))
     expect(await screen.findByText('Chain integrity')).toBeInTheDocument()
 
     await user.click(screen.getByRole('tab', { name: /exchanges/i }))
-    await screen.findByText(/confirmed by the other side/i)
+    await screen.findByTestId('exchanges-headline')
     await user.click(screen.getByRole('button', { name: 'Register a checkpoint' }))
     expect(await screen.findByText('Chain integrity')).toBeInTheDocument()
   })
@@ -521,12 +545,28 @@ describe('LedgerPageContent', () => {
     expect(bodyText).not.toMatch(/No served-summary data available yet\./)
   })
 
-  it('p2 item 1: "This node\'s copy" is a plain label, not a pill; its (i) is the only interaction', () => {
+  it('`Your records` replaces the dead label: it is a button, and it opens the panel with What you share', async () => {
+    const user = userEvent.setup()
     render(<LedgerPageContent />, { wrapper: makeWrapper() })
-    const label = screen.getByTestId('hero-your-records')
-    expect(label.className).not.toMatch(/rounded-full/)
-    expect(label.closest('button')).toBeNull()
-    expect(screen.getByRole('button', { name: "About This node's copy" })).toBeInTheDocument()
+    expect(screen.queryByText("This node's copy")).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: /Your records/ }))
+    const panel = await screen.findByRole('dialog', { name: 'Your records' })
+    expect(within(panel).getByText('/data/admission-policy-data/ledger')).toBeInTheDocument()
+    expect(within(panel).getByText('What you share')).toBeInTheDocument()
+    expect(panel.querySelectorAll('[data-sharing-switch]')).toHaveLength(4)
+    expect(within(panel).getByRole('button', { name: /Export evidence file/ })).toBeInTheDocument()
+  })
+
+  it('`Clean up records` offers exactly three choices and no single-record delete', async () => {
+    const user = userEvent.setup()
+    render(<LedgerPageContent />, { wrapper: makeWrapper() })
+    await user.click(screen.getByRole('button', { name: /Clean up records/ }))
+    const dialog = await screen.findByRole('dialog', { name: 'Clean up records' })
+    expect(within(dialog).getAllByRole('radio')).toHaveLength(3)
+    expect(within(dialog).getByTestId('no-single-record-delete')).toHaveTextContent(
+      /can’t be edited or removed one at a time/
+    )
+    expect(within(dialog).queryByRole('button', { name: /delete (this|one) record/i })).not.toBeInTheDocument()
   })
 
   it('p2 item 5: on sample data the two setup jumps are disabled, with the reason on hover', async () => {
@@ -613,15 +653,20 @@ describe('LedgerPageContent', () => {
     expect(screen.queryByText(/Nothing needs your attention/)).not.toBeInTheDocument()
   })
 
-  it('Ledger badge reads "This node\'s copy" with its one-sentence meaning behind its (i), never the retired "Local only"', () => {
+  it('hero pills state the storage posture, mirroring Logs, each with its one sentence; the whole-tab line sits under them', async () => {
     render(<LedgerPageContent />, { wrapper: makeWrapper() })
 
-    expect(screen.getByText("This node's copy")).toBeInTheDocument()
-    // The pill's meaning sits behind its (i), carried by the glyph's
-    // aria-describedby copy (UX §8 rewrite; the pill's rename to "Your
-    // records" lands with the plain-language pass).
-    expect(screen.getByText('The records this node keeps, sealed and checkpointed.')).toBeInTheDocument()
-    expect(screen.queryByText('Local only')).not.toBeInTheDocument()
+    expect(screen.getByText('Local only')).toBeInTheDocument()
+    expect(screen.getByText('Records · digests only')).toBeInTheDocument()
+    // Two stored texts reported by the node -> "kept here".
+    expect(await screen.findByText('Your prompts · kept here')).toBeInTheDocument()
+    expect(
+      screen.getByText('Nothing is sent from this machine unless a switch under What you share says so.')
+    ).toBeInTheDocument()
+    expect(screen.queryByText("This node's copy")).not.toBeInTheDocument()
+    expect(await screen.findByTestId('hero-status-line')).toHaveTextContent(
+      '0 records · 0 confirmed by the other side · 0 disagreements · checkable only by you (no witness)'
+    )
   })
 })
 

@@ -10,7 +10,7 @@
 import { Fragment, type ReactElement, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
-import { ArrowLeftRight, Search as SearchIcon, ShieldCheck, Users } from 'lucide-react'
+import { ArrowLeftRight, FolderOpen, Search as SearchIcon, ShieldCheck, Trash2, Users } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { EmptyState } from '@/components/ui/EmptyState'
@@ -109,6 +109,10 @@ import { useStatusQuery } from '@/features/network/api/use-status-query'
 import { useDataMode } from '@/lib/data-mode'
 import { usePeerRoutingControls } from '@/features/capsules/api/usePeerBlocks'
 import { HoverChip } from '@/features/capsules/components/HoverChip'
+import { CleanUpRecordsDialog } from '@/features/capsules/components/CleanUpRecordsDialog'
+import { YourRecordsDialog } from '@/features/capsules/components/YourRecordsDialog'
+import { useYourRecords } from '@/features/capsules/lib/use-your-records'
+import { heroStatusLine, promptsPill } from '@/features/capsules/lib/your-records'
 import {
   CLOSE_CARD_TOOLTIP,
   HERO_DESCRIPTION,
@@ -1381,6 +1385,35 @@ export function LedgerPageContent({ focusExchangeKey }: { focusExchangeKey?: str
   // Look finding 6: a replayed fixture run reads "Sample data", never "Live".
   const source = evidenceSource(sidecarConnected, import.meta.env.VITE_EVIDENCE_FIXTURES as string | undefined)
 
+  // [mesh-evidence-hero-your-history-and-cleanup] Hero line 3 reads the SAME
+  // counts as the Integrity tiles (same queries, shared cache; same
+  // `deriveRightCellState` predicate), so the hero and Integrity can't disagree.
+  const { mode } = useDataMode()
+  const harnessMode = mode === 'harness'
+  const paneCHeroQuery = useQuery({
+    queryKey: ['ledger', 'pane-c'],
+    queryFn: () => (harnessMode ? Promise.resolve(HARNESS_PANE_C_PAYLOAD) : fetchPaneCList()),
+    refetchInterval: 15_000,
+    retry: false
+  })
+  const paneARows = paneAStatusQuery.data?.rows ?? []
+  const paneACard = paneAStatusQuery.data?.card ?? null
+  const heroLine =
+    paneAStatusQuery.isSuccess && paneCHeroQuery.isSuccess
+      ? heroStatusLine({
+          records: paneARows.length,
+          confirmed: paneCHeroQuery.data.rows.filter((row) => deriveRightCellState(row).kind === 'closed').length,
+          disagreements: paneCHeroQuery.data.rows.filter((row) => deriveRightCellState(row).kind === 'contradicted')
+            .length,
+          witnessed: checkpointRegistration(paneACard).registered
+        })
+      : null
+  const capsuleIds = useMemo(() => [...recordsById.keys()], [recordsById])
+  const yourRecords = useYourRecords({ sample: source === 'sample', capsuleIds })
+  const prompts = promptsPill(yourRecords.storedTextCount)
+  const [recordsOpen, setRecordsOpen] = useState(false)
+  const [cleanUpOpen, setCleanUpOpen] = useState(false)
+
   return (
     <TooltipProvider delayDuration={250} skipDelayDuration={120}>
       <div className="mx-auto flex w-full max-w-[1440px] flex-col gap-[calc(var(--shell-normal)*2)]">
@@ -1403,20 +1436,91 @@ export function LedgerPageContent({ focusExchangeKey }: { focusExchangeKey?: str
                   label={HERO_TOOLTIPS[source]}
                 />
               </span>
-              <span className="inline-flex items-center gap-1">
-                {/* p2 item 1: a plain label, not a pill -- a pill reads as a
-                   control, and this one does nothing on click. The (i) is its
-                   only interaction. */}
-                <span className="text-[length:var(--density-type-caption)] text-fg-dim" data-testid="hero-your-records">
-                  This node's copy
+              {/* The storage posture, mirroring Logs: facts, not features.
+                 Each pill's hover is its one-sentence explanation. */}
+              <HoverChip census="hero:local_only" label={HERO_TOOLTIPS.localOnly}>
+                <span className="inline-flex rounded-full outline-none focus-visible:ring-2 focus-visible:ring-accent">
+                  <StatusBadge size="caption" tone="muted">
+                    Local only
+                  </StatusBadge>
                 </span>
-                <InfoHover census="hero:your_records" describes="This node's copy" label={HERO_TOOLTIPS.yourRecords} />
-              </span>
+              </HoverChip>
+              <HoverChip census="hero:digests_only" label={HERO_TOOLTIPS.digestsOnly}>
+                <span className="inline-flex rounded-full outline-none focus-visible:ring-2 focus-visible:ring-accent">
+                  <StatusBadge size="caption" tone="muted">
+                    Records · digests only
+                  </StatusBadge>
+                </span>
+              </HoverChip>
+              <HoverChip census={prompts.census} label={prompts.tooltip}>
+                <span
+                  className="inline-flex rounded-full outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                  data-testid="hero-prompts"
+                >
+                  <StatusBadge size="caption" tone="muted">
+                    {prompts.label}
+                  </StatusBadge>
+                </span>
+              </HoverChip>
             </div>
           }
           title="Evidence"
           titleId="evidence-title"
           titleLevel="h1"
+          annotation={
+            heroLine ? (
+              <p className="type-caption mt-1 text-fg-dim" data-testid="hero-status-line">
+                {heroLine}
+              </p>
+            ) : null
+          }
+          action={
+            <div className="flex flex-wrap items-center gap-2">
+              <HoverChip census="hero:your_records" label={HERO_TOOLTIPS.yourRecords}>
+                <Button
+                  className="ui-control h-8 gap-1.5 rounded-[var(--radius)] px-2.5 text-[length:var(--density-type-caption)]"
+                  data-testid="hero-your-records"
+                  onClick={() => setRecordsOpen(true)}
+                  size="sm"
+                  type="button"
+                  variant="outline"
+                >
+                  <FolderOpen aria-hidden="true" className="size-3.5" />
+                  Your records
+                </Button>
+              </HoverChip>
+              <Button
+                className="ui-control-destructive h-8 gap-1.5 rounded-[var(--radius)] px-2.5 text-[length:var(--density-type-caption)]"
+                onClick={() => setCleanUpOpen(true)}
+                size="sm"
+                type="button"
+                variant="outline"
+              >
+                <Trash2 aria-hidden="true" className="size-3.5" />
+                Clean up records
+              </Button>
+            </div>
+          }
+        />
+        <YourRecordsDialog
+          checkpointNoLaterThan={
+            typeof paneACard?.registered_no_later_than === 'string' ? paneACard.registered_no_later_than : null
+          }
+          coveredRecords={typeof paneACard?.covered_leaf_count === 'number' ? paneACard.covered_leaf_count : null}
+          onExport={() =>
+            saveTextFile('mesh-evidence.json', integrityEvidenceBundle(paneARows, paneACard), 'application/json')
+          }
+          onOpenChange={setRecordsOpen}
+          open={recordsOpen}
+          recordCount={paneARows.length}
+          sample={source === 'sample'}
+          status={yourRecords.status}
+        />
+        <CleanUpRecordsDialog
+          onOpenChange={setCleanUpOpen}
+          open={cleanUpOpen}
+          sample={source === 'sample'}
+          status={yourRecords.status}
         />
 
         <Card className="overflow-clip rounded-[var(--radius-lg)] border-border bg-panel p-4 shadow-none">
