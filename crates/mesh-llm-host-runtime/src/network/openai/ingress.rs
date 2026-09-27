@@ -1348,6 +1348,10 @@ fn spawn_ambient_twin_dispatch(args: AmbientTwinDispatchArgs) {
             &model_name,
             &request,
             proxy::RouteModelRequestContext {
+                // The twin's own id, the one its terminal envelope carries.
+                // A priced twin target cannot spend: the paid route refuses
+                // any caller without a loopback socket, and this sink has none.
+                exchange_id: Some(exchange_id.as_str()),
                 required_tokens,
                 affinity: &affinity,
                 route_observer: OpenAiRouteObserver::default(),

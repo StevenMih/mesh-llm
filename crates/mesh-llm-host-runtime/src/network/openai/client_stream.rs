@@ -75,12 +75,16 @@ impl ClientStream {
         );
         match self {
             Self::Tcp { anthropic, .. } | Self::Quic { anthropic, .. } => *anthropic = messages,
+            // The twin dispatch's sink answers no client, so it has no
+            // response dialect to switch.
+            Self::Null => {}
         }
     }
 
     pub(crate) fn is_anthropic(&self) -> bool {
         match self {
             Self::Tcp { anthropic, .. } | Self::Quic { anthropic, .. } => *anthropic,
+            Self::Null => false,
         }
     }
 

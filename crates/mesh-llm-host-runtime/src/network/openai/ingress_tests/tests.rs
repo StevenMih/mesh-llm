@@ -2475,8 +2475,12 @@ fn serving_provenance_for_remote_mesh_names_the_pinned_peer_on_a_served_outcome(
 #[test]
 fn serving_provenance_for_remote_mesh_is_absent_without_a_pinned_target() {
     assert!(
-        serving_provenance_for_remote_mesh(None, None, &proxy::RouteDispatchOutcome::Responded(200))
-            .is_none()
+        serving_provenance_for_remote_mesh(
+            None,
+            None,
+            &proxy::RouteDispatchOutcome::Responded(200)
+        )
+        .is_none()
     );
 }
 
