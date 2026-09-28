@@ -14,7 +14,7 @@ pub(crate) use response::send_503;
 #[cfg(feature = "payments")]
 pub(crate) use response::send_error;
 #[cfg(feature = "payments")]
-pub(crate) use response::served_outcome_of_raw_response;
+pub(crate) use response::{paid_response_adapter, served_outcome_of_raw_response};
 pub(crate) mod response_adapter;
 mod response_quality;
 mod routing_rank;

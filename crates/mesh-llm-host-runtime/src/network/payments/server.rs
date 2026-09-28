@@ -73,6 +73,14 @@ async fn serve_inner(
     // digests, so the two halves of this exchange can pair.
     let request_digest = crate::plugin::openai_exchange::request_body_digest(&request.body, None);
     let requested_by_node_id = hex::encode(peer.as_bytes());
+    let response_adapter = crate::network::openai::paid_response_adapter(
+        &request.path,
+        request
+            .body
+            .get("stream")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true),
+    );
     // Prices and offers use the public model ID; the local backend is
     // registered, and must be addressed, under its internal name.
     let backend_model =
@@ -152,6 +160,7 @@ async fn serve_inner(
             &model_for_events,
             request_digest.as_deref(),
             &requested_by_node_id,
+            response_adapter,
         )
         .await;
     }
@@ -210,9 +219,12 @@ async fn finish_exchange(
     model: &str,
     request_digest: Option<&str>,
     requested_by_node_id: &str,
+    response_adapter: crate::network::openai::transport::ResponseAdapter,
 ) {
     let outcome = match delivered.into_bytes() {
-        Some(raw) => crate::network::openai::served_outcome_of_raw_response(&raw).await,
+        Some(raw) => {
+            crate::network::openai::served_outcome_of_raw_response(&raw, response_adapter).await
+        }
         None => crate::network::openai::transport::RouteDispatchOutcome::Failed(
             "served response exceeded the capture limit",
         ),

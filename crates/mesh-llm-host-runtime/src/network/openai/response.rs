@@ -44,7 +44,7 @@ mod paid_events;
 #[cfg(feature = "payments")]
 mod replay;
 #[cfg(feature = "payments")]
-pub(crate) use replay::served_outcome_of_raw_response;
+pub(crate) use replay::{paid_response_adapter, served_outcome_of_raw_response};
 
 #[cfg(feature = "payments")]
 pub(crate) mod payment_recovery;
