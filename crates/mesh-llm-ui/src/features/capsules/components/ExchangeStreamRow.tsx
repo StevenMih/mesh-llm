@@ -380,7 +380,11 @@ export function ExchangeStreamRow({
             ) : null}
           </div>
         </div>
-        <ExchangeRowChips checks={checksRows} onChipActivate={handleChipActivate} />
+        <ExchangeRowChips
+          checkpointCovered={checkpointCovered}
+          checks={checksRows}
+          onChipActivate={handleChipActivate}
+        />
         {/* Payments sit beside the inference state, never inside it: CLOSED
            is about the two records of the exchange; settlement is this
            node's own payment records for it. */}

@@ -881,11 +881,26 @@ describe('ExchangeStreamRow — [mesh-evidence-ui-entry-row-and-chips] §3A one 
 })
 
 describe('ExchangeStreamRow — [mesh-evidence-ui-entry-row-and-chips] §3A chip strip -> checks jump', () => {
-  it('renders the five chips content · sig · inclusion · registered · theirs', () => {
+  it('renders the five chips in plain words, never sig / inclusion / registered', () => {
     render(<ExchangeStreamRow onAction={vi.fn()} {...toggleProps()} rail={NO_RAIL} row={makeRow('open_not_asked')} />)
-    for (const chip of ['content', 'sig', 'inclusion', 'registered', 'theirs']) {
-      expect(screen.getByLabelText(`${chip}: jump to the ${chip} check`)).toBeInTheDocument()
+    for (const label of ['words match', 'signed', 'in a checkpoint', 'witnessed', 'their record']) {
+      expect(screen.getByLabelText(`${label}: jump to that check`)).toBeInTheDocument()
     }
+    const strip = screen.getByRole('group', { name: 'checks summary' })
+    expect(strip.textContent).not.toMatch(/\bsig\b|inclusion|registered/)
+  })
+
+  it('says a checkpoint covers the record when Integrity counts it, instead of a bare dash', () => {
+    render(
+      <ExchangeStreamRow
+        checkpointCovered
+        onAction={vi.fn()}
+        {...toggleProps()}
+        rail={NO_RAIL}
+        row={makeRow('open_not_asked')}
+      />
+    )
+    expect(screen.getByLabelText('in a checkpoint: jump to that check').textContent).toContain('◐')
   })
 
   it('a chip is a link, never counted among the row action buttons', () => {
@@ -895,7 +910,7 @@ describe('ExchangeStreamRow — [mesh-evidence-ui-entry-row-and-chips] §3A chip
     // toggles are the entire detail surface" -- chips jump to detail already
     // on the page, they don't add a row action).
     expect(screen.getAllByRole('button')).toHaveLength(4)
-    expect(screen.getByLabelText('sig: jump to the sig check')).toHaveAttribute('role', 'link')
+    expect(screen.getByLabelText('signed: jump to that check')).toHaveAttribute('role', 'link')
   })
 
   it('a chip click on a collapsed panel expands checks, then scrolls to and highlights the matching property once it mounts', async () => {
@@ -913,7 +928,7 @@ describe('ExchangeStreamRow — [mesh-evidence-ui-entry-row-and-chips] §3A chip
         row={row}
       />
     )
-    await user.click(screen.getByLabelText('sig: jump to the sig check'))
+    await user.click(screen.getByLabelText('signed: jump to that check'))
     expect(onToggleChecks).toHaveBeenCalledWith(row)
     expect(scrollSpy).not.toHaveBeenCalled()
 
@@ -948,7 +963,7 @@ describe('ExchangeStreamRow — [mesh-evidence-ui-entry-row-and-chips] §3A chip
         row={makeRow('open_not_asked')}
       />
     )
-    await user.click(screen.getByLabelText('content: jump to the content check'))
+    await user.click(screen.getByLabelText('words match: jump to that check'))
     expect(onToggleChecks).not.toHaveBeenCalled()
     expect(scrollSpy).toHaveBeenCalled()
     scrollSpy.mockRestore()

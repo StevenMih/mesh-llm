@@ -11,23 +11,28 @@
 import {
   entryRowChipMark,
   entryRowChipPropertyKey,
+  ENTRY_ROW_CHIP_LABEL,
   ENTRY_ROW_CHIP_ORDER
 } from '@/features/capsules/lib/entry-row-chips'
 import type { EntryRowChipMark } from '@/features/capsules/lib/entry-row-chips'
 import type { ChecksRow } from '@/features/capsules/lib/security-checks-view'
 import { HoverChip } from '@/features/capsules/components/HoverChip'
-import { ENTRY_CHIP_TOOLTIPS } from '@/features/capsules/lib/tooltip-copy'
+import { ENTRY_CHIP_COVERED_TOOLTIP, ENTRY_CHIP_TOOLTIPS } from '@/features/capsules/lib/tooltip-copy'
 
 const MARK_COLOR: Record<EntryRowChipMark, string> = {
   '✓': 'var(--color-good-text)',
   '✗': 'var(--color-bad-text)',
-  '–': 'var(--color-fg-faint)'
+  '–': 'var(--color-fg-faint)',
+  '◐': 'var(--color-fg-dim)'
 }
 
 export function ExchangeRowChips({
   checks,
+  checkpointCovered = null,
   onChipActivate
 }: {
+  /** Whether Integrity's checkpoint coverage includes this record. */
+  checkpointCovered?: boolean | null
   /** The row's check results -- the same `buildChecksRows` output the
    *  `▸ checks` panel renders, so the two can never disagree. */
   checks: readonly ChecksRow[]
@@ -38,13 +43,18 @@ export function ExchangeRowChips({
   return (
     <div aria-label="checks summary" className="flex flex-wrap items-center gap-2.5" role="group">
       {ENTRY_ROW_CHIP_ORDER.map((chip) => {
-        const mark = entryRowChipMark(checks, chip)
+        const mark = entryRowChipMark(checks, chip, checkpointCovered)
         const propertyKey = entryRowChipPropertyKey(chip)
+        const label = ENTRY_ROW_CHIP_LABEL[chip]
         // Hover for the meaning, click for the full check (UX §8 rule 2).
         return (
-          <HoverChip census={`entry_chip:${chip}`} key={chip} label={ENTRY_CHIP_TOOLTIPS[chip]}>
+          <HoverChip
+            census={`entry_chip:${chip}`}
+            key={chip}
+            label={mark === '◐' ? ENTRY_CHIP_COVERED_TOOLTIP : ENTRY_CHIP_TOOLTIPS[chip]}
+          >
             <span
-              aria-label={`${chip}: jump to the ${chip} check`}
+              aria-label={`${label}: jump to that check`}
               className="ui-control-ghost inline-flex cursor-pointer items-center gap-1 font-mono text-xs"
               onClick={() => onChipActivate(propertyKey)}
               onKeyDown={(event) => {
@@ -55,7 +65,7 @@ export function ExchangeRowChips({
               role="link"
               tabIndex={0}
             >
-              <span className="text-fg-dim">{chip}</span>
+              <span className="text-fg-dim">{label}</span>
               <span style={{ color: MARK_COLOR[mark] }}>{mark}</span>
             </span>
           </HoverChip>

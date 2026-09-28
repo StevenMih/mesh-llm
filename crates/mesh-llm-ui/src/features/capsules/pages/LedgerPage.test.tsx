@@ -302,6 +302,30 @@ describe('LedgerPageContent', () => {
       ],
       peer_count: 2
     })
+    // The count comes from the rows Exchanges lists: three with no
+    // counterparty, one naming peer-1. Pane B's residual (3 above) agrees
+    // here, but the line never reads it.
+    const { fetchPaneCList } = await import('@/features/capsules/api/sidecarClient')
+    const exchangeRow = (key: string, counterparty: string | null) => ({
+      exchange_key: key,
+      role_tag: 'ASKED',
+      counterparty,
+      header_state: 'ok',
+      properties: null,
+      has_issue: false,
+      mine: { state: 'present', capsule_id: null },
+      theirs: { state: 'absent', capsule_id: null },
+      unilateral: true,
+      timestamp: null
+    })
+    vi.mocked(fetchPaneCList).mockResolvedValue({
+      rows: [exchangeRow('e1', null), exchangeRow('e2', null), exchangeRow('e3', null), exchangeRow('e4', 'peer-1')],
+      row_count: 4,
+      default_sort: '',
+      filters: [],
+      next_after_seq: null,
+      archived_segments: []
+    })
 
     const user = userEvent.setup()
     render(<LedgerPageContent />, { wrapper: makeWrapper() })
@@ -309,7 +333,7 @@ describe('LedgerPageContent', () => {
 
     expect(await screen.findByText('peer-1')).toBeInTheDocument()
     expect(
-      screen.getByText('3 exchanges have no counterparty recorded yet. They appear under Exchanges.')
+      await screen.findByText('3 exchanges have no counterparty recorded yet. They appear under Exchanges.')
     ).toBeInTheDocument()
     expect(screen.queryByText(/unknown peer/i)).not.toBeInTheDocument()
     expect(screen.queryByText(/peer identity not resolved yet/i)).not.toBeInTheDocument()

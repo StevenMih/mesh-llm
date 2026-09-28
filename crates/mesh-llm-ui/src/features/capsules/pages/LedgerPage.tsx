@@ -235,9 +235,10 @@ function PeersSection({ recordsById }: { recordsById: Map<string, CapsuleRecord>
   // headline count below instead of a synthetic "unknown peer" row.
   const allRawRows = query.data?.rows ?? []
   const dealtWithRawRows = allRawRows.filter((row) => peerDisplayId(row) !== null)
-  const unattributedExchangeCount = allRawRows
-    .filter((row) => peerDisplayId(row) === null)
-    .reduce((sum, row) => sum + (row.exchange_count ?? 0), 0)
+  // Counted from the SAME rows Exchanges lists (pane C), so the sentence
+  // "They appear under Exchanges" is true by construction: never a pane B
+  // residual that Exchanges does not show.
+  const unattributedExchangeCount = (paneCQuery.data?.rows ?? []).filter((row) => !row.counterparty).length
 
   // Closest-first (latency asc); any row carrying an alarm floats to top.
   const sortedDealtWithRawRows = sortPeerRows(dealtWithRawRows, (row) =>

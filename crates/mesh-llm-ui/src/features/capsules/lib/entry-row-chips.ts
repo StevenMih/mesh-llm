@@ -6,9 +6,21 @@
 import type { ChecksRow } from '@/features/capsules/lib/security-checks-view'
 
 export type EntryRowChipKey = 'content' | 'sig' | 'inclusion' | 'registered' | 'theirs'
-export type EntryRowChipMark = '✓' | '✗' | '–'
+/** `◐`: a checkpoint covers the record (the figure Integrity counts), but
+ *  its inclusion proof is not checked in this view -- covered, not verified. */
+export type EntryRowChipMark = '✓' | '✗' | '–' | '◐'
 
 export const ENTRY_ROW_CHIP_ORDER: readonly EntryRowChipKey[] = ['content', 'sig', 'inclusion', 'registered', 'theirs']
+
+/** The words each chip shows on the row face: plain, never the property's
+ *  engineer name (UX §7.6-2). */
+export const ENTRY_ROW_CHIP_LABEL: Record<EntryRowChipKey, string> = {
+  content: 'words match',
+  sig: 'signed',
+  inclusion: 'in a checkpoint',
+  registered: 'witnessed',
+  theirs: 'their record'
+}
 
 // The one property each chip names, verbatim design §3A -- never re-derive
 // this mapping ad hoc at a call site.
@@ -33,9 +45,16 @@ export function entryRowChipPropertyKey(chip: EntryRowChipKey): string {
  *  results the `▸ checks` panel renders (`buildChecksRows`, this node's side)
  *  -- never the pane's `properties` map, which the native pane leaves null,
  *  so the strip read all dashes while the panel below it said established. */
-export function entryRowChipMark(checks: readonly ChecksRow[], chip: EntryRowChipKey): EntryRowChipMark {
+export function entryRowChipMark(
+  checks: readonly ChecksRow[],
+  chip: EntryRowChipKey,
+  checkpointCovered: boolean | null = null
+): EntryRowChipMark {
   const state = checks.find((row) => row.key === CHIP_PROPERTY_KEY[chip])?.yours?.state
   if (state === 'PASS') return '✓'
   if (state === 'FAIL') return '✗'
+  // Integrity says a checkpoint covers this record, but this row has not
+  // checked the proof: say covered, never a bare dash next to Integrity's count.
+  if (chip === 'inclusion' && checkpointCovered === true) return '◐'
   return '–'
 }

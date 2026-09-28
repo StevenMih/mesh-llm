@@ -146,6 +146,10 @@ export const ENTRY_CHIP_TOOLTIPS = {
   theirs: 'Whether the other side’s own signed record confirms this exchange.'
 } as const
 
+/** The `in a checkpoint ◐` chip: covered, but the proof is not checked here. */
+export const ENTRY_CHIP_COVERED_TOOLTIP =
+  'A checkpoint on this node covers this record, as Integrity counts. This view has not checked its inclusion proof.'
+
 /** The TWIN bracket's `no verdict` badge. */
 export const TWIN_NO_VERDICT_TOOLTIP =
   'The same request went to two machines and both answers are recorded. No one has compared them and sealed a verdict yet.'
