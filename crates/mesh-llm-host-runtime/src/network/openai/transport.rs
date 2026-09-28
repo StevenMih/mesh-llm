@@ -1552,7 +1552,7 @@ async fn route_remote_attempt_with_retry(
     )
     .await;
     for retry in 1..=REMOTE_UNCOMMITTED_RETRIES {
-        if !should_retry_uncommitted_remote_attempt(result) {
+        if !should_retry_uncommitted_remote_attempt(&result) {
             return result;
         }
         tracing::warn!(
@@ -1631,7 +1631,7 @@ fn record_remote_transport_attempt(
     result
 }
 
-fn should_retry_uncommitted_remote_attempt(result: RouteAttemptResult) -> bool {
+fn should_retry_uncommitted_remote_attempt(result: &RouteAttemptResult) -> bool {
     matches!(
         result,
         RouteAttemptResult::RetryableTimeout | RouteAttemptResult::RetryableUnavailable
@@ -1714,7 +1714,7 @@ pub async fn route_to_target(
                 );
             }
             node.record_routed_request(model, 1, outcome);
-            delivered_outcome(status_code, usage, output_digests)
+            delivered_outcome(status_code, usage, *output_digests)
         }
         RouteAttemptResult::RetryableTimeout
         | RouteAttemptResult::RetryableContextOverflow
@@ -1819,7 +1819,7 @@ pub async fn route_http_endpoint_request(
                 );
             }
             node.record_routed_request(model, 1, outcome);
-            delivered_outcome(status_code, usage, output_digests)
+            delivered_outcome(status_code, usage, *output_digests)
         }
         RouteAttemptResult::RetryableTimeout
         | RouteAttemptResult::RetryableContextOverflow
@@ -1872,7 +1872,7 @@ pub(crate) async fn test_paid_target_attempt(
         },
     )
     .await;
-    should_retry_uncommitted_remote_attempt(result)
+    should_retry_uncommitted_remote_attempt(&result)
 }
 
 #[cfg(all(test, feature = "payments"))]

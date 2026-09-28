@@ -100,7 +100,7 @@ impl ServedByNodeIdSink {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::network::openai) enum RouteAttemptResult {
     Delivered {
         status_code: u16,
@@ -113,7 +113,7 @@ pub(in crate::network::openai) enum RouteAttemptResult {
         /// `Copy` (raw sha-256 bytes) so this variant stays `Copy`. Default
         /// (all-`None`) wherever no such body was assembled, so the terminal
         /// event simply omits those digests rather than fabricating any.
-        output_digests: crate::plugin::openai_exchange::ExchangeOutputDigests,
+        output_digests: Box<crate::plugin::openai_exchange::ExchangeOutputDigests>,
     },
     RetryableTimeout,
     RetryableUnavailable,

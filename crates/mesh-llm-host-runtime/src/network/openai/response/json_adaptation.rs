@@ -178,7 +178,7 @@ pub(in crate::network::openai::response) async fn relay_translated_json<R: Async
         status_code,
         usage,
         cache_cost,
-        output_digests,
+        output_digests: Box::new(output_digests),
     })
 }
 
@@ -250,7 +250,7 @@ pub(in crate::network::openai::response) async fn relay_normalized_chat_completi
         status_code: 200,
         usage,
         cache_cost,
-        output_digests,
+        output_digests: Box::new(output_digests),
     })
 }
 

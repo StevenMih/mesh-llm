@@ -164,7 +164,7 @@ pub(in crate::network::openai::response) async fn relay_error_response<R: AsyncR
         status_code,
         usage: None,
         cache_cost: None,
-        output_digests,
+        output_digests: Box::new(output_digests),
     })
 }
 
@@ -223,7 +223,7 @@ pub(in crate::network::openai::response) async fn relay_success_response<R: Asyn
                 status_code: probe.status_code,
                 usage,
                 cache_cost,
-                output_digests,
+                output_digests: Box::new(output_digests),
             });
         }
     }

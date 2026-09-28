@@ -64,7 +64,7 @@ pub(crate) async fn served_outcome_of_raw_response(
             usage,
             output_digests,
             ..
-        } => delivered_outcome(status_code, usage, output_digests),
+        } => delivered_outcome(status_code, usage, *output_digests),
         _ => RouteDispatchOutcome::Failed("the served response did not relay"),
     }
 }

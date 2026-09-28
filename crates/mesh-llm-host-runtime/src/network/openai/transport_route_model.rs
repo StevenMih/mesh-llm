@@ -448,7 +448,7 @@ fn handle_route_model_attempt_result(
             status_code,
             usage,
             cache_cost,
-            output_digests,
+            *output_digests,
         ),
         RouteAttemptResult::RetryableContextOverflow => {
             handle_retryable_route_model_context(target)

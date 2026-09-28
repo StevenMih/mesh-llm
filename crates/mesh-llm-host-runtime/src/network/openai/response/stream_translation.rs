@@ -368,7 +368,7 @@ pub(in crate::network::openai::response) async fn relay_normalized_chat_completi
         cache_cost: observed_cache_cost,
         // The stream completed cleanly ([DONE] seen): digest the response
         // assembled from every chunk actually sent to the client.
-        output_digests: assembly.output_digests(),
+        output_digests: Box::new(assembly.output_digests()),
     })
 }
 
@@ -551,7 +551,7 @@ pub(in crate::network::openai::response) async fn relay_translated_responses_str
         // same construction the serving node digests its own stream with, so
         // the requester's record binds the response and the two sides pair.
         // An error frame or a truncated stream returns above with no digest.
-        output_digests: assembly.output_digests(),
+        output_digests: Box::new(assembly.output_digests()),
     })
 }
 
@@ -955,11 +955,13 @@ mod tests {
                 cache_cost: None,
                 // The completed stream digests the message assembled from
                 // the three deltas, as a non-streamed body would be digested.
-                output_digests: ExchangeOutputDigests::from_response_value(&serde_json::json!({
-                    "choices": [{"index": 0, "message": {
-                        "role": "assistant", "content": "Hello world!"
-                    }}]
-                })),
+                output_digests: Box::new(ExchangeOutputDigests::from_response_value(
+                    &serde_json::json!({
+                        "choices": [{"index": 0, "message": {
+                            "role": "assistant", "content": "Hello world!"
+                        }}]
+                    })
+                )),
             }
         );
 
