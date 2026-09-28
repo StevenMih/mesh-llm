@@ -3019,6 +3019,7 @@ async fn local_route_terminal_names_the_peer_that_delivered() {
             served_locally: true,
             request_digest: Some(&"d".repeat(64)),
             requested_by_node_id: None,
+            forwarded_nonce: None,
         },
         "exchange-local-route",
         "acme/shared-model",
@@ -3066,6 +3067,7 @@ async fn local_route_terminal_stays_host_served_when_this_node_served() {
             served_locally: true,
             request_digest: None,
             requested_by_node_id: None,
+            forwarded_nonce: None,
         },
         "exchange-self-served",
         "acme/shared-model",
@@ -3084,5 +3086,48 @@ async fn local_route_terminal_stays_host_served_when_this_node_served() {
             .as_ref()
             .map(|provenance| provenance.served_by_node_id.clone()),
         Some(node.id().to_string())
+    );
+}
+
+/// A request relayed from a peer carries the client nonce that peer sealed
+/// into its own record. The serving node's terminal carries it too, so both
+/// records hold one join key and the asking node can name the exchange by it
+/// when it asks for this node's record. MUTANT: dropping `forwarded_nonce`
+/// in `publish_raw_proxy_terminal` leaves `nonce` empty and fails this.
+#[tokio::test]
+async fn a_served_terminal_carries_the_nonce_the_request_arrived_with() {
+    let node = mesh::Node::new_for_tests(crate::mesh::NodeRole::Worker)
+        .await
+        .expect("test node");
+    let recording = RecordingChannel::default();
+    let outcome = proxy::RouteDispatchOutcome::Responded(200);
+    publish_local_route_terminal(
+        &node,
+        &recording,
+        &outcome,
+        None,
+        RawProxyTerminalFacts {
+            served_locally: true,
+            request_digest: None,
+            requested_by_node_id: None,
+            forwarded_nonce: Some((
+                "nonce-from-the-asking-peer".to_string(),
+                Some(ClientNonceSource::ClientSupplied),
+            )),
+        },
+        "exchange-served-with-nonce",
+        "acme/shared-model",
+    )
+    .await;
+
+    let events = recording.events.lock().unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(
+        events[0].nonce.as_deref(),
+        Some("nonce-from-the-asking-peer")
+    );
+    assert_eq!(
+        events[0].nonce_source,
+        Some(ClientNonceSource::ClientSupplied)
     );
 }

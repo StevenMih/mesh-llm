@@ -218,7 +218,7 @@ fn serving_provenance_for_remote_mesh(
 /// leaving the model-identity half open.
 /// The per-exchange facts `publish_raw_proxy_terminal` attaches, beyond the
 /// outcome itself.
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Default)]
 struct RawProxyTerminalFacts<'a> {
     /// `true` only on the host-served branch (this node's own weights and
     /// hardware survey) -- see the function doc.
@@ -228,6 +228,12 @@ struct RawProxyTerminalFacts<'a> {
     /// The mesh node that asked, from the tunnel's authenticated remote id
     /// (`IngressRouteContext::requested_by_node_id`). Host-served only.
     requested_by_node_id: Option<&'a str>,
+    /// The `x-capsule-client-nonce` the request arrived with -- for a request
+    /// relayed from a peer, the nonce that peer sealed into its own record of
+    /// the exchange. Carried onto the terminal so this node's record holds
+    /// the same join key, and the asking node can name the exchange by it
+    /// when it asks for this node's record. `None` when there was none.
+    forwarded_nonce: Option<(String, Option<ClientNonceSource>)>,
 }
 
 async fn publish_raw_proxy_terminal(
@@ -242,15 +248,21 @@ async fn publish_raw_proxy_terminal(
         served_locally,
         request_digest,
         requested_by_node_id,
+        forwarded_nonce,
     } = facts;
+    let (nonce, nonce_source) = match forwarded_nonce {
+        Some((nonce, source)) => (Some(nonce), source),
+        None => (None, None),
+    };
     let mut envelope = OpenAiExchangeEnvelope::terminal(
         exchange_id.to_string(),
         OpenAiExchangeDispatchPath::RawProxy,
         model_name,
         plugin_route_status(final_outcome),
         None,
-        None,
+        nonce_source,
     );
+    envelope.nonce = nonce;
     // Nothing was served on a 503 / `Failed` / `Dropped` outcome, so there is
     // no hardware or model identity to report — and no reason to pay the
     // `served_model_descriptors()` lock for a lookup whose result would be
@@ -345,6 +357,9 @@ impl PaidServedExchange {
                 served_locally: true,
                 request_digest,
                 requested_by_node_id: Some(requested_by_node_id),
+                // The paid seller path doesn't hold the request here yet, so
+                // its record carries no forwarded nonce (a follow-up).
+                forwarded_nonce: None,
             },
         )
         .await;
@@ -460,6 +475,16 @@ fn remote_mesh_nonce_source(
             ClientNonceSource::ClientSupplied
         }
     })
+}
+
+/// The client nonce a request arrived with, and its source, for the served
+/// side's terminal (`RawProxyTerminalFacts::forwarded_nonce`).
+fn forwarded_nonce_of(
+    request: &proxy::BufferedHttpRequest,
+) -> Option<(String, Option<ClientNonceSource>)> {
+    let (nonce, origin) = request.capsule_nonce_headers();
+    let source = remote_mesh_nonce_source(&nonce, &origin);
+    nonce.map(|nonce| (nonce, source))
 }
 
 /// What this node knows about an exchange a remote peer delivered while this
@@ -1898,6 +1923,7 @@ async fn try_route_plugin_model(
                     served_locally: false, // plugin-served: never this node's own hardware/weights
                     request_digest: request_digest.as_deref(),
                     requested_by_node_id: None, // no host-served provenance block on this path
+                    forwarded_nonce: forwarded_nonce_of(request),
                 },
             )
             .await;
@@ -2092,6 +2118,7 @@ async fn route_request(
                     served_locally: true, // host-served: this node's own weights and hardware survey
                     request_digest: request_digest.as_deref(),
                     requested_by_node_id: ctx.requested_by_node_id.as_deref(),
+                    forwarded_nonce: forwarded_nonce_of(request),
                 },
                 exchange_id,
                 model_name,

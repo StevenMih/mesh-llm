@@ -280,6 +280,7 @@ async fn publish_raw_proxy_terminal_attaches_full_provenance_and_usage_on_a_serv
             served_locally: true,
             request_digest: Some("digest-abc"),
             requested_by_node_id: None,
+            forwarded_nonce: None,
         },
     )
     .await;
@@ -353,6 +354,7 @@ async fn publish_raw_proxy_terminal_names_the_tunnel_requester_on_a_host_served_
             served_locally: true,
             request_digest: None,
             requested_by_node_id: Some(&requester),
+            forwarded_nonce: None,
         },
     )
     .await;
@@ -393,6 +395,7 @@ async fn publish_raw_proxy_terminal_omits_requested_by_on_the_wire_for_a_local_r
             served_locally: true,
             request_digest: None,
             requested_by_node_id: None,
+            forwarded_nonce: None,
         },
     )
     .await;
@@ -425,6 +428,7 @@ async fn publish_raw_proxy_terminal_on_the_plugin_served_path_never_carries_a_re
             served_locally: false,
             request_digest: None,
             requested_by_node_id: Some(&requester),
+            forwarded_nonce: None,
         },
     )
     .await;
@@ -448,6 +452,7 @@ async fn publish_raw_proxy_terminal_on_a_503_has_no_provenance_but_keeps_the_sta
             served_locally: true,
             request_digest: None,
             requested_by_node_id: None,
+            forwarded_nonce: None,
         },
     )
     .await;
@@ -477,6 +482,7 @@ async fn publish_raw_proxy_terminal_on_a_failed_outcome_has_no_provenance_and_no
             served_locally: true,
             request_digest: None,
             requested_by_node_id: None,
+            forwarded_nonce: None,
         },
     )
     .await;
@@ -505,6 +511,7 @@ async fn publish_raw_proxy_terminal_on_a_dropped_outcome_has_no_provenance_and_n
             served_locally: true,
             request_digest: None,
             requested_by_node_id: None,
+            forwarded_nonce: None,
         },
     )
     .await;
@@ -533,7 +540,7 @@ async fn publish_raw_proxy_terminal_on_the_plugin_served_path_omits_the_whole_bl
         "test-model",
         &outcome,
         RawProxyTerminalFacts { served_locally: false, request_digest: // plugin-served
-        None, requested_by_node_id: None },
+        None, requested_by_node_id: None, forwarded_nonce: None },
     )
     .await;
 
@@ -575,7 +582,7 @@ async fn publish_raw_proxy_terminal_on_the_plugin_served_path_still_attaches_out
         "test-model",
         &outcome,
         RawProxyTerminalFacts { served_locally: false, request_digest: // plugin-served
-        None, requested_by_node_id: None },
+        None, requested_by_node_id: None, forwarded_nonce: None },
     )
     .await;
 
@@ -633,6 +640,7 @@ async fn publish_raw_proxy_terminal_omits_model_identity_on_a_descriptor_miss() 
             served_locally: true,
             request_digest: None,
             requested_by_node_id: None,
+            forwarded_nonce: None,
         },
     )
     .await;
@@ -675,6 +683,7 @@ async fn publish_raw_proxy_terminal_omits_vram_bytes_when_advertised_total_is_ze
             served_locally: true,
             request_digest: None,
             requested_by_node_id: None,
+            forwarded_nonce: None,
         },
     )
     .await;
