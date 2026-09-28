@@ -1644,11 +1644,16 @@ struct PeerAttribution {
 /// host routed the exchange to (`served_by_node_id` on a `requested` record
 /// we sealed ourselves, never a received one). That id is ours, not the
 /// peer's word, so it is one the console may block by.
+///
+/// A key names a node only when every own record under it names the SAME
+/// one. The same prompt sent to two peers shares one key; then the key names
+/// no node, never the first one seen, so a block can never land on a node
+/// that did not serve the exchange.
 fn own_routed_node_by_key(
     records: &[Value],
     received_provenance: &HashMap<String, ReceivedProvenance>,
 ) -> HashMap<String, String> {
-    let mut by_key = HashMap::new();
+    let mut nodes_by_key: HashMap<String, HashSet<String>> = HashMap::new();
     for record in records {
         let received = record
             .get("capsule_id")
@@ -1660,10 +1665,14 @@ fn own_routed_node_by_key(
         if let (Some(key), Some(node)) =
             (exchange_key_for(record), full_counterparty_node_id(record))
         {
-            by_key.entry(key).or_insert(node);
+            nodes_by_key.entry(key).or_default().insert(node);
         }
     }
-    by_key
+    nodes_by_key
+        .into_iter()
+        .filter(|(_, nodes)| nodes.len() == 1)
+        .filter_map(|(key, nodes)| nodes.into_iter().next().map(|node| (key, node)))
+        .collect()
 }
 
 fn peer_attribution(
@@ -3057,6 +3066,61 @@ mod tests {
             );
             assert_eq!(rows[0]["identity"]["node_id_source"], json!("your_records"));
         }
+    }
+
+    /// Review u81(a) item 1: the same prompt sent to H, then to M, shares one
+    /// exchange key. The key must name NO node (never the first seen), so M's
+    /// row never carries H's id and offers no block by our records. MUTANT:
+    /// first-entry-wins gives M's row H's node id as `your_records`.
+    #[test]
+    fn the_same_prompt_to_two_peers_never_gives_one_peer_the_other_nodes_id() {
+        let m_key = "71eb26f8e583ccc99e0ae72e1eee88ead06a81159d8e721ba98eeffe5c30550d";
+        let node_h = format!("a1a1{}", "1".repeat(60));
+        let node_m = format!("b2b2{}", "2".repeat(60));
+        let d = "d".repeat(64);
+        let to_h = mesh_half_served_by(
+            "a".repeat(64).as_str(),
+            "requested",
+            &d,
+            "e".repeat(64).as_str(),
+            "me-1",
+            &node_h,
+        );
+        let to_m = mesh_half_served_by(
+            "c".repeat(64).as_str(),
+            "requested",
+            &d,
+            "f".repeat(64).as_str(),
+            "me-2",
+            &node_m,
+        );
+        let pushed_by_m = with_key(
+            mesh_half_served_by(
+                "b".repeat(64).as_str(),
+                "served",
+                &d,
+                "f".repeat(64).as_str(),
+                "them-1",
+                &node_m,
+            ),
+            m_key,
+        );
+        let provenance: HashMap<String, ReceivedProvenance> =
+            [provenance_for("b".repeat(64).as_str(), "e5ba9d1001")]
+                .into_iter()
+                .collect();
+        let records = [to_h, to_m, pushed_by_m];
+        assert!(own_routed_node_by_key(&records, &provenance).is_empty());
+
+        let pane = build_pane_b(&records, &provenance);
+        let m_row = pane["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["peer_id"] == json!("key:71eb26f8e583ccc9"))
+            .expect("M's row, keyed by its signing key");
+        assert_ne!(m_row["identity"]["node_id"], json!(node_h));
+        assert_ne!(m_row["identity"]["node_id_source"], json!("your_records"));
     }
 
     /// A node id from a record we RECEIVED never counts as ours, even on a
