@@ -1591,4 +1591,68 @@ data: [DONE]\n\n",
         assert!(!sse_data_frame_is_openai_error("[DONE]"));
         assert!(!sse_data_frame_is_openai_error("not json"));
     }
+
+    /// Drive the plain chat-completions stream over the same raw upstream SSE.
+    async fn relay_chat_stream_over(upstream: &'static [u8]) -> Result<RouteAttemptResult> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let (mut upstream_writer, mut upstream_reader) = tokio::io::duplex(64 * 1024);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let header = b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n";
+        let server_task = tokio::spawn(async move {
+            let (client_socket, _) = listener.accept().await.unwrap();
+            let mut client_socket: ClientStream = client_socket.into();
+            let probe = ResponseProbe {
+                buffered: header.to_vec(),
+                header_end: header.len(),
+                status_code: 200,
+                retryable_context_overflow: false,
+            };
+            relay_normalized_chat_completion_stream(
+                &mut client_socket,
+                &mut upstream_reader,
+                probe,
+                ResponseRetryPolicy::next_target_available(false),
+                None,
+                OpenAiRouteObserver::default(),
+            )
+            .await
+        });
+        upstream_writer.write_all(upstream).await.unwrap();
+        upstream_writer.shutdown().await.unwrap();
+        let mut client = ClientStream::connect(addr).await.unwrap();
+        let mut output = Vec::new();
+        client.read_to_end(&mut output).await.unwrap();
+        server_task.await.expect("server task")
+    }
+
+    /// Streamed, the /v1/responses path (the console Chat) and the
+    /// /v1/chat/completions path seal the SAME response digest for the same
+    /// served answer, so neither reads as a disagreement with the serving
+    /// node's record.
+    #[tokio::test]
+    async fn a_streamed_responses_request_and_a_streamed_chat_request_seal_one_digest() {
+        const UPSTREAM: &[u8] = b"data: {\"id\":\"chatcmpl-s\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"qwen\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"Bl\"},\"finish_reason\":null}]}\n\n\
+data: {\"id\":\"chatcmpl-s\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"qwen\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ue\"},\"finish_reason\":null}]}\n\n\
+data: {\"id\":\"chatcmpl-s\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"qwen\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n\
+data: [DONE]\n\n";
+        let Ok(RouteAttemptResult::Delivered {
+            output_digests: chat,
+            ..
+        }) = relay_chat_stream_over(UPSTREAM).await
+        else {
+            panic!("chat stream not delivered");
+        };
+        let (result, _) = relay_translated_over(UPSTREAM).await;
+        let Ok(RouteAttemptResult::Delivered {
+            output_digests: responses,
+            ..
+        }) = result
+        else {
+            panic!("responses stream not delivered");
+        };
+        assert!(chat.response.is_some());
+        assert_eq!(responses.response, chat.response);
+    }
 }
