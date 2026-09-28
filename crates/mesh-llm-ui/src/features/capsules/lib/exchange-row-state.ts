@@ -175,18 +175,24 @@ export function pushedHalfRecompute(row: PaneCRow): PeerRecomputeState | null {
  *  ours, and it came from the provider (`providerMatches`). */
 function counterpartyHalfState(
   evidence: PeerRecomputeState,
-  localRecord: CapsuleRecord | null | undefined
+  localRecord: CapsuleRecord | null | undefined,
+  source: 'fetched' | 'pushed'
 ): RightCellStateKind {
   // Recompute not run / could not run: inconclusive, never a verdict.
   if (evidence.idMatch === null) return 'open_not_held'
+  const fromProvider = providerMatches(localRecord, evidence.peerRecord)
+  // A pushed half from a node that did not serve us says nothing about our
+  // exchange, whatever its bytes: it can never contradict our row. (A
+  // fetched half came from the peer this browser asked, so it keeps its
+  // id-recompute verdict below.)
+  if (source === 'pushed' && !fromProvider) return 'open_not_held'
   // The peer's own bytes don't produce the id claimed for them.
   if (!evidence.idMatch) return 'contradicted'
   // Unauthenticated bytes prove nothing either way.
   if (evidence.signatureOk !== true) return 'open_not_held'
+  if (!fromProvider) return 'open_not_held'
   if (digestsDisagree(localRecord, evidence.peerRecord)) return 'contradicted'
-  if (digestsCiteOurHalf(localRecord, evidence.peerRecord) && providerMatches(localRecord, evidence.peerRecord)) {
-    return 'closed'
-  }
+  if (digestsCiteOurHalf(localRecord, evidence.peerRecord)) return 'closed'
   return 'open_not_held'
 }
 
@@ -227,10 +233,11 @@ export function deriveRightCellState(
   // the pushed half the pane correlated from our citing record. Our half is
   // the caller's record when supplied, else the body the pane sent with the
   // pair.
-  const evidence = theirsRecompute?.status === 'found' ? theirsRecompute : pushedHalfRecompute(row)
+  const fetched = theirsRecompute?.status === 'found'
+  const evidence = fetched ? theirsRecompute : pushedHalfRecompute(row)
   if (evidence) {
     const ours = localRecord ?? (row.mine.record as CapsuleRecord | undefined) ?? null
-    return { kind: counterpartyHalfState(evidence, ours), date: null }
+    return { kind: counterpartyHalfState(evidence, ours, fetched ? 'fetched' : 'pushed'), date: null }
   }
 
   // No confirmed fetch yet. A peer id is "known but not fetched" (fetchable)
