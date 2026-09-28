@@ -169,12 +169,11 @@ describe('buildExchangeLedgerRows', () => {
     expect(row.rightCellState.kind).toBe('open_not_asked')
   })
 
-  it('the Pane B pair join outranks the row field; the door sender is the last resort', () => {
+  it('the row field outranks the Pane B pair join; the join fills an older row; the door sender is the last resort', () => {
     const index = new Map([['exch-1', 'node:from-pane-b']])
-    const [joined] = buildExchangeLedgerRows(
-      [paneCRow({ exchange_key: 'exch-1', counterparty: 'key:from-row' })],
-      index
-    )
+    const [own] = buildExchangeLedgerRows([paneCRow({ exchange_key: 'exch-1', counterparty: 'key:from-row' })], index)
+    expect(own.counterparty).toBe('key:from-row')
+    const [joined] = buildExchangeLedgerRows([paneCRow({ exchange_key: 'exch-1' })], index)
     expect(joined.counterparty).toBe('node:from-pane-b')
 
     const [doorFallback] = buildExchangeLedgerRows(
@@ -215,6 +214,48 @@ describe('buildExchangeCounterpartyIndex', () => {
     const index = buildExchangeCounterpartyIndex([peer])
     expect(index.get('exch-a')).toBe('node:peer-a')
     expect(index.has('exch-nonexistent')).toBe(false)
+  })
+
+  it('Q on M4: a twin pair names each row its own provider, never the last peer that listed the shared id', () => {
+    const peerRow = (peerId: string): PaneBRow => ({
+      peer_id: peerId,
+      node: { state: 'present' },
+      rung: { state: 'present' },
+      role: { state: 'present' },
+      history: { state: 'NOT_CHECKED' },
+      served: { state: 'NOT_CHECKED' },
+      pair: {
+        state: 'verified',
+        verified: 1,
+        failed: 0,
+        missing: 0,
+        details: [{ exchange_id: 'digest:twin', state: 'verified' }]
+      },
+      verdicts: { state: 'NOT_CHECKED' },
+      asked: { state: 'absent' },
+      exchange_count: 1,
+      first_seen: null,
+      last_seen: null
+    })
+    const index = buildExchangeCounterpartyIndex([peerRow('key:aaaa'), peerRow('key:bbbb')])
+    expect(index.has('digest:twin')).toBe(false)
+    const paneCRow = (key: string, counterparty: string): PaneCRow => ({
+      exchange_key: key,
+      role_tag: 'ASKED',
+      header_state: 'ok',
+      properties: null,
+      has_issue: false,
+      mine: { state: 'present', capsule_id: `mine-${key}` },
+      theirs: { state: 'absent', capsule_id: null },
+      unilateral: true,
+      timestamp: '2026-09-28T00:00:00Z',
+      counterparty
+    })
+    const rows = buildExchangeLedgerRows(
+      [paneCRow('digest:twin', 'key:aaaa'), paneCRow('digest:twin#2', 'key:bbbb')],
+      index
+    )
+    expect(rows.map((row) => row.counterparty)).toEqual(['key:aaaa', 'key:bbbb'])
   })
 
   it('ADVERSARIAL: an unattributed Pane B row (no peer_id, no node.peer_id) contributes no entries — never "unknown peer"', () => {
