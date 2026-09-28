@@ -129,6 +129,10 @@ mod tests {
         }));
         assert!(expected.has_any());
         assert_eq!(digests, expected);
+        // The answer text alone, assembled across chunks.
+        use sha2::Digest;
+        let text: [u8; 32] = sha2::Sha256::digest(b"hi there").into();
+        assert_eq!(digests.text, Some(text));
     }
 
     #[test]

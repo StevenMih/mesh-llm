@@ -198,6 +198,12 @@ pub struct ExchangeOutputDigests {
     /// Digest over the model's `reasoning_content` chunk(s), when the model
     /// emitted any. `None` (honest absence) for a response that carried none.
     pub reasoning: Option<[u8; 32]>,
+    /// SHA-256 of the UTF-8 bytes of the answer TEXT alone
+    /// (`choices[0].message.content`, when it is a string). The body digest
+    /// covers ids and timestamps, so two providers giving the same answer
+    /// (a twin pair) never compare equal on it; this does. `None` when the
+    /// answer carries no string content.
+    pub text: Option<[u8; 32]>,
 }
 
 impl ExchangeOutputDigests {
@@ -237,8 +243,16 @@ impl ExchangeOutputDigests {
         };
         let tool_calls = collect_response_tool_calls(value);
         let reasoning = collect_response_reasoning(value);
+        let text = value
+            .pointer("/choices/0/message/content")
+            .and_then(serde_json::Value::as_str)
+            .map(|content| {
+                use sha2::Digest;
+                sha2::Sha256::digest(content.as_bytes()).into()
+            });
         Self {
             response: Some(response),
+            text,
             tool_calls: (!tool_calls.is_empty())
                 .then(|| canonical_digest_bytes(&serde_json::Value::Array(tool_calls))),
             reasoning: (!reasoning.is_empty())
@@ -428,6 +442,10 @@ pub struct OpenAiExchangeEnvelope {
     /// model — never fabricated.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_digest: Option<String>,
+    /// [`ExchangeOutputDigests::text`], hex: the digest of the answer text
+    /// alone, so twin answers can be compared. Absent without string content.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response_text_digest: Option<String>,
     /// [ledger-T11-twins-visible] item 2 — the id shared by BOTH halves of
     /// an ambient twin comparison, minted host-side by
     /// [`crate::runtime::twin_sample::mint_twin_bracket_id`]. `None` on
@@ -463,6 +481,7 @@ impl OpenAiExchangeEnvelope {
             response_digest: None,
             tool_calls_digest: None,
             reasoning_digest: None,
+            response_text_digest: None,
             twin_bracket_id: None,
         }
     }
@@ -491,6 +510,7 @@ impl OpenAiExchangeEnvelope {
             response_digest: None,
             tool_calls_digest: None,
             reasoning_digest: None,
+            response_text_digest: None,
             twin_bracket_id: None,
         }
     }
@@ -547,6 +567,9 @@ impl OpenAiExchangeEnvelope {
         if let Some(digest) = digests.reasoning {
             self.reasoning_digest = Some(hex::encode(digest));
         }
+        if let Some(digest) = digests.text {
+            self.response_text_digest = Some(hex::encode(digest));
+        }
         self
     }
 
@@ -598,6 +621,7 @@ impl OpenAiExchangeEnvelope {
             response_digest: None,
             tool_calls_digest: None,
             reasoning_digest: None,
+            response_text_digest: None,
             twin_bracket_id: None,
         }
     }
@@ -658,6 +682,7 @@ impl OpenAiExchangeEnvelope {
             response_digest: None,
             tool_calls_digest: None,
             reasoning_digest: None,
+            response_text_digest: None,
             twin_bracket_id: None,
         }
     }
@@ -1536,6 +1561,41 @@ mod tests {
     /// digests — never a digest over an empty list. The response digest uses
     /// the SAME construction as [`request_body_digest`]: computing it directly
     /// over the parsed value must match what the bundle produced.
+    #[test]
+    fn twin_answers_with_the_same_text_share_a_text_digest_but_not_a_body_digest() {
+        let answer = |id: &str, created: u64| {
+            serde_json::json!({
+                "id": id, "created": created, "object": "chat.completion",
+                "choices": [{"index": 0, "message": {"role": "assistant", "content": "Blue"}}]
+            })
+        };
+        let a = ExchangeOutputDigests::from_response_value(&answer("chatcmpl-a", 1));
+        let b = ExchangeOutputDigests::from_response_value(&answer("chatcmpl-b", 2));
+        assert_ne!(
+            a.response, b.response,
+            "the body digest covers ids and timestamps"
+        );
+        assert_eq!(a.text, b.text, "the same answer text");
+        use sha2::Digest;
+        let expected: [u8; 32] = sha2::Sha256::digest(b"Blue").into();
+        assert_eq!(a.text, Some(expected));
+        let no_text = ExchangeOutputDigests::from_response_value(&serde_json::json!({
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": null, "tool_calls": []}}]
+        }));
+        assert_eq!(no_text.text, None);
+
+        let envelope = OpenAiExchangeEnvelope::terminal(
+            String::from("ex"),
+            OpenAiExchangeDispatchPath::RawProxy,
+            "m",
+            Some(200),
+            None,
+            None,
+        )
+        .with_output_digests(a);
+        assert_eq!(envelope.response_text_digest, Some(hex::encode(expected)));
+    }
+
     #[test]
     fn output_digests_response_present_and_tool_calls_reasoning_absent_when_none() {
         let body = br#"{"id":"x","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":1,"total_tokens":3}}"#;
