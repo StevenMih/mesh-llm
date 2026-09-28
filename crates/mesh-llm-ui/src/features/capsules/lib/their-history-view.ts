@@ -302,7 +302,7 @@ function isRequestFromPeer(entry: AskedOfYouEntry, ids: ReadonlySet<string>): en
 export function askedOfYouView(row: PaneBRow): AskedOfYouView {
   const log = row.asked_of_you
   if (!log) {
-    return { kind: 'not_shown', text: 'Not shown — this view doesn’t carry your node’s log of requests made of it.' }
+    return { kind: 'not_shown', text: 'Not shown — this node isn’t keeping a log of the requests made of it.' }
   }
   const ids = idsForPeer(row)
   const entries = log.entries

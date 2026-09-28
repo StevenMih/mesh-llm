@@ -9,7 +9,7 @@ import type {
   RecordsStatus,
   SharingSwitchKey
 } from '@/features/capsules/api/recordsClient'
-import { HERO_TOOLTIPS, SAMPLE_DATA_UNAVAILABLE } from '@/features/capsules/lib/tooltip-copy'
+import { HERO_TOOLTIPS, SAMPLE_DATA_UNAVAILABLE, WITNESS_OFF } from '@/features/capsules/lib/tooltip-copy'
 
 function plural(n: number, one: string, many = `${one}s`): string {
   return `${n} ${n === 1 ? one : many}`
@@ -35,7 +35,7 @@ export function heroStatusLine(counts: HeroCounts): string {
     plural(counts.records, 'record'),
     `${counts.confirmed} confirmed by the other side`,
     plural(counts.disagreements, 'disagreement'),
-    counts.witnessed ? 'also held by a witness you don’t run' : 'checkable only by you (no witness)'
+    counts.witnessed ? 'also held by a witness you don’t run' : `checkable only by you (${WITNESS_OFF})`
   ].join(' · ')
 }
 
@@ -131,7 +131,7 @@ function describeSwitch(key: SharingSwitchKey, value: string | null): { state: s
     case 'witness':
       return value
         ? { state: 'on', whatLeaves: `Your checkpoints, never records or text, go to ${value}.` }
-        : { state: 'off', whatLeaves: 'Nothing is sent: no witness is set.' }
+        : { state: 'off', whatLeaves: `Nothing is sent: ${WITNESS_OFF}.` }
   }
 }
 
@@ -201,12 +201,17 @@ export const NO_SINGLE_RECORD_DELETE =
 export const CLEANUP_IS_ON_THE_RECORD = 'Each cleanup seals a record of itself onto your log.'
 
 /** Why the run button can't act right now, or null when it can. */
+/** Why "Delete stored prompt and answer text" is off: the prompts pill
+ *  already says they are not kept, so there is nothing to delete. */
+export const NO_STORED_TEXT = 'No prompt or answer text is kept, so there is nothing to delete.'
+
 export function cleanupBlockedReason(
   action: CleanupAction,
   { sample, status, confirmed }: { sample: boolean; status: RecordsStatus | null; confirmed: boolean }
 ): string | null {
   if (sample) return SAMPLE_DATA_UNAVAILABLE
   if (!status) return 'This node didn’t answer, so nothing can be cleaned up from here.'
+  if (action === 'delete_stored_text' && status.stored_text_count === 0) return NO_STORED_TEXT
   if (action === 'start_new_log') {
     if (status.new_history_pending) return NEW_LOG_PENDING
     if (!confirmed) return 'Tick the box above to confirm.'

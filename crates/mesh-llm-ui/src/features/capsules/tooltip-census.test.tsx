@@ -364,14 +364,14 @@ describe('tooltip census -- every chip type the Evidence tab ships has a plain o
     expectCovered(REQUIRED.yourRecords, censusOnScreen(), 'face')
   })
 
-  it('Peer drill: every section of Their history', async () => {
+  it('Peer drill: every section of Their log, as shown to you', async () => {
     const user = userEvent.setup()
     render(<LedgerPageContent />, { wrapper })
     const [firstPeer] = await screen.findAllByRole('row', { name: /Open peer inspector for/ })
     await user.click(firstPeer)
     const dialog = await screen.findByRole('dialog')
-    await user.click(within(dialog).getByRole('tab', { name: /their history/i }))
-    await within(dialog).findByText('Their log, as shown to you')
+    await user.click(within(dialog).getByRole('tab', { name: /their log, as shown to you/i }))
+    expect(within(dialog).queryByText(/their history/i)).not.toBeInTheDocument()
     expectCovered(REQUIRED.peerHistory, censusOnScreen(), 'face')
     // The section bodies too, not only their tooltips.
     const panel = within(dialog).getByRole('tabpanel')

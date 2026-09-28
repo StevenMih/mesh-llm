@@ -121,7 +121,8 @@ import {
   HERO_DESCRIPTION,
   HERO_TOOLTIPS,
   NO_CONTRADICTION_REASON,
-  SAMPLE_DATA_UNAVAILABLE
+  SAMPLE_DATA_UNAVAILABLE,
+  WITNESS_OFF
 } from '@/features/capsules/lib/tooltip-copy'
 import type { PaymentsPresence } from '@/features/capsules/api/sidecarTypes'
 import {
@@ -1298,7 +1299,7 @@ function IntegritySection() {
           <IntegrityStatCard
             info={INTEGRITY_TILE_INFO.sharedWithWitness}
             label="Shared with a witness"
-            sub={witnessCount === 0 ? 'off — your choice' : undefined}
+            sub={witnessCount === 0 ? WITNESS_OFF : undefined}
             value={witnessCount}
           />
           <IntegrityStatCard

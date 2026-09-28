@@ -57,7 +57,7 @@ export const SELF_REPORTED_TOOLTIP =
 
 /** The one line at the top of the peer inspector. */
 export const PEER_INSPECTOR_HEADER =
-  'What you’ve recorded with this peer. Their history shows their own log and what others say.'
+  'What you’ve recorded with this peer. Their log, as shown to you, is what they and others let you see.'
 
 /** [mesh-evidence-history-surface] The peer drill's "Their history" sections
  *  (UX review §7.2 names). One tooltip per section heading. */
@@ -153,6 +153,10 @@ export const ENTRY_CHIP_COVERED_TOOLTIP =
 /** The TWIN bracket's `no verdict` badge. */
 export const TWIN_NO_VERDICT_TOOLTIP =
   'The same request went to two machines and both answers are recorded. No one has compared them and sealed a verdict yet.'
+
+/** The one wording for "no witness holds your checkpoints": the hero, the
+ *  Your records panel and the Integrity tile all say this. */
+export const WITNESS_OFF = 'witness off — your choice'
 
 /** Integrity tiles. */
 export const INTEGRITY_TILE_TOOLTIPS = {

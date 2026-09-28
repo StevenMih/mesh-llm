@@ -709,7 +709,7 @@ describe('LedgerPageContent', () => {
     expect(screen.queryByText('Local only')).not.toBeInTheDocument()
     expect(screen.queryByText("This node's copy")).not.toBeInTheDocument()
     expect(await screen.findByTestId('hero-status-line')).toHaveTextContent(
-      '0 records · 0 confirmed by the other side · 0 disagreements · checkable only by you (no witness)'
+      '0 records · 0 confirmed by the other side · 0 disagreements · checkable only by you (witness off — your choice)'
     )
   })
 })
@@ -1126,7 +1126,7 @@ describe('LedgerPageContent — Part T6: Integrity section completion', () => {
     vi.mocked(useStatusQuery).mockReturnValue({ data: undefined } as never)
   })
 
-  it('Shared with a witness 0 renders at the same weight as any other value, with "off — your choice" under it', async () => {
+  it('Shared with a witness 0 renders at the same weight as any other value, with "witness off — your choice" under it', async () => {
     const user = userEvent.setup()
     render(<LedgerPageContent />, { wrapper: makeWrapper() })
     await user.click(screen.getByRole('tab', { name: /integrity/i }))
@@ -1135,7 +1135,7 @@ describe('LedgerPageContent — Part T6: Integrity section completion', () => {
     const statCard = registeredLabel.closest('.panel-shell')
     const zero = statCard?.querySelector('.font-mono')
     expect(zero?.textContent).toBe('0')
-    expect(statCard).toHaveTextContent('off — your choice')
+    expect(statCard).toHaveTextContent('witness off — your choice')
     // Same element the "bad"-toned Contradicted card would use for a real
     // value -- no separate muted/apologetic class for a zero.
     expect(zero?.className).toMatch(/font-semibold/)

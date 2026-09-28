@@ -23,6 +23,7 @@ import {
   CLEANUP_IS_ON_THE_RECORD,
   CLEANUP_OPTIONS,
   NO_SINGLE_RECORD_DELETE,
+  NO_STORED_TEXT,
   START_NEW_LOG_CONFIRM,
   cleanupBlockedReason,
   cleanupResultMessage
@@ -40,7 +41,11 @@ export type CleanUpRecordsDialogProps = {
 export function CleanUpRecordsDialog({ open, onOpenChange, status, sample }: CleanUpRecordsDialogProps) {
   const queryClient = useQueryClient()
   const groupName = useId()
-  const [choice, setChoice] = useState<CleanupAction>('delete_stored_text')
+  // Nothing to delete when no prompt or answer text is kept: that option is
+  // off, and the dialog opens on one that can run.
+  const noStoredText = status?.stored_text_count === 0
+  const [picked, setChoice] = useState<CleanupAction>('delete_stored_text')
+  const choice: CleanupAction = noStoredText && picked === 'delete_stored_text' ? 'rebuild_index' : picked
   const [confirmed, setConfirmed] = useState(false)
   const [pending, setPending] = useState(false)
   const [outcome, setOutcome] = useState<Outcome>()
@@ -110,6 +115,7 @@ export function CleanUpRecordsDialog({ open, onOpenChange, status, sample }: Cle
                 <input
                   checked={choice === o.action}
                   className="mt-1"
+                  disabled={noStoredText && o.action === 'delete_stored_text'}
                   name={groupName}
                   onChange={() => {
                     setChoice(o.action)
@@ -120,7 +126,9 @@ export function CleanUpRecordsDialog({ open, onOpenChange, status, sample }: Cle
                 />
                 <span className="flex flex-col gap-0.5">
                   <span className="font-medium text-foreground">{o.title}</span>
-                  <span className="text-fg-dim">{o.consequence}</span>
+                  <span className="text-fg-dim">
+                    {noStoredText && o.action === 'delete_stored_text' ? NO_STORED_TEXT : o.consequence}
+                  </span>
                 </span>
               </label>
             ))}

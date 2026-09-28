@@ -58,6 +58,18 @@ function open(props: { status?: RecordsStatus | null; sample?: boolean } = {}) {
 describe('CleanUpRecordsDialog', () => {
   afterEach(() => vi.unstubAllGlobals())
 
+  it('turns off deleting stored text when no prompt or answer text is kept, and opens on an option that can run', () => {
+    const fetchSpy = stubTool(200, {})
+    const dialog = open({ status: { ...STATUS, stored_text_count: 0 } })
+    const radios = within(dialog).getAllByRole('radio')
+    const deleteOption = radios.find((r) => (r as HTMLInputElement).value === 'delete_stored_text') as HTMLInputElement
+    expect(deleteOption).toBeDisabled()
+    expect(deleteOption).not.toBeChecked()
+    expect(within(dialog).getByText('No prompt or answer text is kept, so there is nothing to delete.')).toBeInTheDocument()
+    expect(within(dialog).queryByRole('button', { name: 'Delete stored text' })).not.toBeInTheDocument()
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
   it('deletes stored text and names the record the cleanup sealed', async () => {
     const fetchSpy = stubTool(200, {
       deleted_count: 3,

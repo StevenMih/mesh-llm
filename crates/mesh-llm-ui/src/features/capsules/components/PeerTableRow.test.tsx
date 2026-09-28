@@ -94,7 +94,7 @@ describe('PeerTableRow — dealt-with peers', () => {
     expect(container.textContent).not.toContain('you measured')
   })
 
-  it('opens the PeerInspector modal on row click, Overview tab active by default -- meshStatus still flows to the modal', async () => {
+  it('opens the PeerInspector modal on row click, Overview tab active by default, with no liveness line', async () => {
     const user = userEvent.setup()
     const meshStatus = deriveMeshStatus(
       CLEAN_ROW.peer_id ?? '',
@@ -109,9 +109,12 @@ describe('PeerTableRow — dealt-with peers', () => {
 
     const dialog = screen.getByRole('dialog')
     expect(within(dialog).getByRole('tab', { name: /overview/i })).toHaveAttribute('data-state', 'active')
-    // The modal's own Overview tab still shows the operational facts --
-    // only the summary row dropped them.
-    expect(within(dialog).getByText('online')).toBeInTheDocument()
+    // Accountability only: the drill shows no mesh status, latency or
+    // online state (the Network tab's), and no per-drill self-reported line.
+    for (const liveness of ['online', 'offline', 'status unknown', 'latency unknown', 'mesh status not available']) {
+      expect(within(dialog).queryByText(liveness)).not.toBeInTheDocument()
+    }
+    expect(within(dialog).queryByText('self-reported — not independently attested')).not.toBeInTheDocument()
   })
 
   it('drills into the timeline with exchange sources supplied', async () => {

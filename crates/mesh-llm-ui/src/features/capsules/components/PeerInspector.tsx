@@ -25,7 +25,7 @@ import type { PaneBRow } from '@/features/capsules/api/sidecarTypes'
 import { toneForState } from '@/features/capsules/lib/assurance-tone'
 import type { PeerTimelinePoint } from '@/features/capsules/lib/peer-exchange-timeline'
 import type { PeerMeshStatus } from '@/features/capsules/lib/peer-mesh-status'
-import { meshMetaLine, peerDisplayId, theirChainSummary } from '@/features/capsules/lib/peer-row-view'
+import { peerDisplayId, theirChainSummary } from '@/features/capsules/lib/peer-row-view'
 import { dealingsLines } from '@/features/capsules/lib/peer-routing-view'
 import { PeerExchangeInspector } from '@/features/capsules/components/PeerExchangeInspector'
 import { PeerHistoryTab } from '@/features/capsules/components/PeerHistoryTab'
@@ -46,32 +46,14 @@ export type PeerInspectorProps = {
 
 type PeerInspectorTab = 'overview' | 'history' | 'timeline' | 'exchanges'
 
-function PeerOverviewTab({
-  row,
-  meshStatus,
-  routing
-}: {
-  row: PaneBRow
-  meshStatus: PeerMeshStatus | null
-  routing: PeerRoutingControls | undefined
-}) {
+function PeerOverviewTab({ row, routing }: { row: PaneBRow; routing: PeerRoutingControls | undefined }) {
   const chain = theirChainSummary(row)
-  const metaLine = meshMetaLine(meshStatus)
-  const latencyLabel = meshStatus?.latencyMs != null ? `${meshStatus.latencyMs} ms` : 'latency unknown'
-  const online = meshStatus?.online ?? false
 
+  // Accountability only: no liveness line (mesh status, latency, online) --
+  // that is the Network tab's -- and no per-drill "self-reported" line, which
+  // the Peers legend says once.
   return (
     <div className="flex flex-col gap-3 text-sm text-fg-dim">
-      <div>
-        <p className="mt-0.5 flex flex-wrap items-center gap-1.5 text-xs text-fg-faint">
-          {metaLine ? <span className="font-mono">{metaLine}</span> : <span>mesh status not available</span>}
-          <span aria-hidden="true">·</span>
-          <span className="font-mono">{latencyLabel}</span>
-          <span aria-hidden="true">·</span>
-          <span>{meshStatus ? (online ? 'online' : 'offline') : 'status unknown'}</span>
-        </p>
-        <p className="mt-1 text-xs text-fg-faint">self-reported — not independently attested</p>
-      </div>
       {/* §7.5: the drill answers "should I stop dealing with anyone?" --
          your dealings with them, then the local block at the bottom. */}
       <section aria-label={YOUR_DEALINGS_TITLE} className="flex flex-col gap-2">
@@ -127,7 +109,7 @@ function PeerExchangesTab({
   )
 }
 
-export function PeerInspector({ open, onClose, row, meshStatus, points, routing }: PeerInspectorProps) {
+export function PeerInspector({ open, onClose, row, points, routing }: PeerInspectorProps) {
   const [selectedPoint, setSelectedPoint] = useState<PeerTimelinePoint | null>(null)
 
   return (
@@ -164,11 +146,11 @@ export function PeerInspector({ open, onClose, row, meshStatus, points, routing 
                   {
                     value: 'overview',
                     label: 'Overview',
-                    content: <PeerOverviewTab meshStatus={meshStatus} routing={routing} row={row} />
+                    content: <PeerOverviewTab routing={routing} row={row} />
                   },
                   {
                     value: 'history',
-                    label: 'Their history',
+                    label: 'Their log, as shown to you',
                     content: <PeerHistoryTab row={row} />
                   },
                   {

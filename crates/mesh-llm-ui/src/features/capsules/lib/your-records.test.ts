@@ -36,7 +36,7 @@ function status(overrides: Partial<RecordsStatus> = {}): RecordsStatus {
 describe('hero line 3', () => {
   it('states the whole tab in one sentence, with the assurance in words', () => {
     expect(heroStatusLine({ records: 8, confirmed: 3, disagreements: 0, witnessed: false })).toBe(
-      '8 records · 3 confirmed by the other side · 0 disagreements · checkable only by you (no witness)'
+      '8 records · 3 confirmed by the other side · 0 disagreements · checkable only by you (witness off — your choice)'
     )
     expect(heroStatusLine({ records: 1, confirmed: 0, disagreements: 1, witnessed: true })).toBe(
       '1 record · 0 confirmed by the other side · 1 disagreement · also held by a witness you don’t run'
@@ -70,7 +70,7 @@ describe('What you share', () => {
       'off'
     ])
     expect(rows.every((r) => r.source === 'default')).toBe(true)
-    expect(rows[3].whatLeaves).toBe('Nothing is sent: no witness is set.')
+    expect(rows[3].whatLeaves).toBe('Nothing is sent: witness off — your choice.')
   })
 
   it('a set witness names where checkpoints go, and never records or text', () => {
