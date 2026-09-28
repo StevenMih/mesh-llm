@@ -162,8 +162,18 @@ describe('Close card counts', () => {
   it('counts inference CLOSED through the gate it is given, and settled from each row', () => {
     const rows = [paneRow('a', book('settled')), paneRow('b', book('no_settlement_seen')), paneRow('c', null)]
     const counts = settlementCloseCounts(rows, (row) => row.exchange_key === 'a')
-    expect(counts).toEqual({ exchanges: 3, closed: 1, paid: 2, settled: 1 })
+    expect(counts).toEqual({ exchanges: 3, closed: 1, paid: 2, settled: 1, settledWithoutReference: 0 })
     expect(settlementCloseLine(counts, 'on')).toBe('2 paid · 1 settled by your wallet · provider’s book: not available')
+  })
+
+  it('a row that reads "no reference" is counted and worded the same way on the card', () => {
+    const noReference = { ...book('settled'), matched_by_segment_only: true }
+    expect(settlementRowView(noReference)?.label).toBe('settled · your wallet · no reference')
+    const counts = settlementCloseCounts([paneRow('a', noReference), paneRow('b', book('settled'))], () => false)
+    expect(counts).toMatchObject({ paid: 2, settled: 2, settledWithoutReference: 1 })
+    expect(settlementCloseLine(counts, 'on')).toBe(
+      '2 paid · 2 settled by your wallet (1 no reference) · provider’s book: not available'
+    )
   })
 
   it('payments off reads as off, never as zero settled', () => {
