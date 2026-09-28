@@ -241,6 +241,9 @@ impl ExchangeOutputDigests {
         let Some(response) = checked_canonical_digest_bytes(value, source_json) else {
             return Self::default();
         };
+        // The owner's opt-in to keep the text (`keep_text`): the served
+        // response, as digested here, for this exchange's text file.
+        crate::plugin::keep_text::offer_response(value);
         let tool_calls = collect_response_tool_calls(value);
         let reasoning = collect_response_reasoning(value);
         let text = value
@@ -715,6 +718,14 @@ pub trait OpenAiExchangeChannel: Send + Sync + 'static {
 #[async_trait]
 impl OpenAiExchangeChannel for PluginManager {
     async fn publish(&self, event: &OpenAiExchangeEnvelope) {
+        if crate::plugin::keep_text::enabled()
+            && let Err(error) = crate::plugin::keep_text::write_terminal(
+                &crate::api::routes::capsules::ledger_dir(),
+                event,
+            )
+        {
+            tracing::warn!(%error, "could not keep this exchange's text");
+        }
         let body = match serde_json::to_vec(event) {
             Ok(body) => body,
             Err(error) => {

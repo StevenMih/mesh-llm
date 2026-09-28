@@ -3,6 +3,7 @@ mod config;
 mod health;
 mod in_process;
 mod installed;
+pub(crate) mod keep_text;
 pub(crate) mod mcp;
 pub mod openai_exchange;
 mod runtime;

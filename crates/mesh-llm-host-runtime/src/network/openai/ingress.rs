@@ -1467,7 +1467,13 @@ fn spawn_ambient_twin_dispatch(args: AmbientTwinDispatchArgs) {
         required_tokens,
         bracket_id,
     } = args;
-    tokio::spawn(async move {
+    tokio::spawn(crate::plugin::keep_text::scope(async move {
+        if crate::plugin::keep_text::enabled() {
+            request.ensure_body_json();
+            if let Some(body) = request.body_json.as_ref() {
+                crate::plugin::keep_text::offer_request(body);
+            }
+        }
         let exchange_id = uuid::Uuid::new_v4().to_string();
         let (forwarded_nonce, nonce_origin) = request.capsule_nonce_headers();
         let nonce_source = remote_mesh_nonce_source(&forwarded_nonce, &nonce_origin);
@@ -1546,7 +1552,7 @@ fn spawn_ambient_twin_dispatch(args: AmbientTwinDispatchArgs) {
             }
             ch.publish(&terminal).await;
         }
-    });
+    }));
 }
 
 /// Resolve an explicit `x-mesh-target` naming THIS node against local
@@ -2673,14 +2679,25 @@ async fn handle_buffered_api_request(
 
     let outcome = {
         let route_observer = lifecycle.route_observer();
-        route_request(
-            tcp_stream,
-            &mut request,
-            &ctx.route,
-            routing_model.as_deref(),
-            decision.required_tokens,
-            route_observer,
-        )
+        // The owner's opt-in to keep the text of this exchange
+        // (`plugin::keep_text`): a slot for its request and answer.
+        crate::plugin::keep_text::scope(async {
+            if crate::plugin::keep_text::enabled() {
+                request.ensure_body_json();
+                if let Some(body) = request.body_json.as_ref() {
+                    crate::plugin::keep_text::offer_request(body);
+                }
+            }
+            route_request(
+                tcp_stream,
+                &mut request,
+                &ctx.route,
+                routing_model.as_deref(),
+                decision.required_tokens,
+                route_observer,
+            )
+            .await
+        })
         .await
     };
     if let Some(model) = routing_model.as_deref()

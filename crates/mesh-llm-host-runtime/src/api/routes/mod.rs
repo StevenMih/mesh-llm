@@ -1,7 +1,7 @@
 mod capsule_panes;
 mod capsule_panes_native;
 mod capsule_panes_settlement;
-mod capsules;
+pub(crate) mod capsules;
 mod chat;
 mod control_apply_diagnostics;
 mod diagnostics;

@@ -1286,9 +1286,22 @@ fn handle_status<'a>(stream: &'a mut TcpStream, state: &'a MeshApi) -> BoxedRout
 
 async fn handle_status_inner(stream: &mut TcpStream, state: &MeshApi) -> anyhow::Result<()> {
     match tokio::time::timeout(std::time::Duration::from_secs(5), state.status()).await {
-        Ok(status) => respond_json(stream, 200, &status).await,
+        Ok(status) => {
+            respond_json(stream, 200, &with_text_kept(serde_json::to_value(&status)?)).await
+        }
         Err(_) => respond_error(stream, 503, "Status temporarily unavailable").await,
     }
+}
+
+/// The owner's opt-in to keep exchange text (`plugin::keep_text`), shown as
+/// `text_kept: true`; absent when off, so the status shape is unchanged.
+fn with_text_kept(mut status: serde_json::Value) -> serde_json::Value {
+    if crate::plugin::keep_text::enabled()
+        && let Some(object) = status.as_object_mut()
+    {
+        object.insert("text_kept".into(), serde_json::Value::Bool(true));
+    }
+    status
 }
 
 fn handle_models<'a>(stream: &'a mut TcpStream, state: &'a MeshApi) -> BoxedRouteFuture<'a> {
