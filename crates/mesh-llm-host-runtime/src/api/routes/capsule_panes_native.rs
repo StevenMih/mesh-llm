@@ -715,11 +715,21 @@ fn is_received_record(
 /// (e.g. both halves of one exchange held on one node, or a peer's half that
 /// carries no provenance line) and folds into it, as before; only an own
 /// record whose answer differs is a separate exchange (the same request asked
-/// again, answered differently).
+/// again, answered differently). Two records of the same role that carry
+/// different host-minted exchange ids are two exchanges even with one answer
+/// (the same prompt asked twice, answered alike), never folded: each has its
+/// own row and its own payment book.
 fn push_own<'a>(own: &mut Vec<&'a Value>, record: &'a Value) {
+    let distinct_exchange = |o: &Value| {
+        label_role(o) == label_role(record)
+            && matches!(
+                (record_exchange_id(o), record_exchange_id(record)),
+                (Some(a), Some(b)) if a != b
+            )
+    };
     if !own
         .iter()
-        .any(|o| response_digest(o) == response_digest(record))
+        .any(|o| response_digest(o) == response_digest(record) && !distinct_exchange(o))
     {
         own.push(record);
     }
@@ -1354,7 +1364,8 @@ pub(super) fn build_pane_b(
 }
 
 /// The payer-book summaries of one group's exchanges, one per distinct
-/// exchange (`exchange_key_for`, so two halves of one exchange count once),
+/// `exchange_id` (each id is its own book, so two paid exchanges with the
+/// same request body count twice, and the two halves of one exchange once),
 /// skipping exchanges with no settlement record.
 ///
 /// Only this node's own records supply join ids: settlement records are this
@@ -1365,28 +1376,18 @@ fn settlement_summaries(
     settlements: &SettlementIndex,
     received_provenance: &HashMap<String, ReceivedProvenance>,
 ) -> Vec<Value> {
-    let mut ids_by_exchange: std::collections::BTreeMap<String, Vec<&str>> =
-        std::collections::BTreeMap::new();
-    for record in group {
-        let key = exchange_key_for(record).unwrap_or_else(|| {
+    let ids: std::collections::BTreeSet<&str> = group
+        .iter()
+        .filter(|record| {
             record
                 .get("capsule_id")
                 .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string()
-        });
-        let ids = ids_by_exchange.entry(key).or_default();
-        let ours = record
-            .get("capsule_id")
-            .and_then(Value::as_str)
-            .is_none_or(|id| !received_provenance.contains_key(id));
-        if ours && let Some(id) = record_exchange_id(record) {
-            ids.push(id);
-        }
-    }
-    ids_by_exchange
-        .values()
-        .filter_map(|ids| settlements.summary_for(ids.iter().copied()))
+                .is_none_or(|id| !received_provenance.contains_key(id))
+        })
+        .filter_map(record_exchange_id)
+        .collect();
+    ids.into_iter()
+        .filter_map(|id| settlements.summary_for([id]))
         .collect()
 }
 
@@ -4420,6 +4421,55 @@ mod tests {
             "timestamp": "2026-09-27T00:00:05Z",
             "model_attestation": { "compute_attestation": { "x-mesh-settlement-v1": block } },
         })
+    }
+
+    /// Review u81 #1 through the panes: two paid exchanges with ONE request
+    /// digest. Exchange 1 is invoiced seg0 `aa` and settled by a hash-less
+    /// wallet report; exchange 2 is invoiced seg0 `bb` and unpaid. No row may
+    /// read settled for exchange 2, and the peer counts two paid exchanges.
+    #[test]
+    fn two_paid_exchanges_with_one_request_body_keep_separate_books() {
+        let dir = tempfile::tempdir().unwrap();
+        let records = vec![
+            asked_record("cap-1", "req-same", "ex-1"),
+            asked_record("cap-2", "req-same", "ex-2"),
+            settlement_record("s1", "ex-1", "input_invoice_issued", Some(0), Some("aa")),
+            settlement_record("s2", "ex-1", "input_settlement_observed", Some(0), None),
+            settlement_record("s3", "ex-2", "input_invoice_issued", Some(0), Some("bb")),
+        ];
+        write_fixture_ledger(dir.path(), &records);
+
+        let pane_c = build_pane_json("pane-c", dir.path(), None, PaymentsPresence::On).unwrap();
+        let rows = pane_c["rows"].as_array().unwrap();
+        let state_of = |exchange_id: &str| -> Vec<Value> {
+            rows.iter()
+                .filter(|r| {
+                    r["settlement"]["exchange_ids"]
+                        .as_array()
+                        .is_some_and(|ids| ids.contains(&json!(exchange_id)))
+                })
+                .map(|r| r["settlement"]["state"].clone())
+                .collect()
+        };
+        assert_eq!(state_of("ex-2"), vec![json!("no_settlement_seen")]);
+        assert_eq!(state_of("ex-1"), vec![json!("settled")]);
+        assert!(
+            rows.iter()
+                .filter(|r| r["settlement"]["state"] == json!("settled"))
+                .all(|r| r["settlement"]["exchange_ids"] == json!(["ex-1"])),
+            "only exchange 1's own book may read settled"
+        );
+
+        let pane_b = build_pane_json("pane-b", dir.path(), None, PaymentsPresence::On).unwrap();
+        let counts = pane_b["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find_map(|r| r.get("settlement"))
+            .expect("a peer row carries settlement counts");
+        assert_eq!(counts["paid_exchanges"], json!(2));
+        assert_eq!(counts["settled_payer_observed"], json!(1));
+        assert_eq!(counts["no_settlement_seen"], json!(1));
     }
 
     #[test]

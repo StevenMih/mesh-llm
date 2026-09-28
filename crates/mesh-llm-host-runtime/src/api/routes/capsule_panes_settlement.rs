@@ -100,24 +100,34 @@ impl SettlementIndex {
 
     /// The payer-book summary for the exchange ids one row's records carry,
     /// or `None` when none of them has a settlement record.
+    ///
+    /// Each exchange id is its own book: one exchange's settlement never
+    /// settles another's invoice. A row carrying more than one id shows the
+    /// WORST of their states, with every entry, so a merged row can never
+    /// read "settled" while one of its exchanges is not.
     pub(super) fn summary_for<'a>(
         &self,
         exchange_ids: impl IntoIterator<Item = &'a str>,
     ) -> Option<Value> {
         let mut seen = BTreeSet::new();
-        let mut entries: Vec<&Value> = Vec::new();
+        let mut books: Vec<(&str, Value)> = Vec::new();
         for id in exchange_ids {
             if !seen.insert(id) {
                 continue;
             }
             if let Some(records) = self.by_exchange.get(id) {
-                entries.extend(records.iter());
+                let entries: Vec<&Value> = records.iter().collect();
+                books.push((id, payer_book(&entries)));
             }
         }
-        if entries.is_empty() {
-            return None;
+        match books.len() {
+            0 => None,
+            1 => books.pop().map(|(id, mut book)| {
+                book["exchange_ids"] = json!([id]);
+                book
+            }),
+            _ => Some(worst_book(books)),
         }
-        Some(payer_book(&entries))
     }
 
     /// Settlement exchange ids no pane row carries, so the page can say the
@@ -130,6 +140,57 @@ impl SettlementIndex {
             .cloned()
             .collect()
     }
+}
+
+/// How bad a payer-book state is, for a row that carries several exchanges:
+/// the row shows the worst. A state this reader does not know ranks worst.
+fn state_rank(state: &str) -> u8 {
+    match state {
+        PAYER_TERMS_ONLY => 0,
+        PAYER_SETTLED => 1,
+        PAYER_NO_SETTLEMENT_SEEN => 2,
+        _ => 3,
+    }
+}
+
+/// Several exchanges' books as one row summary: the worst state, every entry
+/// in book order, every terms digest, and the exchange ids it covers.
+fn worst_book(books: Vec<(&str, Value)>) -> Value {
+    let mut state = PAYER_TERMS_ONLY;
+    let mut matched_by_segment_only = false;
+    let mut terms_digests: BTreeSet<String> = BTreeSet::new();
+    let mut entries: Vec<Value> = Vec::new();
+    let mut exchange_ids: Vec<&str> = Vec::new();
+    for (id, book) in &books {
+        let book_state = book["state"].as_str().unwrap_or_default();
+        if state_rank(book_state) > state_rank(state) {
+            state = match book_state {
+                PAYER_SETTLED => PAYER_SETTLED,
+                PAYER_NO_SETTLEMENT_SEEN => PAYER_NO_SETTLEMENT_SEEN,
+                _ => PAYER_UNMATCHED_SETTLEMENT,
+            };
+        }
+        // "No reference" describes a settled book; it carries to the row only
+        // while the row still reads settled.
+        matched_by_segment_only |=
+            book_state == PAYER_SETTLED && book["matched_by_segment_only"].as_bool() == Some(true);
+        if let Some(digests) = book["terms_digests"].as_array() {
+            terms_digests.extend(digests.iter().filter_map(Value::as_str).map(str::to_string));
+        }
+        if let Some(rows) = book["entries"].as_array() {
+            entries.extend(rows.iter().cloned());
+        }
+        exchange_ids.push(id);
+    }
+    json!({
+        "observed_by": "payer",
+        "state": state,
+        "terms_digests": terms_digests.into_iter().collect::<Vec<_>>(),
+        "entries": entries,
+        "matched_by_segment_only": state == PAYER_SETTLED && matched_by_segment_only,
+        "provider_book": PROVIDER_BOOK_NOT_AVAILABLE,
+        "exchange_ids": exchange_ids,
+    })
 }
 
 /// The payer's book for one exchange, from its settlement records.
@@ -194,12 +255,20 @@ fn payer_book(entries: &[&Value]) -> Value {
         }));
     }
     let invoice_segments: BTreeSet<u64> = invoices.iter().map(|(segment, _)| *segment).collect();
+    let mut invoices_per_segment: HashMap<u64, usize> = HashMap::new();
+    for (segment, _) in &invoices {
+        *invoices_per_segment.entry(*segment).or_default() += 1;
+    }
     let mut matched_by_segment_only = false;
     let all_invoices_settled = invoices.iter().all(|invoice| {
         if settlements.contains(invoice) {
             return true;
         }
-        let by_segment = hashless_settlement_segments.contains(&invoice.0);
+        // A settlement with no hash can only name its segment, so it settles
+        // an invoice only when that segment has exactly one: with two (a
+        // retry under the same exchange id), it cannot say which was paid.
+        let by_segment = hashless_settlement_segments.contains(&invoice.0)
+            && invoices_per_segment.get(&invoice.0) == Some(&1);
         matched_by_segment_only |= by_segment;
         by_segment
     });
@@ -359,6 +428,105 @@ mod tests {
         assert_eq!(entries[3]["amount_msat"], 457);
         assert_eq!(entries[5]["amount_msat"], 577);
         assert!(summary.get("total_msat").is_none());
+    }
+
+    /// Review u81 #1: two paid exchanges with the same request body. Exchange 1
+    /// has invoice seg0 `aa` and a hash-less wallet settlement for seg0;
+    /// exchange 2 has invoice seg0 `bb` and nothing paid. A row carrying both
+    /// must not read settled: each id is its own book, the row shows the worst.
+    #[test]
+    fn one_exchange_settlement_never_settles_another_exchange_invoice() {
+        let records = vec![
+            event(
+                "ex-1",
+                "input_invoice_issued",
+                "provider_asserted",
+                Some(0),
+                Some("aa"),
+                120,
+            ),
+            event(
+                "ex-1",
+                "input_settlement_observed",
+                "wallet_reported",
+                Some(0),
+                None,
+                120,
+            ),
+            event(
+                "ex-2",
+                "input_invoice_issued",
+                "provider_asserted",
+                Some(0),
+                Some("bb"),
+                120,
+            ),
+        ];
+        let index = index(records);
+        let merged = index.summary_for(["ex-1", "ex-2"]).unwrap();
+        assert_eq!(merged["state"], "no_settlement_seen");
+        assert_eq!(merged["matched_by_segment_only"], false);
+        assert_eq!(merged["exchange_ids"], json!(["ex-1", "ex-2"]));
+        assert_eq!(merged["entries"].as_array().unwrap().len(), 3);
+        // Each on its own: exchange 1 settled (by segment), exchange 2 not.
+        let one = index.summary_for(["ex-1"]).unwrap();
+        assert_eq!(one["state"], "settled");
+        assert_eq!(one["matched_by_segment_only"], true);
+        assert_eq!(
+            index.summary_for(["ex-2"]).unwrap()["state"],
+            "no_settlement_seen"
+        );
+    }
+
+    /// Review u81 #1, the retry: a paid retry reuses the exchange id, so one
+    /// book holds two seg0 invoices. A hash-less settlement cannot say which
+    /// was paid, so it settles neither.
+    #[test]
+    fn a_hashless_settlement_under_a_retried_segment_settles_nothing() {
+        let records = vec![
+            event(
+                "ex-r",
+                "input_invoice_issued",
+                "provider_asserted",
+                Some(0),
+                Some("aa"),
+                120,
+            ),
+            event(
+                "ex-r",
+                "input_invoice_issued",
+                "provider_asserted",
+                Some(0),
+                Some("bb"),
+                120,
+            ),
+            event(
+                "ex-r",
+                "input_settlement_observed",
+                "wallet_reported",
+                Some(0),
+                None,
+                120,
+            ),
+        ];
+        let summary = index(records).summary_for(["ex-r"]).unwrap();
+        assert_eq!(summary["state"], "no_settlement_seen");
+        assert_eq!(summary["matched_by_segment_only"], false);
+    }
+
+    #[test]
+    fn a_row_of_settled_and_priced_exchanges_reads_settled() {
+        let mut records = paid_and_settled("ex-a");
+        records.push(event(
+            "ex-b",
+            "terms_accepted",
+            "payer_asserted",
+            None,
+            None,
+            5,
+        ));
+        let merged = index(records).summary_for(["ex-a", "ex-b"]).unwrap();
+        assert_eq!(merged["state"], "settled");
     }
 
     #[test]
