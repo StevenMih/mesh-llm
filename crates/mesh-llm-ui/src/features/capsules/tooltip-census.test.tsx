@@ -414,7 +414,8 @@ describe('tooltip census -- the copy itself', () => {
       // [mesh-chat-evidence-chip] the Chat chip and the Logs link sit on
       // other tabs' faces, so the same face rules apply.
       ...Object.values(COPY.CHAT_EVIDENCE_CHIP_TOOLTIPS),
-      COPY.LOGS_EVIDENCE_LINK_TOOLTIP
+      COPY.LOGS_EVIDENCE_LINK_TOOLTIP,
+      ...Object.values(COPY.THEIR_LOG_TOOLTIPS)
     ]
     const dig = Object.values(COPY.CHECK_CHIP_TOOLTIPS)
     for (const text of [...face, ...dig]) {

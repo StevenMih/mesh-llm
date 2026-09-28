@@ -14,7 +14,7 @@ import {
   verdictRows,
   type ProvenanceKey
 } from '@/features/capsules/lib/their-history-view'
-import { PEER_HISTORY_TOOLTIPS } from '@/features/capsules/lib/tooltip-copy'
+import { PEER_HISTORY_TOOLTIPS, THEIR_LOG_TOOLTIPS } from '@/features/capsules/lib/tooltip-copy'
 
 const PROVENANCES: ProvenanceKey[] = ['byYou', 'deliveredToThem', 'byOthers']
 
@@ -43,7 +43,7 @@ function Section({
 function TheirLog({ row }: { row: PaneBRow }) {
   const view = theirLogView(row)
   return (
-    <Section census="theirLog" title="Their log, as shown to you" tooltip={PEER_HISTORY_TOOLTIPS.theirLog}>
+    <Section census="theirLog" title="Their log, as shown to you" tooltip={THEIR_LOG_TOOLTIPS[view.kind]}>
       <p className="text-xs text-fg-dim">{view.text}</p>
       {view.kind === 'shown' && view.checkpoints.length > 0 ? (
         <ul className="flex flex-col gap-1" data-testid="their-log-checkpoints">

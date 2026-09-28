@@ -71,6 +71,18 @@ export const SELF_REPORTED_TOOLTIP =
 export const PEER_INSPECTOR_HEADER =
   'What you’ve recorded with this peer. Their log, as shown to you, is what they and others let you see.'
 
+/** u106: the drill's "Their log, as shown to you" hover follows the
+ *  section's state: "checked" only once a fetched log was checked
+ *  (peer_evidence_client fails closed). */
+export const THEIR_LOG_TOOLTIPS = {
+  shown:
+    'Their log as your node fetched and checked it: counts per checkpoint, no record contents. Witnesses a checkpoint lists are shown as listed, not checked here.',
+  failed: 'Your node fetched their log and it didn’t check out on this machine, so none of it is shown as checked.',
+  refused: 'They refused to show their log. Nothing of it is checked here.',
+  no_answer: 'Your node asked for their log and no answer has been checked here yet.',
+  not_asked: 'Your node hasn’t asked for their log, so nothing of it is checked here.'
+} as const
+
 /** [mesh-evidence-history-surface] The peer drill's "Their history" sections
  *  (UX review §7.2 names). One tooltip per section heading. */
 export const PEER_HISTORY_TOOLTIPS = {

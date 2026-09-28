@@ -49,6 +49,16 @@ describe('PeerHistoryTab', () => {
     }
   })
 
+  it('u106: the Their log hover says "checked" only when a fetched log was checked', () => {
+    render(<PeerHistoryTab row={CAPTURED_PEER} />)
+    const region = section('Their log, as shown to you')
+    const hovers = Array.from(region.querySelectorAll('[aria-describedby]')).map(
+      (element) => document.getElementById(element.getAttribute('aria-describedby') ?? '')?.textContent ?? ''
+    )
+    expect(hovers.join(' ')).toContain('hasn’t asked for their log')
+    expect(hovers.join(' ')).not.toContain('fetched and checked')
+  })
+
   it('renders per-checkpoint counts, their reply to delivered verdicts, and inbound requests', () => {
     render(
       <PeerHistoryTab
