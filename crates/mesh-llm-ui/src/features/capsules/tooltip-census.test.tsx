@@ -572,6 +572,15 @@ describe('settlement on the Evidence tab', () => {
     await user.click(await screen.findByRole('tab', { name: /integrity/i }))
     const card = await screen.findByTestId('close-card')
     expect(within(card).getByText('none yet')).toBeInTheDocument()
+    // EM (o): no Exchanges count ever sits under "Agreed periods": the
+    // counts have their own heading, after the agreed-period answer.
+    const agreed = card.querySelector('[data-close-agreed]') as HTMLElement
+    expect(agreed.textContent?.trim()).toBe('none yet')
+    const countsHeading = card.querySelector('[data-close-counts-heading]') as HTMLElement
+    expect(countsHeading.textContent).toContain('Not in an agreed period yet')
+    for (const line of card.querySelectorAll('[data-close-inference], [data-close-settlement]')) {
+      expect(countsHeading.compareDocumentPosition(line) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    }
     expect(card.querySelector('[data-close-inference]')?.textContent).toBe(
       'So far: 10 exchanges · 1 confirmed by the other side'
     )

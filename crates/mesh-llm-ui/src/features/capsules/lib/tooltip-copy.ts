@@ -286,9 +286,12 @@ export const SETTLEMENT_SOURCE_TOOLTIPS = {
 export const PEER_PAYMENTS_TOOLTIP =
   'Counts of your paid exchanges with this peer, from your own records. Lapsed payments and debts are kept in the provider’s book, which this node doesn’t have.'
 
-/** Integrity's Close card. */
+/** Integrity's Close card: agreed periods, then the counts that are in none. */
 export const CLOSE_CARD_TOOLTIP =
-  'Counts over the exchanges shown here: how many the other side confirmed, and how many were paid and settled by your wallet.'
+  'A period both sides have closed: one side seals a Close with its counts for the period, and the other side acknowledges it. None yet on this node.'
+
+export const CLOSE_CARD_COUNTS_TOOLTIP =
+  'Counts over the exchanges shown here, none of them in an agreed period: how many the other side confirmed, and how many were paid and settled by your wallet.'
 
 /** §7.5: the peer drill's routing section and its dialog. Local only, undoable,
  *  and nobody is told; never a report, never a shared list. */

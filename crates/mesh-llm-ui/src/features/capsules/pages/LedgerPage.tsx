@@ -119,6 +119,7 @@ import { YourRecordsDialog } from '@/features/capsules/components/YourRecordsDia
 import { useYourRecords } from '@/features/capsules/lib/use-your-records'
 import { heroStatusLine, nothingIsShared, promptsPill } from '@/features/capsules/lib/your-records'
 import {
+  CLOSE_CARD_COUNTS_TOOLTIP,
   CLOSE_CARD_TOOLTIP,
   HERO_DESCRIPTION_AFTER_LINK,
   HERO_DESCRIPTION_BEFORE_LINK,
@@ -1178,8 +1179,9 @@ function SetupChecklist({ steps }: { steps: readonly SetupStep[] }) {
 }
 
 /** The Close card: agreed periods need a Close record neither side has
- *  sealed yet, so it says "none yet"; beneath, the counts so far over
- *  inference and payment -- counts only, never an amount. */
+ *  sealed yet, so it says "none yet". The counts so far over inference and
+ *  payment sit under their own heading, never under "Agreed periods" --
+ *  counts only, never an amount. */
 function CloseCard({
   counts,
   payments,
@@ -1198,7 +1200,17 @@ function CloseCard({
         <span>Agreed periods</span>
         <InfoHover census="integrity:close_card" describes="Agreed periods" label={CLOSE_CARD_TOOLTIP} />
       </span>
-      <p className="text-sm text-foreground">none yet</p>
+      <p className="text-sm text-foreground" data-close-agreed="true">
+        none yet
+      </p>
+      <span className="type-label mt-2 inline-flex items-center gap-1 text-fg-faint" data-close-counts-heading="true">
+        <span>Not in an agreed period yet</span>
+        <InfoHover
+          census="integrity:close_card_counts"
+          describes="Not in an agreed period yet"
+          label={CLOSE_CARD_COUNTS_TOOLTIP}
+        />
+      </span>
       <p className="type-caption text-fg-dim" data-close-inference="true">
         So far: {counts.exchanges} exchanges · {counts.closed} confirmed by the other side
       </p>
