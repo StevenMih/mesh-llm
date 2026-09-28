@@ -37,7 +37,10 @@ const EVIDENCE_OUTCOME_TO_KIND: Record<string, RightCellStateKind> = {
   signed_refusal: 'open_refused',
   recorded_absence: 'open_absent',
   unanswered: 'open_asked',
-  not_asked: 'open_not_asked'
+  not_asked: 'open_not_asked',
+  // Attack B: the door refused our provider's half because its signed claims
+  // contradict our record (another server named, other weights).
+  claims_refused: 'contradicted'
 }
 
 /**

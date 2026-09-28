@@ -285,6 +285,19 @@ describe('deriveRightCellState — the ONE gate: pushed and fetched halves take 
     })
   })
 
+  it('attack B: the door refused our provider’s half on its claims -> CONTRADICTED, dated', () => {
+    const row = paneCRow({
+      theirs: {
+        state: 'absent',
+        capsule_id: null,
+        evidence_outcome: 'claims_refused',
+        evidence_outcome_date: '2026-09-28T08:00:00Z',
+        evidence_outcome_reason: 'model_mismatch'
+      }
+    })
+    expect(deriveRightCellState(row)).toEqual({ kind: 'contradicted', date: '2026-09-28T08:00:00Z' })
+  })
+
   it('PROVISIONAL provider check (i): a pushed body naming a different server -> not CLOSED', () => {
     const theirs = fixtureTheirsCell('agrees')
     const record = fixtureHalfBody({ capsuleId: theirs.capsule_id ?? undefined, servedBy: 'd'.repeat(64) })

@@ -336,7 +336,10 @@ export type AssuranceProperties = Record<string, PaneState>
  *  (`evidence_responder.py`: "not yet reachable over the wire") -- an
  *  absent value degrades to `not_asked`, never a guess at one of the other
  *  three. */
-export type EvidenceRequestOutcome = 'signed_refusal' | 'recorded_absence' | 'unanswered' | 'not_asked'
+/** `claims_refused`: the door refused our provider's pushed half because its
+ *  signed claims contradict our record; the row reads CONTRADICTED. */
+export type EvidenceRequestOutcome =
+  'signed_refusal' | 'recorded_absence' | 'unanswered' | 'not_asked' | 'claims_refused'
 
 /** [ledger-T11-twins-visible] item 3 — the mechanical facts of an ambient
  *  twin comparison, when this row is one half of one. Deliberately carries
@@ -397,6 +400,9 @@ export type PaneCRow = {
     text?: string
     evidence_outcome?: EvidenceRequestOutcome
     evidence_outcome_date?: string | null
+    /** Why the door refused, with `claims_refused`: `served_by_mismatch` or
+     *  `model_mismatch`. */
+    evidence_outcome_reason?: string | null
     /** `[mesh-e9e10-pieces-3-4]` piece 3 -- the mesh peer id to fetch FROM
      *  (`capsule_panes_native.rs::theirs_cell`'s `served_by_node_id`),
      *  present only alongside `theirs.state === 'NOT_CHECKED'` and a real
