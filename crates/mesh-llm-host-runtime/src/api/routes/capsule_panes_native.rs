@@ -2065,6 +2065,53 @@ pub(super) fn build_pane_c_list(
     build_pane_c_list_with_settlements(records, received_provenance, &SettlementIndex::default())
 }
 
+/// The sealed digest of a half's answer text
+/// (`x-mesh-poc-v1.serving_provenance.response_text_digest`): 64 hex, else
+/// absent. Same normalisation as the plugin that seals it.
+fn response_text_digest(record: &Value) -> Option<String> {
+    poc_block(record)
+        .and_then(|poc| poc.pointer("/serving_provenance/response_text_digest"))
+        .and_then(Value::as_str)
+        .map(|digest| digest.trim().to_ascii_lowercase())
+        .filter(|digest| digest.len() == 64 && digest.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
+/// u103 (d): a twin pair (one prompt sent to two providers, sharing a twin
+/// bracket) says whether the two providers gave the same answer. A bracket
+/// with exactly two rows gives each `twin: {bracket_id, same_answer,
+/// other_row}`, `same_answer` comparing the two provider halves' answer-text
+/// digests (`null` while either is missing); a bracket of any other size gives
+/// every member `same_answer: null, other_row: null`. Same rule as the
+/// plugin's `attach_twins`.
+fn attach_twins(rows: &mut [Value], facts: &[(Option<String>, Option<String>)]) {
+    let mut groups: std::collections::BTreeMap<&str, Vec<usize>> =
+        std::collections::BTreeMap::new();
+    for (index, (bracket, _)) in facts.iter().enumerate() {
+        if let Some(bracket) = bracket {
+            groups.entry(bracket.as_str()).or_default().push(index);
+        }
+    }
+    for (bracket, members) in groups {
+        if let [a, b] = members[..] {
+            let same_answer = match (&facts[a].1, &facts[b].1) {
+                (Some(x), Some(y)) => json!(x == y),
+                _ => Value::Null,
+            };
+            let key = |i: usize| rows[i]["exchange_key"].clone();
+            let (key_a, key_b) = (key(a), key(b));
+            rows[a]["twin"] =
+                json!({ "bracket_id": bracket, "same_answer": same_answer, "other_row": key_b });
+            rows[b]["twin"] =
+                json!({ "bracket_id": bracket, "same_answer": same_answer, "other_row": key_a });
+        } else {
+            for index in members {
+                rows[index]["twin"] =
+                    json!({ "bracket_id": bracket, "same_answer": null, "other_row": null });
+            }
+        }
+    }
+}
+
 /// [`build_pane_c_list`], with each row carrying the payer-book summary of
 /// the settlement records its exchange ids join (`settlement`, `null` when
 /// none), and the list naming the settlement ids no row carries.
@@ -2101,6 +2148,9 @@ pub(super) fn build_pane_c_list_with_settlements(
             .map(move |(n, (mine, theirs))| (pair_row_key(group_key, n), mine, theirs))
     });
     let mut rows = Vec::new();
+    // Per row, for `attach_twins`: its twin bracket and the text digest of
+    // its provider half.
+    let mut twin_facts: Vec<(Option<String>, Option<String>)> = Vec::new();
     let mut joined_exchange_ids: Vec<String> = Vec::new();
     for (exchange_key, mine, theirs_sibling) in exchanges {
         // The row anchors on the local half when there is one; a received
@@ -2197,7 +2247,13 @@ pub(super) fn build_pane_c_list_with_settlements(
             // a claim that it went unpaid.
             "settlement": settlement,
         }));
+        let provider_half = theirs_sibling.or_else(|| mine.filter(|r| label_role(r) == "served"));
+        twin_facts.push((
+            twin_bracket_id(anchor).map(str::to_string),
+            provider_half.and_then(response_text_digest),
+        ));
     }
+    attach_twins(&mut rows, &twin_facts);
     let settlement_unjoined = settlements.unjoined(joined_exchange_ids.iter().map(String::as_str));
     json!({
         "row_count": rows.len(),
@@ -3699,6 +3755,112 @@ mod tests {
                 "{row:#?}"
             );
         }
+    }
+
+    /// u103 (d): a twin pair says whether the two providers gave the same
+    /// answer, from their sealed answer-text digests; null while either is
+    /// missing. MUTANT: compare the body digests instead and a same-text
+    /// pair reads "differ".
+    #[test]
+    fn a_twin_pair_says_whether_the_two_providers_gave_the_same_answer() {
+        let key_a = format!("aa{}", "0".repeat(62));
+        let key_b = format!("bb{}", "0".repeat(62));
+        let node_a = format!("a0a0{}", "1".repeat(60));
+        let node_b = format!("b0b0{}", "2".repeat(60));
+        let d = "d".repeat(64);
+        let (resp_a, resp_b) = ("e".repeat(64), "f".repeat(64));
+        let twinned = |mut record: Value, text: Option<&str>| {
+            let sp = &mut record["model_attestation"]["compute_attestation"]["x-mesh-poc-v1"]["serving_provenance"];
+            sp["twin_bracket_id"] = json!("twin-1");
+            if let Some(text) = text {
+                sp["response_text_digest"] = json!(text);
+            }
+            record
+        };
+        let run = |text_a: Option<&str>, text_b: Option<&str>| {
+            let records = vec![
+                twinned(
+                    mesh_half_served_by(
+                        "1".repeat(64).as_str(),
+                        "requested",
+                        &d,
+                        &resp_a,
+                        "me-a",
+                        &node_a,
+                    ),
+                    None,
+                ),
+                twinned(
+                    mesh_half_served_by(
+                        "2".repeat(64).as_str(),
+                        "requested",
+                        &d,
+                        &resp_b,
+                        "me-b",
+                        &node_b,
+                    ),
+                    None,
+                ),
+                twinned(
+                    with_key(
+                        mesh_half_served_by(
+                            "3".repeat(64).as_str(),
+                            "served",
+                            &d,
+                            &resp_a,
+                            "them-a",
+                            &node_a,
+                        ),
+                        &key_a,
+                    ),
+                    text_a,
+                ),
+                twinned(
+                    with_key(
+                        mesh_half_served_by(
+                            "4".repeat(64).as_str(),
+                            "served",
+                            &d,
+                            &resp_b,
+                            "them-b",
+                            &node_b,
+                        ),
+                        &key_b,
+                    ),
+                    text_b,
+                ),
+            ];
+            let provenance: HashMap<String, ReceivedProvenance> = [
+                provenance_for("3".repeat(64).as_str(), &node_a),
+                provenance_for("4".repeat(64).as_str(), &node_b),
+            ]
+            .into_iter()
+            .collect();
+            build_pane_c_list(&records, &provenance)["rows"]
+                .as_array()
+                .unwrap()
+                .clone()
+        };
+        let same = "c".repeat(64);
+        let other = "9".repeat(64);
+
+        let rows = run(Some(&same), Some(&same));
+        assert_eq!(rows.len(), 2);
+        for row in &rows {
+            assert_eq!(row["twin"]["bracket_id"], json!("twin-1"));
+            assert_eq!(row["twin"]["same_answer"], json!(true), "{row:#}");
+        }
+        assert_eq!(rows[0]["twin"]["other_row"], rows[1]["exchange_key"]);
+        assert_eq!(rows[1]["twin"]["other_row"], rows[0]["exchange_key"]);
+
+        let rows = run(Some(&same), Some(&other));
+        assert!(
+            rows.iter()
+                .all(|row| row["twin"]["same_answer"] == json!(false))
+        );
+
+        let rows = run(Some(&same), None);
+        assert!(rows.iter().all(|row| row["twin"]["same_answer"].is_null()));
     }
 
     /// A node id from a record we RECEIVED never counts as ours, even on a
