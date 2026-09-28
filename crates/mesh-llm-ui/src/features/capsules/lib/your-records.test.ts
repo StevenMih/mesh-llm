@@ -169,3 +169,13 @@ describe('Local only', () => {
     expect(nothingIsShared(null)).toBe(false)
   })
 })
+
+describe('witness URL on the page (u81(a) item 8b)', () => {
+  it('shows scheme://host/path only: never credentials, a query or a fragment', () => {
+    const s = status()
+    const witness = { value: 'https://user:secret@witness.example:8443/log/v1?token=abc#frag', source: 'set' as const }
+    const row = sharingRows({ ...s, sharing: { ...s.sharing, witness } }).find((r) => r.key === 'witness')
+    expect(row?.whatLeaves).toBe('Your checkpoints, never records or text, go to https://witness.example:8443/log/v1.')
+    expect(row?.whatLeaves).not.toMatch(/user|secret|token|frag/)
+  })
+})

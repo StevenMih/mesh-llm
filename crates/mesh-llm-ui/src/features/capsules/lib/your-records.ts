@@ -130,8 +130,20 @@ function describeSwitch(key: SharingSwitchKey, value: string | null): { state: s
         : { state: 'to the node it’s about', whatLeaves: 'A verdict you seal goes to each node it is about.' }
     case 'witness':
       return value
-        ? { state: 'on', whatLeaves: `Your checkpoints, never records or text, go to ${value}.` }
+        ? { state: 'on', whatLeaves: `Your checkpoints, never records or text, go to ${witnessDisplay(value)}.` }
         : { state: 'off', whatLeaves: `Nothing is sent: ${WITNESS_OFF}.` }
+  }
+}
+
+/** A witness URL as it may be shown: scheme://host/path only. Credentials
+ *  (`user:pass@`), the query and the fragment never reach the page, whatever
+ *  the node reports. A value that isn't a URL is shown as given. */
+export function witnessDisplay(value: string): string {
+  try {
+    const url = new URL(value)
+    return `${url.protocol}//${url.host}${url.pathname === '/' ? '' : url.pathname}`
+  } catch {
+    return value
   }
 }
 
