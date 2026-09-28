@@ -120,7 +120,6 @@ import {
   CLOSE_CARD_TOOLTIP,
   HERO_DESCRIPTION,
   HERO_TOOLTIPS,
-  NO_CONTRADICTION_REASON,
   SAMPLE_DATA_UNAVAILABLE,
   WITNESS_OFF
 } from '@/features/capsules/lib/tooltip-copy'
@@ -772,7 +771,9 @@ function ExchangesSection({
           {/* p2 item 5: both land on Integrity's setup steps, which a saved
              sample can't act on -- disabled there, with the reason on hover,
              never a click that silently goes nowhere useful. */}
-          {(['Get the other side’s record', 'Register a checkpoint'] as const).map((label) => (
+          {/* The ask for the other side's record lives on each row, and only
+             once its wait is up (§3, §8 rule 5) -- never a top-level control. */}
+          {(['Register a checkpoint'] as const).map((label) => (
             <DisabledReason key={label} reason={sampleData ? SAMPLE_DATA_UNAVAILABLE : null}>
               <Button
                 className="ui-control h-8 gap-1.5 rounded-[var(--radius)] px-2.5 text-[length:var(--density-type-caption)]"
@@ -856,10 +857,11 @@ function ExchangesSection({
             triggerLabel="Filter exchanges"
             visibleCount={visibleRows.length}
           />
-          <DisabledReason reason={hasContradiction ? null : NO_CONTRADICTION_REASON}>
+          {/* Only when there is one to jump to: a greyed control that can
+             never act is noise (p2 item 1). */}
+          {hasContradiction ? (
             <Button
               className="ui-control h-8 gap-1.5 rounded-[var(--radius)] px-2.5 text-[length:var(--density-type-caption)]"
-              disabled={!hasContradiction}
               onClick={jumpToNextContradiction}
               size="sm"
               type="button"
@@ -867,7 +869,7 @@ function ExchangesSection({
             >
               Next contradiction ▸
             </Button>
-          </DisabledReason>
+          ) : null}
           {/* Two distinct actions, never collapsed: a CSV of the current
              view vs. the portable evidence bundle (full records). */}
           <Button

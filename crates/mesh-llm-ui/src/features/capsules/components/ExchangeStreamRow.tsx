@@ -37,15 +37,16 @@ import {
   rightCellDetail,
   type RightCellStateKind,
   rightCellStatusLabel,
-  rightCellText
+  rightCellText,
+  rowStatusLabel
 } from '@/features/capsules/lib/exchange-row-state'
 import { InfoHover } from '@/features/capsules/components/InfoHover'
 import type { RailSegment } from '@/features/capsules/lib/exchange-stream'
 import { usePeerLedgerRecompute, useRecomputedIdentity } from '@/features/capsules/lib/recompute-identity'
 import {
   durationText,
-  formatModelIdentity,
   pocBlock,
+  rowModelName,
   servingProvenance,
   tokenFlowText
 } from '@/features/capsules/lib/serving-provenance'
@@ -77,10 +78,18 @@ function useNowMs(): number {
   return nowMs
 }
 
-function formatExchangeTimestamp(timestamp: string | null): string {
+/** "Sep 27, 9:56 PM" in the viewer's own time zone, the way Chat shows it. */
+const LOCAL_TIME = new Intl.DateTimeFormat(undefined, {
+  month: 'short',
+  day: 'numeric',
+  hour: 'numeric',
+  minute: '2-digit'
+})
+
+export function formatExchangeTimestamp(timestamp: string | null): string {
   if (!timestamp) return 'timestamp unavailable'
-  const match = timestamp.match(/T(\d{2}:\d{2}:\d{2})Z?/)
-  return match ? `${timestamp.slice(0, 10)} ${match[1]}Z` : timestamp
+  const date = new Date(timestamp)
+  return Number.isNaN(date.getTime()) ? timestamp : LOCAL_TIME.format(date)
 }
 
 function roleText(roleTag: string): string {
@@ -244,10 +253,21 @@ export function ExchangeStreamRow({
   // left out, never a placeholder. The ids move into the expansion.
   const ownRecord = localRecord ?? (row.raw.mine.record as CapsuleRecord | undefined) ?? null
   const provenance = ownRecord ? servingProvenance(ownRecord) : null
-  const modelRef = provenance?.model ?? null
-  const modelIdentity = formatModelIdentity(modelRef)
-  const tokens = provenance ? tokenFlowText(provenance.promptTokens, provenance.completionTokens) : null
-  const duration = ownRecord ? durationText(pocBlock(ownRecord).latency_ms) : null
+  // A requester's own record often carries no model details, usage or
+  // latency; the other side's sealed record does. Ours first, theirs
+  // labelled as theirs -- never a count presented as our own.
+  const theirRecord = (row.raw.theirs.record as CapsuleRecord | undefined) ?? null
+  const theirProvenance = theirRecord ? servingProvenance(theirRecord) : null
+  const modelRef = provenance?.model ?? theirProvenance?.model ?? null
+  const modelIdentity = rowModelName(provenance, theirProvenance)
+  const ownTokens = provenance ? tokenFlowText(provenance.promptTokens, provenance.completionTokens) : null
+  const theirTokens = theirProvenance
+    ? tokenFlowText(theirProvenance.promptTokens, theirProvenance.completionTokens)
+    : null
+  const tokens = ownTokens ?? (theirTokens ? `${theirTokens} (their count)` : null)
+  const ownDuration = ownRecord ? durationText(pocBlock(ownRecord).latency_ms) : null
+  const theirDuration = theirRecord ? durationText(pocBlock(theirRecord).latency_ms) : null
+  const duration = ownDuration ?? (theirDuration ? `${theirDuration} (their measure)` : null)
   const tone = rowStateTone(state.kind)
 
   // Chip-strip -> checks-panel jump ([mesh-evidence-ui-entry-row-and-chips]
@@ -353,7 +373,7 @@ export function ExchangeStreamRow({
                    (§3A "one colour per state") still varies with CLOSED/
                    refused/absent, never just alarm-vs-muted. */}
                 <StatusBadge dot={alarm} size="caption" tone={tone}>
-                  {rightCellStatusLabel(state)}
+                  {rowStatusLabel(state, row.raw.theirs.in_their_log)}
                 </StatusBadge>
                 {/* Terse state on the face; the fuller story behind the (i). */}
                 <InfoHover
@@ -399,7 +419,7 @@ export function ExchangeStreamRow({
             onClick={() => onToggleContent(row)}
             type="button"
           >
-            {contentExpanded ? '▾ content' : '▸ content'}
+            {contentExpanded ? 'What was said ▾' : 'What was said ▸'}
           </button>
           <button
             aria-expanded={checksExpanded}
@@ -407,7 +427,7 @@ export function ExchangeStreamRow({
             onClick={() => onToggleChecks(row)}
             type="button"
           >
-            {checksExpanded ? '▾ checks' : '▸ checks'}
+            {checksExpanded ? 'How we checked ▾' : 'How we checked ▸'}
           </button>
         </div>
         {contentExpanded ? (

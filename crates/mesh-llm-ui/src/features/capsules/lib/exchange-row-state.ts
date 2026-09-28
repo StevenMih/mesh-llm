@@ -381,6 +381,16 @@ export function rightCellDetail(state: RightCellState): string {
   return ROW_STATE_TOOLTIPS[state.kind]
 }
 
+/** The row's state label, with "in their log (checkpoint N)" on a CLOSED
+ *  row once our records cite their inclusion proof for it (§7.6b). */
+export function rowStatusLabel(
+  state: RightCellState,
+  inTheirLog: { checkpoint_records: number } | null | undefined
+): string {
+  const label = rightCellStatusLabel(state)
+  return state.kind === 'closed' && inTheirLog ? `${label} · in their log (checkpoint ${inTheirLog.checkpoint_records})` : label
+}
+
 export function rightCellStatusLabel(state: RightCellState): string {
   switch (state.kind) {
     case 'closed':

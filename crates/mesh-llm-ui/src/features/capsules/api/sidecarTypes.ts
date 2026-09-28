@@ -421,6 +421,10 @@ export type PaneCRow = {
      *  sent by the host). `null` when the recompute could not run; absent
      *  until it has run. */
     id_match?: boolean | null
+    /** Where their record sits in their own log, from our record citing
+     *  their inclusion proof and checkpoint: `checkpoint_records` is the size
+     *  of their log that checkpoint covers. Null/absent until that arrives. */
+    in_their_log?: { leaf_index: number; checkpoint_records: number } | null
   }
   unilateral: boolean
   /** [mesh-closed-on-frozen-base] The STRUCTURAL digest reconciliation of a

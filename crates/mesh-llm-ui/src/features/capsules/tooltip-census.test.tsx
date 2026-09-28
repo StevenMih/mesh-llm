@@ -338,7 +338,7 @@ describe('tooltip census -- every chip type the Evidence tab ships has a plain o
     render(<LedgerPageContent />, { wrapper })
     await user.click(await screen.findByRole('tab', { name: /exchanges/i }))
     const closedRow = await screen.findByRole('group', { name: 'Exchange exch-closed' })
-    await user.click(within(closedRow).getByRole('button', { name: /checks/ }))
+    await user.click(within(closedRow).getByRole('button', { name: /how we checked/i }))
     const panel = await screen.findByLabelText('Security checks for exch-closed')
 
     const seen = censusOnScreen()

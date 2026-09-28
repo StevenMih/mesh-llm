@@ -453,7 +453,7 @@ describe('LedgerPageContent', () => {
     expect(screen.queryByText(/sealed by you/)).not.toBeInTheDocument()
   })
 
-  it('[mesh-evidence-ui-headlines-and-empty-states] "Get the other side’s record" and "Register a checkpoint" beside the Exchanges headline both open Integrity — the one place either setup step exists today', async () => {
+  it('"Register a checkpoint" beside the Exchanges headline opens Integrity; there is no top-level ask for their record', async () => {
     const { fetchPaneCList } = await import('@/features/capsules/api/sidecarClient')
     vi.mocked(fetchPaneCList).mockResolvedValue({
       rows: [
@@ -481,11 +481,9 @@ describe('LedgerPageContent', () => {
     await user.click(screen.getByRole('tab', { name: /exchanges/i }))
     await screen.findByTestId('exchanges-headline')
 
-    await user.click(screen.getByRole('button', { name: 'Get the other side’s record' }))
-    expect(await screen.findByText('Chain integrity')).toBeInTheDocument()
-
-    await user.click(screen.getByRole('tab', { name: /exchanges/i }))
-    await screen.findByTestId('exchanges-headline')
+    // Asking for the other side's record is each row's, and only once its
+    // wait is up -- never a top-level control.
+    expect(screen.queryByRole('button', { name: 'Get the other side’s record' })).not.toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Register a checkpoint' }))
     expect(await screen.findByText('Chain integrity')).toBeInTheDocument()
   })
@@ -595,7 +593,7 @@ describe('LedgerPageContent', () => {
     expect(within(dialog).queryByRole('button', { name: /delete (this|one) record/i })).not.toBeInTheDocument()
   })
 
-  it('p2 item 5: on sample data the two setup jumps are disabled, with the reason on hover', async () => {
+  it('p2 item 5: on sample data the setup jump is disabled, with the reason on hover', async () => {
     const { fetchPaneCList } = await import('@/features/capsules/api/sidecarClient')
     vi.mocked(fetchPaneCList).mockResolvedValue(oneCleanExchangeRow())
     vi.stubEnv('VITE_EVIDENCE_FIXTURES', 'freeze-candidate')
@@ -603,7 +601,7 @@ describe('LedgerPageContent', () => {
       const user = userEvent.setup()
       render(<LedgerPageContent />, { wrapper: makeWrapper() })
       await user.click(screen.getByRole('tab', { name: /exchanges/i }))
-      for (const name of ['Get the other side’s record', 'Register a checkpoint']) {
+      for (const name of ['Register a checkpoint']) {
         const button = await screen.findByRole('button', { name })
         expect(button).toBeDisabled()
         const wrapper = button.closest('[aria-describedby]') as HTMLElement
@@ -619,18 +617,14 @@ describe('LedgerPageContent', () => {
     }
   })
 
-  it('p2 item 5: a disabled Next contradiction says why', async () => {
+  it('Next contradiction is not shown at all when there is nothing to jump to, never greyed', async () => {
     const { fetchPaneCList } = await import('@/features/capsules/api/sidecarClient')
     vi.mocked(fetchPaneCList).mockResolvedValue(oneCleanExchangeRow())
     const user = userEvent.setup()
     render(<LedgerPageContent />, { wrapper: makeWrapper() })
     await user.click(screen.getByRole('tab', { name: /exchanges/i }))
-    const button = await screen.findByRole('button', { name: /next contradiction/i })
-    expect(button).toBeDisabled()
-    const wrapper = button.closest('[aria-describedby]') as HTMLElement
-    expect(document.getElementById(wrapper.getAttribute('aria-describedby') as string)).toHaveTextContent(
-      'No contradicted exchange to jump to.'
-    )
+    await screen.findByTestId('exchanges-headline')
+    expect(screen.queryByRole('button', { name: /next contradiction/i })).not.toBeInTheDocument()
   })
 
   it('look finding 6: in fixture replay the hero chip reads "Sample data", never "Live"', async () => {
@@ -788,7 +782,7 @@ describe('LedgerPageContent — Part 3: Exchanges two-sided stream + row inspect
     // `▸ checks` expands the full nine-property detail inline, under the
     // row -- never a dialog.
     const alarmRow = screen.getByLabelText('Exchange exch-alarm-07')
-    await user.click(within(alarmRow).getByRole('button', { name: '▸ checks' }))
+    await user.click(within(alarmRow).getByRole('button', { name: 'How we checked ▸' }))
     const checksRegion = await screen.findByRole('region', { name: /Security checks for exch-alarm-07/ })
     expect(checksRegion).toHaveTextContent('content binding')
     expect(checksRegion).toHaveTextContent('producer signature')
@@ -875,7 +869,7 @@ describe('LedgerPageContent — Part 3: Exchanges two-sided stream + row inspect
     // Nothing on this row ever opens a dialog -- not the ask action, not
     // the `▸ checks` toggle either.
     const knownRow = screen.getByLabelText('Exchange exch-known-peer')
-    await user.click(within(knownRow).getByRole('button', { name: '▸ checks' }))
+    await user.click(within(knownRow).getByRole('button', { name: 'How we checked ▸' }))
     expect(await screen.findByRole('region', { name: /Security checks for exch-known-peer/ })).toBeInTheDocument()
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   })
@@ -1480,7 +1474,7 @@ describe('LedgerPageContent — Part B3: windowed paging + sticky header', () =>
   // contradiction" is honestly unreachable until live per-row fetch results
   // are lifted to shared page state (a real follow-on, not silently
   // dropped).
-  it('Next contradiction ▸ stays disabled even over data that used to (dishonestly) trigger it', async () => {
+  it('Next contradiction ▸ stays absent even over data that used to (dishonestly) trigger it', async () => {
     const { fetchPaneCList } = await import('@/features/capsules/api/sidecarClient')
     vi.mocked(fetchPaneCList).mockResolvedValue(b3PaneCPayload(makeManyPaneCRows(120, new Set([90]))))
 
@@ -1489,10 +1483,10 @@ describe('LedgerPageContent — Part B3: windowed paging + sticky header', () =>
     await user.click(screen.getByRole('tab', { name: /exchanges/i }))
     await screen.findByRole('group', { name: 'Exchange exch-0' })
 
-    expect(screen.getByRole('button', { name: 'Next contradiction ▸' })).toBeDisabled()
+    expect(screen.queryByRole('button', { name: 'Next contradiction ▸' })).not.toBeInTheDocument()
   })
 
-  it('Next contradiction ▸ is disabled when nothing is contradicted', async () => {
+  it('Next contradiction ▸ is absent when nothing is contradicted', async () => {
     const { fetchPaneCList } = await import('@/features/capsules/api/sidecarClient')
     vi.mocked(fetchPaneCList).mockResolvedValue(b3PaneCPayload(makeManyPaneCRows(3)))
 
@@ -1501,7 +1495,7 @@ describe('LedgerPageContent — Part B3: windowed paging + sticky header', () =>
     await user.click(screen.getByRole('tab', { name: /exchanges/i }))
     await screen.findByRole('group', { name: 'Exchange exch-0' })
 
-    expect(screen.getByRole('button', { name: 'Next contradiction ▸' })).toBeDisabled()
+    expect(screen.queryByRole('button', { name: 'Next contradiction ▸' })).not.toBeInTheDocument()
   })
 
   it('a twin-sized atomic group never splits a page boundary (component-level smoke; pure-fn coverage in exchange-pages.test.ts)', async () => {
