@@ -525,8 +525,8 @@ fn digest_match_state(mine: &Value, theirs: &Value) -> &'static str {
 /// `exchange_key_for` groups by request digest alone, so two requests with the
 /// same wire bytes (a user asking the same thing twice) land in one group.
 /// Pairing every received half with every own record there set request 1's
-/// record against request 2's half and rendered a false CONTRADICTED (the
-/// M4+M3 round2-m3c run: both halves of each real exchange agreed). Here each
+/// record against request 2's half and rendered a false CONTRADICTED, although
+/// both halves of each real exchange agreed. Here each
 /// received half closes at most ONE own record: first an unpaired one whose
 /// response digest also matches; only a half that matches none of them is set
 /// against a leftover own record, which is a real disagreement and still
@@ -4137,8 +4137,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// round2-m3c (M4 + M3, 2026-09-28): the same prompt asked twice gives two
-    /// exchanges with ONE request digest. Our two records answer differently
+    /// The same prompt asked twice gives two exchanges with ONE request digest,
+    /// across two nodes. Our two records answer differently
     /// (`1…`, `2…`); the peer's pushed half is request 2's. Pairing it with
     /// every own record under the key compared request 1 against it and
     /// rendered a false CONTRADICTED. One-to-one: two rows, request 2 closes,
