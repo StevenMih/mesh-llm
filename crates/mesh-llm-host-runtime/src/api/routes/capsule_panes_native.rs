@@ -697,7 +697,10 @@ fn pair_one_to_one<'a>(
     }
     let mut unmatched: Vec<&'a Value> = Vec::new();
     for half in leftover {
-        match (0..own.len()).find(|&i| theirs_for[i].is_none()) {
+        // A half that matched no answer pairs with an open own record only
+        // when both name the same serving node: a half from a node that did
+        // not serve us can never contradict our row. It stands alone.
+        match (0..own.len()).find(|&i| theirs_for[i].is_none() && same_provider(own[i], half)) {
             Some(i) => theirs_for[i] = Some(half),
             None => unmatched.push(half),
         }
@@ -709,6 +712,19 @@ fn pair_one_to_one<'a>(
         .collect();
     pairs.extend(unmatched.into_iter().map(|half| (None, Some(half))));
     pairs
+}
+
+/// Both records name the same serving node: a real, non-`unknown`
+/// `served_by_node_id` on each, and equal.
+fn same_provider(a: &Value, b: &Value) -> bool {
+    let served_by = |record: &Value| {
+        poc_block(record)
+            .and_then(|poc| poc.pointer("/serving_provenance/served_by_node_id"))
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty() && *id != "unknown")
+            .map(str::to_string)
+    };
+    matches!((served_by(a), served_by(b)), (Some(x), Some(y)) if x == y)
 }
 
 fn is_received_record(
@@ -4746,6 +4762,53 @@ mod tests {
         assert_eq!(pane_c["settlement_unjoined"], json!([]));
         assert_eq!(pane_c["settlement_missing_exchange_id"], json!(0));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Review u81(a) item 3: our record was served by P. A pushed half served
+    /// by O, same request digest, junk answer, never pairs with it: no
+    /// CONTRADICTED row, ours stays unilateral. The same half served by P
+    /// does pair, and disagrees. MUTANT: drop `same_provider` and O's half
+    /// contradicts our row.
+    #[test]
+    fn a_half_from_a_node_that_did_not_serve_us_never_contradicts_our_row() {
+        let node_p = format!("c0c0{}", "7".repeat(60));
+        let node_o = format!("d0d0{}", "8".repeat(60));
+        let d = "d".repeat(64);
+        for (served_by, contradicts) in [(&node_o, false), (&node_p, true)] {
+            let ours = mesh_half_served_by(
+                "a".repeat(64).as_str(),
+                "requested",
+                &d,
+                "e".repeat(64).as_str(),
+                "me-1",
+                &node_p,
+            );
+            let theirs = mesh_half_served_by(
+                "b".repeat(64).as_str(),
+                "served",
+                &d,
+                "9".repeat(64).as_str(),
+                "them-1",
+                served_by,
+            );
+            let provenance: HashMap<String, ReceivedProvenance> =
+                [provenance_for("b".repeat(64).as_str(), "e5ba9d1001")]
+                    .into_iter()
+                    .collect();
+            let pane = build_pane_c_list(&[ours, theirs], &provenance);
+            let rows = pane["rows"].as_array().unwrap();
+            let failed = rows
+                .iter()
+                .any(|r| r["digest_match"]["state"] == json!(STATE_FAILED));
+            assert_eq!(failed, contradicts, "served by {served_by}");
+            if !contradicts {
+                let our_row = rows
+                    .iter()
+                    .find(|r| r["mine"]["capsule_id"] == json!("a".repeat(64)))
+                    .expect("our row");
+                assert_eq!(our_row["unilateral"], json!(true));
+            }
+        }
     }
 
     /// The same prompt asked twice gives two exchanges with ONE request digest,
