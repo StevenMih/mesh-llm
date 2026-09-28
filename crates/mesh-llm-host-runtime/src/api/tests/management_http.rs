@@ -746,3 +746,29 @@ async fn test_api_events_push_publication_state_updates() {
     drop(stream);
     handle.abort();
 }
+
+/// The Evidence panes (exchanges, peers, payment records, requests made of
+/// this node) answer only a trusted local caller: a hostile Host or Origin is
+/// refused before dispatch.
+#[tokio::test]
+async fn capsule_pane_routes_reject_hostile_host_and_origin_before_dispatch() {
+    for pane in ["pane-a", "pane-b", "pane-c"] {
+        for header in [
+            "Host: hostile.example\r\n",
+            "Host: localhost\r\nOrigin: https://hostile.example\r\n",
+        ] {
+            let state = build_test_mesh_api().await;
+            let (address, server) = spawn_management_test_server(state).await;
+            let response = send_management_request(
+                address,
+                format!("GET /api/capsules/panes/{pane} HTTP/1.1\r\n{header}\r\n"),
+            )
+            .await;
+            server.await.unwrap().unwrap();
+            assert!(
+                response.starts_with("HTTP/1.1 403 Forbidden"),
+                "{pane} with {header:?}: {response}"
+            );
+        }
+    }
+}

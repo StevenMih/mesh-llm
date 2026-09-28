@@ -13,6 +13,11 @@ pub(crate) fn requires_trusted_local_access(method: &str, path: &str) -> bool {
     if path == "/api/capsules/ledger" || path.starts_with("/api/capsules/ledger/") {
         return true;
     }
+    // The Evidence panes carry this node's exchanges, peers, payment records
+    // and the log of requests made of it: local operator data.
+    if path == "/api/capsules/panes" || path.starts_with("/api/capsules/panes/") {
+        return true;
+    }
     // The operator's local routing blocks: reading them reveals whom this node
     // avoids, and writing them changes routing.
     if path == "/api/peer-blocks" || path.starts_with("/api/peer-blocks/") {
@@ -164,6 +169,9 @@ mod tests {
             ("GET", "/api/peer-blocks"),
             ("POST", "/api/peer-blocks"),
             ("POST", "/api/peer-blocks/unblock"),
+            ("GET", "/api/capsules/panes/pane-a"),
+            ("GET", "/api/capsules/panes/pane-b"),
+            ("GET", "/api/capsules/panes/pane-c"),
         ] {
             assert!(
                 requires_trusted_local_access(method, path),
