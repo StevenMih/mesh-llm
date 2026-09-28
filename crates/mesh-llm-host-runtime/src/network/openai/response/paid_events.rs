@@ -255,10 +255,9 @@ mod tests {
     }
 
     /// A subscribing plugin recomputes `event_ref` with its own JCS and refuses
-    /// the event on a mismatch. The capsule-emit-mesh admission-policy plugin
-    /// pins this exact value for this exact event in its own test
-    /// (`event_ref_matches_an_independent_digest`), so the two sides are held
-    /// to one fixture.
+    /// the event on a mismatch. A subscribing plugin can pin this exact value
+    /// for this exact event in its own test, so the two sides are held to one
+    /// fixture.
     #[test]
     fn event_ref_matches_the_value_a_subscribing_plugin_pins() {
         let (sender, mut receiver) = mpsc::channel(8);
