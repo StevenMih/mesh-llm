@@ -404,6 +404,7 @@ pub(in crate::network::openai::response) async fn relay_translated_responses_str
         response_capture: &mut Option<OpenAiStreamArtifactCapture>,
         state: &mut ResponsesStreamRelayState,
         progress: &mut TranslatedStreamProgress,
+        assembly: &mut StreamedChatAssembly,
         route_observer: &OpenAiRouteObserver<'_>,
         data: &str,
     ) -> Result<()> {
@@ -419,6 +420,10 @@ pub(in crate::network::openai::response) async fn relay_translated_responses_str
             progress.upstream_error_seen = true;
             return Ok(());
         }
+        // The upstream frames are chat-completions chunks: fold every one, as
+        // the chat-completions stream relay does, before the parse filter
+        // below skips any, so the digest covers the whole served message.
+        assembly.ingest_chunk(data);
         if !should_parse_stream_chunk(data, state.model.is_empty(), state.usage.is_none()) {
             return Ok(());
         }
@@ -464,6 +469,7 @@ pub(in crate::network::openai::response) async fn relay_translated_responses_str
     route_observer.stream_started(None);
 
     let mut progress = TranslatedStreamProgress::default();
+    let mut assembly = StreamedChatAssembly::default();
     loop {
         let mut processed = 0usize;
         while let Some(frame_end_rel) = carry[processed..].find("\n\n") {
@@ -484,6 +490,7 @@ pub(in crate::network::openai::response) async fn relay_translated_responses_str
                 &mut response_capture,
                 &mut state,
                 &mut progress,
+                &mut assembly,
                 &route_observer,
                 &data,
             )
@@ -539,14 +546,12 @@ pub(in crate::network::openai::response) async fn relay_translated_responses_str
         status_code: 200,
         usage: state.observed_usage,
         cache_cost: state.observed_cache_cost,
-        // The Responses-API stream reshapes each typed upstream chunk through
-        // `openai_frontend`'s incremental emitters rather than folding raw
-        // deltas the way the chat-completions stream above does; assembling
-        // an equivalent response to digest would mean extending that typed
-        // chunk model. Left absent (never fabricated) as a documented
-        // follow-up; the chat-completions stream path already provides real
-        // streaming assembly.
-        output_digests: Default::default(),
+        // The stream completed cleanly ([DONE] seen): digest the served
+        // message assembled from the upstream chat-completions chunks, the
+        // same construction the serving node digests its own stream with, so
+        // the requester's record binds the response and the two sides pair.
+        // An error frame or a truncated stream returns above with no digest.
+        output_digests: assembly.output_digests(),
     })
 }
 
@@ -948,7 +953,13 @@ mod tests {
                     total_tokens: Some(18),
                 }),
                 cache_cost: None,
-                output_digests: Default::default(),
+                // The completed stream digests the message assembled from
+                // the three deltas, as a non-streamed body would be digested.
+                output_digests: ExchangeOutputDigests::from_response_value(&serde_json::json!({
+                    "choices": [{"index": 0, "message": {
+                        "role": "assistant", "content": "Hello world!"
+                    }}]
+                })),
             }
         );
 
@@ -1176,6 +1187,95 @@ mod tests {
             RouteAttemptResult::CommittedStreamFailure { status_code: 200 }
         );
         assert!(!body.contains("data: [DONE]"));
+    }
+
+    /// Drive the Responses-API translated stream over raw upstream SSE bytes.
+    async fn relay_translated_over(
+        upstream: &'static [u8],
+    ) -> (Result<RouteAttemptResult>, String) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let (mut upstream_writer, mut upstream_reader) = tokio::io::duplex(64 * 1024);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let header = b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n";
+        let server_task = tokio::spawn(async move {
+            let (client_socket, _) = listener.accept().await.unwrap();
+            let mut client_socket: ClientStream = client_socket.into();
+            let probe = ResponseProbe {
+                buffered: header.to_vec(),
+                header_end: header.len(),
+                status_code: 200,
+                retryable_context_overflow: false,
+            };
+            relay_translated_responses_stream(
+                &mut client_socket,
+                &mut upstream_reader,
+                probe,
+                ResponseRetryPolicy::next_target_available(false),
+                None,
+                OpenAiRouteObserver::default(),
+            )
+            .await
+        });
+        upstream_writer.write_all(upstream).await.unwrap();
+        upstream_writer.shutdown().await.unwrap();
+        let mut client = ClientStream::connect(addr).await.unwrap();
+        let mut output = Vec::new();
+        client.read_to_end(&mut output).await.unwrap();
+        (
+            server_task.await.expect("server task"),
+            String::from_utf8_lossy(&output).to_string(),
+        )
+    }
+
+    /// The console Chat streams through this translated path. A completed
+    /// stream must carry the response digest, over the same assembled message
+    /// the serving node digests, or the requester's record never closes.
+    #[tokio::test]
+    async fn completed_translated_stream_carries_the_assembled_response_digest() {
+        let (result, body) = relay_translated_over(
+            b"data: {\"id\":\"chatcmpl-y\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"qwen\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"hel\"},\"finish_reason\":null}]}\n\n\
+data: {\"id\":\"chatcmpl-y\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"qwen\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"lo\"},\"finish_reason\":null}]}\n\n\
+data: {\"id\":\"chatcmpl-y\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"qwen\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n\
+data: [DONE]\n\n",
+        )
+        .await;
+        let Ok(RouteAttemptResult::Delivered { output_digests, .. }) = result else {
+            panic!("expected Delivered, got {result:?}");
+        };
+        assert_eq!(
+            output_digests.response.map(hex::encode),
+            crate::plugin::openai_exchange::request_body_digest(
+                &serde_json::json!({"choices": [{"index": 0, "message": {
+                    "role": "assistant", "content": "hello"
+                }}]}),
+                None
+            ),
+            "the translated stream digests the same served message as the chat-completions stream"
+        );
+        assert!(output_digests.tool_calls.is_none());
+        assert!(output_digests.reasoning.is_none());
+        assert!(body.contains("response.completed"));
+    }
+
+    /// A stream that ends in an error frame is a failure, and carries no
+    /// digest of the partial it relayed.
+    #[tokio::test]
+    async fn translated_stream_ending_in_an_error_frame_carries_no_digest() {
+        let (result, _) = relay_translated_over(
+            b"data: {\"id\":\"chatcmpl-y\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"qwen\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"partial\"},\"finish_reason\":null}]}\n\n\
+data: {\"error\":{\"message\":\"deadline\",\"type\":\"server_error\",\"param\":null,\"code\":\"timeout\"}}\n\n\
+data: [DONE]\n\n",
+        )
+        .await;
+        let Ok(RouteAttemptResult::Delivered { output_digests, .. }) = result else {
+            panic!("expected Delivered, got {result:?}");
+        };
+        assert!(
+            !output_digests.has_any(),
+            "a failed stream never carries a digest"
+        );
     }
 
     #[tokio::test]
