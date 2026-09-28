@@ -429,6 +429,21 @@ describe('tooltip census -- the copy itself', () => {
     expect(checkWords(COPY.HERO_DESCRIPTION, 'face')).toEqual([])
   })
 
+  it('u106: every row chip has its own sentence for each state; the witness and checkpoint chips say "not checked here"', () => {
+    const chips = Object.entries(COPY.ENTRY_CHIP_STATE_TOOLTIPS)
+    for (const [chip, states] of chips) {
+      const texts = [states['✓'], states['✗'], states['–']]
+      expect(new Set(texts).size, `${chip}: ✓/✗/– must each say something different`).toBe(3)
+      for (const text of Object.values(states)) {
+        expect(text.endsWith('.'), `not a full sentence: "${text}"`).toBe(true)
+        expect(text.split(/(?<=[.!?])\s+/).length, `more than two sentences: "${text}"`).toBeLessThanOrEqual(2)
+        expect(checkWords(text, 'face')).toEqual([])
+      }
+    }
+    expect(COPY.ENTRY_CHIP_STATE_TOOLTIPS.registered['–']).toMatch(/not checked here/i)
+    expect(COPY.ENTRY_CHIP_STATE_TOOLTIPS.inclusion['◐']).toMatch(/proof itself is not checked here/i)
+  })
+
   it('the peer drill’s routing section and dialog carry no banned or engineer’s word, and never report or share', () => {
     const texts = [
       COPY.YOUR_DEALINGS_TITLE,

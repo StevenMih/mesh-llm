@@ -46,9 +46,9 @@ function marks(row: PaneCRow, identity: RecomputedIdentity, gateKind?: RightCell
 }
 
 describe('entryRowChipMark -- reads the SAME check results as the checks panel (look finding 1)', () => {
-  it('PASS -> ✓, FAIL -> ✗, from the panel rows', () => {
+  it('PASS -> ✓, FAIL -> ✗, from the panel rows; "in a checkpoint" is a count, never ✓ (u106)', () => {
     const row = rowWithProperties({ local_inclusion: { state: 'PASS' }, external_registration: { state: 'FAIL' } })
-    expect(marks(row, NOT_RUN)).toBe('– – ✓ ✗ –')
+    expect(marks(row, NOT_RUN)).toBe('– – ◐ ✗ –')
   })
 
   it.each(['NOT_PRESENT', 'NOT_CHECKED', 'INCONCLUSIVE'])(

@@ -51,6 +51,9 @@ export function entryRowChipMark(
   checkpointCovered: boolean | null = null
 ): EntryRowChipMark {
   const state = checks.find((row) => row.key === CHIP_PROPERTY_KEY[chip])?.yours?.state
+  // Checkpoint coverage is a count, never a proof this page checked, so the
+  // chip never reads ✓ (u106).
+  if (chip === 'inclusion' && state === 'PASS') return '◐'
   if (state === 'PASS') return '✓'
   if (state === 'FAIL') return '✗'
   // Integrity says a checkpoint covers this record, but this row has not

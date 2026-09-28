@@ -158,6 +158,45 @@ export const ENTRY_CHIP_TOOLTIPS = {
   theirs: 'Whether the other side’s own signed record confirms this exchange.'
 } as const
 
+/** u106: one sentence per chip AND per state, plain words first, then what
+ *  was actually checked (TOOLTIPS-ASSESSMENT §0: C1 content binding and C2
+ *  signature are redone in this browser, `recompute-identity.ts:28-80`; C10
+ *  checkpoint coverage is a count, `integrity-view.ts:237-244`, so it is
+ *  never ✓; the witness receipt is read, never checked here; their record
+ *  is the ONE gate, `exchange-row-state.ts`). */
+export const ENTRY_CHIP_STATE_TOOLTIPS = {
+  content: {
+    '✓': 'Your record still matches its id: this browser redid its fingerprint just now.',
+    '✗': 'Your record no longer matches its id, so it may have been changed. This browser redid its fingerprint and it differs.',
+    '–': 'Not checked here yet: this browser hasn’t redone your record’s fingerprint (it isn’t loaded, or this is sample data).',
+    '◐': 'Not checked here yet: this browser hasn’t redone your record’s fingerprint.'
+  },
+  sig: {
+    '✓': 'Your record is signed with this node’s key. This browser checked the signature just now.',
+    '✗': 'The signature on your record doesn’t check out against this node’s key.',
+    '–': 'Not checked here yet: the signature on your record hasn’t been checked on this page.',
+    '◐': 'Not checked here yet: the signature on your record hasn’t been checked on this page.'
+  },
+  inclusion: {
+    '✓': 'A checkpoint on this node covers this record, by the count Integrity shows. The proof itself is not checked here.',
+    '✗': 'This node reports that its checkpoint doesn’t cover this record as it should. Not checked here.',
+    '–': 'No checkpoint on this node covers this record yet, as far as this node says. Not checked here.',
+    '◐': 'A checkpoint on this node covers this record, by the count Integrity shows. The proof itself is not checked here.'
+  },
+  registered: {
+    '✓': 'A witness you don’t run holds a checkpoint covering this record, as this node reports. Not checked here.',
+    '✗': 'This node reports a problem with the witness’s copy of the checkpoint. Not checked here.',
+    '–': 'No witness you don’t run holds a checkpoint covering this record, as far as this node says. Not checked here.',
+    '◐': 'No witness you don’t run holds a checkpoint covering this record, as far as this node says. Not checked here.'
+  },
+  theirs: {
+    '✓': 'The other side’s signed record agrees with yours: the same request and answer, from the node that served you. Checked on this machine.',
+    '✗': 'The other side’s record doesn’t agree with yours, or your node refused it. The badge says which; Compare shows where.',
+    '–': 'The other side’s record isn’t here, or couldn’t be confirmed as theirs, so nothing is compared yet.',
+    '◐': 'The other side’s record isn’t here, or couldn’t be confirmed as theirs, so nothing is compared yet.'
+  }
+} as const
+
 /** The `in a checkpoint ◐` chip: covered, but the proof is not checked here. */
 export const ENTRY_CHIP_COVERED_TOOLTIP =
   'A checkpoint on this node covers this record, as Integrity counts. This row hasn’t checked that for itself yet.'
