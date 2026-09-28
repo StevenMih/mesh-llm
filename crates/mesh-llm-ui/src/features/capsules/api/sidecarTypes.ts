@@ -467,6 +467,10 @@ export type PaneCRow = {
   /** The comparison facts for this row's half of the bracket -- see
    *  `TwinComparison`. Present only alongside a real `twin_bracket_id`. */
   twin_comparison?: TwinComparison | null
+  /** u103 (d): the host's twin facts for this row: whether the two providers'
+   *  sealed answer texts are the same (`null` while either is missing), and
+   *  the other half's row. Absent on untwinned rows. */
+  twin?: { bracket_id: string; same_answer: boolean | null; other_row: string | null } | null
   /** The payer-book summary of the settlement records this exchange's ids
    *  join. `null`/absent means no payment lifecycle was recorded for it --
    *  free, payments off, or failed before authorization -- never unpaid. */

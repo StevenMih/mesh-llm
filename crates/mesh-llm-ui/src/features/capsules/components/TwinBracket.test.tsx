@@ -70,6 +70,29 @@ describe('TwinBracket — v3 §5, OBSERVE-ONLY', () => {
     expect(screen.queryByText(/\bdiffers\b/i)).not.toBeInTheDocument()
   })
 
+  it('u103 (d): states whether the two sealed answer texts are the same, as a fact, never a verdict', () => {
+    const cases: Array<[boolean | null, string]> = [
+      [true, 'Answer text: the same from both peers'],
+      [false, 'Answer text: not the same from the two peers'],
+      [null, 'Answer text: not compared yet']
+    ]
+    for (const [sameAnswer, text] of cases) {
+      const twin = { bracket_id: 'twin-xyz', same_answer: sameAnswer, other_row: null }
+      const { unmount } = render(
+        <TwinBracket
+          bracketId="twin-xyz"
+          rows={[twinRow('a', { twin }), twinRow('b', { twin })]}
+          twinSampleRateDenominator={50}
+        >
+          <p>row a</p>
+        </TwinBracket>
+      )
+      expect(screen.getByText(text)).toBeInTheDocument()
+      expect(screen.getByText('no verdict')).toBeInTheDocument()
+      unmount()
+    }
+  })
+
   it('the disclosure sentence uses the LIVE rate prop, not a hardcoded 50', () => {
     const rows = [twinRow('a'), twinRow('b')]
     render(

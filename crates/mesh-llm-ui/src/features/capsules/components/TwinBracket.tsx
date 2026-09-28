@@ -20,6 +20,7 @@ import { saveTextFile } from '@/features/capsules/lib/exchange-export'
 import { InfoHover } from '@/features/capsules/components/InfoHover'
 import { TWIN_NO_VERDICT_TOOLTIP } from '@/features/capsules/lib/tooltip-copy'
 import {
+  twinAnswerFact,
   twinComparisonParametersLine,
   twinDisclosureSentence,
   twinResponseTexts
@@ -93,6 +94,9 @@ export function TwinBracket({ bracketId, rows, twinSampleRateDenominator, childr
       <div className="flex flex-col gap-1.5 border-t border-border-soft bg-panel-strong/40 px-3 py-2">
         <p className="type-caption font-mono text-fg-dim">COMPARISON</p>
         {parametersLine ? <p className="type-caption text-fg-faint">{parametersLine}</p> : null}
+        <p className="type-caption text-fg-dim" data-twin-answer-fact="true">
+          {twinAnswerFact(rows)}
+        </p>
         {/* OBSERVE-ONLY -- this line NEVER renders "identical"/"differs" or
            any other computed verdict, only the honest state of adjudication
            itself. */}
