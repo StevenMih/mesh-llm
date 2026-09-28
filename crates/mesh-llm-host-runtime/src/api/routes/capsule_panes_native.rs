@@ -644,8 +644,54 @@ fn record_exchange_id(record: &Value) -> Option<&str> {
 /// not a second copy of the CLOSED predicate. A `failed` here is exactly what
 /// the gate renders CONTRADICTED; a `verified` here (with the door's
 /// `signature_ok`) is what it renders CLOSED.
+/// Every weights digest a record claims (64 lower-hex): the compute
+/// attestation's `weights_digest.digest`, the serving provenance's
+/// `model.weights_digest`, and the hex after `sha256-`/`sha256:` in
+/// `model_id`. A model name alone is never a claim (names alias).
+fn weights_claims(record: &Value) -> std::collections::BTreeSet<String> {
+    let is_digest = |s: &str| s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit());
+    let mut claims = std::collections::BTreeSet::new();
+    let attestation = record.pointer("/model_attestation");
+    for path in [
+        "/compute_attestation/weights_digest/digest",
+        "/compute_attestation/x-mesh-poc-v1/serving_provenance/model/weights_digest",
+    ] {
+        if let Some(value) = attestation
+            .and_then(|a| a.pointer(path))
+            .and_then(Value::as_str)
+            .map(str::to_ascii_lowercase)
+            .filter(|v| is_digest(v))
+        {
+            claims.insert(value);
+        }
+    }
+    if let Some(model_id) = attestation
+        .and_then(|a| a.get("model_id"))
+        .and_then(Value::as_str)
+        .map(str::to_ascii_lowercase)
+    {
+        for marker in ["sha256-", "sha256:"] {
+            if let Some(start) = model_id.find(marker) {
+                let hex: String = model_id[start + marker.len()..].chars().take(64).collect();
+                if is_digest(&hex) {
+                    claims.insert(hex);
+                }
+            }
+        }
+    }
+    claims
+}
+
+/// The provider's half names weights other than ours, or names two different
+/// weights itself: the model was swapped, whatever the digests say.
+fn model_swapped(mine: &Value, theirs: &Value) -> bool {
+    let ours = weights_claims(mine);
+    let theirs = weights_claims(theirs);
+    theirs.len() > 1 || (!ours.is_empty() && !theirs.is_empty() && ours.is_disjoint(&theirs))
+}
+
 fn digest_match_state(mine: &Value, theirs: &Value) -> &'static str {
-    let mut any_failed = false;
+    let mut any_failed = model_swapped(mine, theirs);
     let mut any_absent = false;
     for (a, b) in [
         (request_digest(mine), request_digest(theirs)),
@@ -2342,6 +2388,74 @@ mod tests {
                 "serving_provenance": { "exchange_id": exchange_id, "served_by_node_id": served_by_node_id, "requesting_party": "unknown" },
             } } },
         })
+    }
+
+    /// A half carrying weights claims: `model_id`, the compute attestation's
+    /// `weights_digest.digest`, and the serving provenance's model weights.
+    fn with_weights(
+        mut record: Value,
+        model_id: &str,
+        attested: Option<&str>,
+        served: Option<&str>,
+    ) -> Value {
+        record["model_attestation"]["model_id"] = json!(model_id);
+        if let Some(digest) = attested {
+            record["model_attestation"]["compute_attestation"]["weights_digest"] =
+                json!({ "digest": digest });
+        }
+        if let Some(digest) = served {
+            record["model_attestation"]["compute_attestation"]["x-mesh-poc-v1"]["serving_provenance"]
+                ["model"] = json!({ "weights_digest": digest });
+        }
+        record
+    }
+
+    /// Attack D: a provider serving other weights than we asked for must
+    /// never read as a match, even with agreeing request/response digests.
+    #[test]
+    fn a_swapped_model_never_matches_even_with_agreeing_digests() {
+        let asked = "a".repeat(64);
+        let swapped = "b".repeat(64);
+        let node = format!("c0c0{}", "7".repeat(60));
+        let (d, e) = ("d".repeat(64), "e".repeat(64));
+        let ours = |model_id: &str| {
+            with_weights(
+                mesh_half_served_by("m", "requested", &d, &e, "me-1", &node),
+                model_id,
+                None,
+                None,
+            )
+        };
+        let theirs = |model_id: &str, attested: &str, served: &str| {
+            with_weights(
+                mesh_half_served_by("t", "served", &d, &e, "them-1", &node),
+                model_id,
+                Some(attested),
+                Some(served),
+            )
+        };
+        let asked_id = format!("local-gguf/sha256-{asked}");
+        let swapped_id = format!("local-gguf/sha256-{swapped}");
+        // Control: every weights claim names the asked weights.
+        assert_eq!(
+            digest_match_state(&ours(&asked_id), &theirs(&asked_id, &asked, &asked)),
+            STATE_VERIFIED
+        );
+        // Case 1: only the serving provenance's weights are swapped.
+        assert_eq!(
+            digest_match_state(&ours(&asked_id), &theirs(&asked_id, &asked, &swapped)),
+            STATE_FAILED
+        );
+        // Case 2: model_id and both weights fields swapped together.
+        assert_eq!(
+            digest_match_state(&ours(&asked_id), &theirs(&swapped_id, &swapped, &swapped)),
+            STATE_FAILED
+        );
+        // Alias: our model_id is a name with no weights, so nothing to compare.
+        assert_eq!(
+            digest_match_state(&ours("qwen"), &theirs(&asked_id, &asked, &asked)),
+            STATE_VERIFIED
+        );
     }
 
     #[test]
