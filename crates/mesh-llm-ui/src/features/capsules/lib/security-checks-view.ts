@@ -399,7 +399,7 @@ function checkpointCoverageCell(key: string, covered: boolean | null): { state: 
       state: 'NOT_CHECKED',
       text:
         key === 'local_inclusion'
-          ? 'a checkpoint covers this record — see Integrity; its inclusion proof isn’t checked here'
+          ? 'a checkpoint covers this record — see Integrity; this row hasn’t checked that for itself yet'
           : 'a checkpoint covers this record; not checked here'
     }
   }

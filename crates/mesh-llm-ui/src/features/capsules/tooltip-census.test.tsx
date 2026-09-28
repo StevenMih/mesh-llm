@@ -382,7 +382,7 @@ describe('tooltip census -- every chip type the Evidence tab ships has a plain o
     const user = userEvent.setup()
     render(<LedgerPageContent />, { wrapper })
     await user.click(await screen.findByRole('tab', { name: /integrity/i }))
-    await screen.findByText(/Register your checkpoints/)
+    await screen.findByText(/Have a witness hold your checkpoints/)
     expectCovered(REQUIRED.integrity, censusOnScreen(), 'face')
   })
 })

@@ -40,24 +40,24 @@ const STATIC: Record<string, StaticExplanation> = {
     howToSupply: 'This comes from the sealed record as sent; there is no separate step to request it.'
   },
   local_inclusion: {
-    meaning: 'This record is included in a checkpoint this node has registered.',
-    doesNotEstablish: 'That the checkpoint itself has been registered anywhere a third party can see.',
-    howToSupply: 'Register a checkpoint that covers this record’s range (see Integrity).'
+    meaning: 'This record is in a checkpoint this node made.',
+    doesNotEstablish: 'That a witness you don’t run holds that checkpoint.',
+    howToSupply: 'Turn on a witness so it holds the checkpoint that covers this record (see Integrity).'
   },
   checkpoint_signature: {
     meaning: 'The checkpoint covering this record carries a valid signature.',
     doesNotEstablish: 'That the checkpoint has been witnessed by anyone other than this node.',
-    howToSupply: 'Register a checkpoint that covers this record’s range (see Integrity).'
+    howToSupply: 'Turn on a witness so it holds the checkpoint that covers this record (see Integrity).'
   },
   external_registration: {
     meaning: 'An external witness has issued a receipt for the checkpoint covering this record.',
     doesNotEstablish: 'That the record’s content, not just its checkpoint, was reviewed by the witness.',
-    howToSupply: 'Ask an external witness to register the checkpoint that covers this record.'
+    howToSupply: 'Ask a witness you don’t run to hold the checkpoint that covers this record.'
   },
   continuity: {
-    meaning: 'This checkpoint binds to a prior registered checkpoint, so a rewrite between them would be detectable.',
+    meaning: 'This checkpoint builds on an earlier one a witness holds, so a rewrite between them would show.',
     doesNotEstablish: 'That either checkpoint is true, only that a change between them would be visible.',
-    howToSupply: 'Needs a registered checkpoint and a prior one to bind to (see Integrity).'
+    howToSupply: 'Needs a checkpoint a witness holds and an earlier one to build on (see Integrity).'
   },
   capture_coverage: {
     meaning: 'States the rule this node uses to decide which exchanges get captured at all.',

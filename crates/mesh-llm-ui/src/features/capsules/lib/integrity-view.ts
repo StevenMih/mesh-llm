@@ -17,6 +17,7 @@
 // types.ts` -- the loose wire shape `PeerInfo['owner']` already carries,
 // same field `status-adapter.ts`'s `resolveOwner` reads for the Network
 // dashboard), so that one fact is real today, not aspirational.
+import { formatExchangeTimestamp } from '@/features/capsules/lib/local-time'
 import type { JsonRecord } from '@/features/capsules/api/types'
 import {
   CHAIN_STRIP_TOOLTIP,
@@ -84,7 +85,7 @@ export const OWNER_LINKED_SENTENCE = `Your records are signed by this node’s k
 /** The honest rung-1/witness-line copy for a checkpoint no witness holds. */
 // Finding 7: "witness: off" is the witness tile's to say ("off — your
 // choice"); the step says only what this step's state is.
-export const CHECKPOINTED_NOT_REGISTERED_STATUS = 'checkpointed locally · not registered'
+export const CHECKPOINTED_NOT_REGISTERED_STATUS = 'in a checkpoint · no witness holds it'
 
 // ---------------------------------------------------------------------------
 // Setup checklist (ledger-ux-from-the-user-2026-09-09 §6) -- three steps in
@@ -136,10 +137,10 @@ export function buildSetupSteps(
   return [
     {
       key: 'checkpoints',
-      title: 'Register your checkpoints',
+      title: 'Have a witness hold your checkpoints',
       done: registration.registered,
       status: registration.registered
-        ? 'registered'
+        ? 'a witness holds them'
         : registration.checkpointedLocally
           ? CHECKPOINTED_NOT_REGISTERED_STATUS
           : registration.reported
@@ -148,7 +149,7 @@ export function buildSetupSteps(
       body: registration.registered
         ? null
         : registration.reported
-          ? 'Right now your records are checkable only against themselves. Registering a checkpoint with a service you don’t run is what makes a later rewrite detectable by someone else. It does not make your records true.'
+          ? 'Right now your records are checkable only against themselves. A witness you don’t run holding a checkpoint is what makes a later rewrite detectable by someone else. It does not make your records true.'
           : 'This node did not report its checkpoint status. That is not the same as having none — the status was not reported, so nothing can be concluded either way.',
       ...(registration.registered ? {} : { action: { label: 'Turn on a witness ↗', href: WITNESS_SETTINGS_HREF } })
     },
@@ -217,14 +218,14 @@ export function buildRegistrationCopy(card: JsonRecord | null | undefined): Regi
   // fact rung 1 renders ([mesh-citing-record-shots-four-defects] D1).
   if (!registration.registered) {
     return {
-      witnessSummary: 'Checkpointed locally · not registered (witness: off)',
-      registeredNoLaterThan: timestamp ? `checkpointed no later than ${timestamp}` : null
+      witnessSummary: 'In a checkpoint on this node · no witness holds it (witness off)',
+      registeredNoLaterThan: timestamp ? `in a checkpoint no later than ${formatExchangeTimestamp(timestamp)}` : null
     }
   }
 
   return {
-    witnessSummary: `Registered with ${witnesses.length} witness${witnesses.length === 1 ? '' : 'es'} (${nonProducerCount} not operated by this node)`,
-    registeredNoLaterThan: timestamp ? `registered no later than ${timestamp}` : null
+    witnessSummary: `Held by ${witnesses.length} witness${witnesses.length === 1 ? '' : 'es'} (${nonProducerCount} not run by this node)`,
+    registeredNoLaterThan: timestamp ? `held by a witness no later than ${formatExchangeTimestamp(timestamp)}` : null
   }
 }
 
@@ -278,7 +279,7 @@ export function chainStripCaption(
   // against -- Integrity is the highest-cost tab for a false absence.
   return checkpointCount === null
     ? `${entries} · checkpoint status not reported`
-    : `${entries} · no checkpoint yet · nothing here is registered`
+    : `${entries} · no checkpoint yet · no witness holds any of it`
 }
 
 // ---------------------------------------------------------------------------

@@ -16,6 +16,7 @@
 //      pills, the whole-tab line, and `Your records` / `Clean up records`
 //      ([mesh-evidence-hero-your-history-and-cleanup], retiring the dead
 //      "This node's copy" label)
+import { formatExchangeTimestamp } from '@/features/capsules/lib/local-time'
 import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -1149,7 +1150,7 @@ describe('LedgerPageContent — Part T6: Integrity section completion', () => {
     render(<LedgerPageContent />, { wrapper: makeWrapper() })
     await user.click(screen.getByRole('tab', { name: /integrity/i }))
 
-    await screen.findByText(/Register your checkpoints/)
+    await screen.findByText(/Have a witness hold your checkpoints/)
     expect(screen.getByText(/Bind an owner identity/)).toBeInTheDocument()
     expect(screen.getByText(/Get the other side’s record/)).toBeInTheDocument()
     expect(screen.getByText(/Their record usually arrives on its own/)).toBeInTheDocument()
@@ -1174,7 +1175,7 @@ describe('LedgerPageContent — Part T6: Integrity section completion', () => {
     render(<LedgerPageContent />, { wrapper: makeWrapper() })
     await user.click(screen.getByRole('tab', { name: /integrity/i }))
 
-    await screen.findByText(/Register your checkpoints/)
+    await screen.findByText(/Have a witness hold your checkpoints/)
     // The setup-step body is unique; the two negatives are the false-absence
     // strings that must NOT appear for a not-reported (null) card.
     expect(screen.getByText(/did not report its checkpoint status/)).toBeInTheDocument()
@@ -1199,8 +1200,10 @@ describe('LedgerPageContent — Part T6: Integrity section completion', () => {
     render(<LedgerPageContent />, { wrapper: makeWrapper() })
     await user.click(screen.getByRole('tab', { name: /integrity/i }))
 
-    expect(await screen.findByText('Registered with 2 witnesses (1 not operated by this node)')).toBeInTheDocument()
-    expect(screen.getByText('registered no later than 2026-09-10')).toBeInTheDocument()
+    expect(await screen.findByText('Held by 2 witnesses (1 not run by this node)')).toBeInTheDocument()
+    expect(
+      screen.getByText(`held by a witness no later than ${formatExchangeTimestamp('2026-09-10')}`)
+    ).toBeInTheDocument()
     // Step 1 no longer shows the "what it does not buy" sentence once done.
     expect(screen.queryByText(/does not make your records true/)).not.toBeInTheDocument()
   })
@@ -1272,7 +1275,7 @@ describe('LedgerPageContent — Part T6: Integrity section completion', () => {
     ).toBeInTheDocument()
     // Finding 7: the unwitnessed checkpoint is said by step 1 -- not again as
     // a separate "Checkpointed locally" line.
-    expect(screen.getAllByText(/not registered/i)).toHaveLength(1)
+    expect(screen.getAllByText(/no witness holds it/i)).toHaveLength(1)
     expect(screen.queryByText(/witness: off/)).not.toBeInTheDocument()
     const details = screen.getByTestId('integrity-details')
     expect(details.tagName).toBe('DETAILS')
@@ -1309,7 +1312,7 @@ describe('LedgerPageContent — Part T6: Integrity section completion', () => {
     const user = userEvent.setup()
     const { container } = render(<LedgerPageContent />, { wrapper: makeWrapper() })
     await user.click(screen.getByRole('tab', { name: /integrity/i }))
-    await screen.findByText('registered no later than 2026-09-10')
+    await screen.findByText(`held by a witness no later than ${formatExchangeTimestamp('2026-09-10')}`)
 
     const sectionText = (container.textContent ?? '').toLowerCase()
     expect(sectionText).not.toMatch(/timestamped/)

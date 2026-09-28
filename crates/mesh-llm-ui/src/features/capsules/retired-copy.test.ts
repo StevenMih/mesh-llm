@@ -52,7 +52,16 @@ const RETIRED_PHRASES = [
   // [mesh-evidence-hero-your-history-and-cleanup] the dead pill -> the
   // `Your records` button that opens the panel
   "This node's copy",
-  'This node’s copy'
+  'This node’s copy',
+  // [UI-QA 2026-09-28] design copy: plain words, no protocol terms on the
+  // face -> "in a checkpoint" / "a witness holds it"; times in the viewer's
+  // own zone, never a raw ISO stamp.
+  'not registered',
+  'Registered with',
+  'registered no later than',
+  'Register your checkpoints',
+  'inclusion proof',
+  'nothing here is registered'
 ] as const
 
 const HERE = dirname(fileURLToPath(import.meta.url))
