@@ -287,6 +287,8 @@ describe('ExchangeStreamRow — the states render distinct text/status/action', 
     expect(within(head).getByText('response =')).toBeInTheDocument()
     const firstCell = head.querySelector('[data-closed-property-cell]') as HTMLElement
     expect(firstCell).toHaveAttribute('data-closed-property-cell', 'their_id')
+    // u109: the expansion points back to Logs for this exchange.
+    expect(within(head).getByRole('button', { name: /see in Logs/ })).toBeInTheDocument()
   })
 
   it('UX §8: each CLOSED property cell carries its own one-sentence (i)', () => {

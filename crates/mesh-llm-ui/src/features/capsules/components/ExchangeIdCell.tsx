@@ -12,6 +12,28 @@ function isRealExchangeId(exchangeKey: string): boolean {
   return !exchangeKey.startsWith('digest:')
 }
 
+/** u109: "see in Logs" from an exchange row. Logs opens the request that
+ *  carries this exchange id (`focusExchangeId`); nothing shows for a
+ *  digest-keyed row, which no Logs request can carry. */
+export function SeeInLogsLink({ exchangeKey }: { exchangeKey: string }) {
+  const navigate = useNavigate()
+  if (!isRealExchangeId(exchangeKey)) return null
+  return (
+    <button
+      className="ui-control-ghost inline-flex items-center gap-0.5 rounded-[var(--radius)] px-1 text-fg-dim hover:text-foreground"
+      data-see-in-logs="true"
+      onClick={(event) => {
+        event.stopPropagation()
+        navigate({ search: { focusExchangeId: exchangeKey }, to: '/logs' })
+      }}
+      type="button"
+    >
+      see in Logs
+      <ArrowUpRight aria-hidden="true" className="size-3" />
+    </button>
+  )
+}
+
 export function ExchangeIdCell({ exchangeKey }: { exchangeKey: string }) {
   const navigate = useNavigate()
   return (
