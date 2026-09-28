@@ -159,14 +159,19 @@ fn payer_book(entries: &[&Value]) -> Value {
             .get("payment_hash")
             .and_then(Value::as_str)
             .filter(|h| !h.is_empty());
+        // Only the wallet's own report settles an invoice. A settlement record
+        // stated by anyone else stays an entry on the row and never reads
+        // "settled".
+        let wallet_settlement = phase.ends_with("_settlement_observed")
+            && block.get("source").and_then(Value::as_str) == Some("wallet_reported");
         match (segment, payment_hash) {
             (Some(segment), Some(hash)) if phase.ends_with("_invoice_issued") => {
                 invoices.insert((segment, hash));
             }
-            (Some(segment), Some(hash)) if phase.ends_with("_settlement_observed") => {
+            (Some(segment), Some(hash)) if wallet_settlement => {
                 settlements.insert((segment, hash));
             }
-            (Some(segment), None) if phase.ends_with("_settlement_observed") => {
+            (Some(segment), None) if wallet_settlement => {
                 hashless_settlement_segments.insert(segment);
             }
             _ => {}
@@ -354,6 +359,25 @@ mod tests {
         assert_eq!(entries[3]["amount_msat"], 457);
         assert_eq!(entries[5]["amount_msat"], 577);
         assert!(summary.get("total_msat").is_none());
+    }
+
+    #[test]
+    fn a_settlement_not_reported_by_the_wallet_never_reads_settled() {
+        for hash in [Some("bb"), None] {
+            let mut records = paid_and_settled("ex-src");
+            records[4] = event(
+                "ex-src",
+                "output_settlement_observed",
+                "provider_asserted",
+                Some(1),
+                hash,
+                457,
+            );
+            let summary = index(records).summary_for(["ex-src"]).unwrap();
+            assert_eq!(summary["state"], "no_settlement_seen", "hash {hash:?}");
+            // The record is still shown, as what it is.
+            assert_eq!(summary["entries"][4]["source"], "provider_asserted");
+        }
     }
 
     #[test]
