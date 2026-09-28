@@ -5738,6 +5738,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "bitcoin",
+ "getrandom 0.2.17",
  "hex",
  "lightning-invoice",
  "mesh-llm-plugin",

@@ -135,11 +135,15 @@ impl PluginWalletProvider {
             .await
             .map_err(|error| anyhow!("{error}"))?;
         let identity = response.identity;
-        if identity.network != "mainnet" {
+        // Mainnet, unless the operator turned on the regtest test switch
+        // (`mesh_llm_wallet::network`); either way only that one network.
+        let expected = mesh_llm_wallet::network::expected_network();
+        if identity.network != expected {
             bail!(
-                "wallet plugin '{}' opened a {} wallet; paid inference requires mainnet",
+                "wallet plugin '{}' opened a {} wallet; paid inference requires {}",
                 self.plugin_name,
-                identity.network
+                identity.network,
+                expected
             );
         }
         match pin {

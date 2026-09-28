@@ -5,7 +5,7 @@ use super::installed::{
 use super::schema_validation::strict_plugin_schema_availability;
 use super::{
     BLOBSTORE_PLUGIN_ID, PAYMENTS_PLUGIN_ID, PluginStartupOptions, PluginSummary,
-    WALLET_LEXE_PLUGIN_ID,
+    WALLET_DEV_PLUGIN_ID, WALLET_LEXE_PLUGIN_ID,
 };
 use crate::{
     MeshRequirementRejectReason, MeshRequirements, NodeVersionBounds, ProtocolGenerationBounds,
@@ -332,7 +332,14 @@ pub fn resolve_plugins(config: &MeshConfig, _host_mode: PluginHostMode) -> Resul
     if blobstore_enabled {
         externals.push(builtin_plugin_spec(BLOBSTORE_PLUGIN_ID)?);
     }
-    if wallet_lexe_enabled && wallet_lexe_compiled_in() {
+    // The regtest test switch swaps the real wallet for the no-funds dev
+    // wallet: the payments engine takes the one `wallet.v1` provider, and in
+    // that mode only a regtest wallet may open.
+    if wallet_lexe_enabled && regtest_payments() {
+        if wallet_dev_compiled_in() {
+            externals.push(builtin_plugin_spec(WALLET_DEV_PLUGIN_ID)?);
+        }
+    } else if wallet_lexe_enabled && wallet_lexe_compiled_in() {
         externals.push(builtin_plugin_spec(WALLET_LEXE_PLUGIN_ID)?);
     }
     if payments_enabled && payments_compiled_in() {
@@ -377,6 +384,41 @@ fn wallet_lexe_compiled_in() -> bool {
 #[cfg(test)]
 fn wallet_lexe_compiled_in() -> bool {
     TEST_WALLET_LEXE_COMPILED_IN.with(|slot| slot.borrow().unwrap_or(false))
+}
+
+/// Whether the regtest test switch (`MESH_LLM_PAYMENTS_REGTEST=1`) is on.
+/// Forced per thread under test, so resolver tests never read the process
+/// environment.
+#[cfg(all(not(test), feature = "payments"))]
+fn regtest_payments() -> bool {
+    mesh_llm_wallet::network::regtest_enabled()
+}
+
+#[cfg(all(not(test), not(feature = "payments")))]
+fn regtest_payments() -> bool {
+    false
+}
+
+#[cfg(test)]
+fn regtest_payments() -> bool {
+    TEST_REGTEST_PAYMENTS.with(|slot| slot.borrow().unwrap_or(false))
+}
+
+#[cfg(test)]
+thread_local! {
+    pub(super) static TEST_REGTEST_PAYMENTS: std::cell::RefCell<Option<bool>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Whether this build carries the no-funds dev wallet.
+#[cfg(not(test))]
+fn wallet_dev_compiled_in() -> bool {
+    cfg!(feature = "wallet-dev")
+}
+
+#[cfg(test)]
+fn wallet_dev_compiled_in() -> bool {
+    true
 }
 
 /// Whether this build carries the payments engine. Forced per thread under

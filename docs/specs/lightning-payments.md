@@ -434,6 +434,27 @@ this API and the retained engine PID, with network calls off the UI thread. It
 requires this branch's engine; the previously pinned released engine lacks these
 routes. It does not embed a second wallet or SDK.
 
+## Regtest test mode (no real funds)
+
+For tests and demos of the paid path on one machine, set on every node:
+
+```sh
+export MESH_LLM_PAYMENTS_REGTEST=1          # off unless exactly "1"
+export MESH_LLM_DEV_WALLET_LEDGER=/tmp/mesh-dev-ledger   # one directory, shared by the nodes
+```
+
+With the switch on, regtest is the only network: only regtest invoices parse
+and only a regtest wallet opens, so a test invoice never reaches a real wallet.
+The built-in `wallet-dev` plugin replaces `wallet-lexe`. It signs regtest
+invoices with a local node key, settles them through the shared ledger
+directory, and starts every wallet at 100,000 test sat; nothing touches a
+Lightning network. It refuses to run without the switch.
+
+Use fresh config directories: the wallet pin in `payments/` names the wallet,
+so a node that pinned a real wallet refuses the dev one. Then configure the
+seller's prices and the payer's automatic policy as below
+(`wallet pricing …`, `wallet policy --mode automatic --daily-budget-sats …`).
+
 ## Validation and operator mainnet runbook
 
 After removing payment-specific output limits, validation passed 34 wallet tests,

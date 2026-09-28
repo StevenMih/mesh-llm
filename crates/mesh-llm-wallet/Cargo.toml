@@ -16,10 +16,16 @@ default = []
 # router. Wallet plugin executables enable this; the host and the payment
 # ledger do not.
 plugin-server = ["dep:mesh-llm-plugin", "dep:rmcp", "dep:schemars", "dep:tokio"]
+# A test wallet with no real funds (`dev`): regtest invoices, settled through a
+# directory the test nodes share. It opens only with the regtest switch on
+# (`network::REGTEST_ENV`).
+dev-wallet = ["plugin-server", "dep:bitcoin", "dep:getrandom", "tokio?/time"]
 
 [dependencies]
 anyhow.workspace = true
 async-trait = "0.1"
+bitcoin = { version = "0.32", features = ["secp-recovery"], optional = true }
+getrandom = { version = "0.2", optional = true }
 hex = "0.4"
 lightning-invoice = { version = "0.35.0-rc1", features = ["std"] }
 mesh-llm-plugin = { path = "../mesh-llm-plugin", version = "0.77.0", optional = true }

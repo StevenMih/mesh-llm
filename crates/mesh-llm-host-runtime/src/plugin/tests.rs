@@ -119,6 +119,21 @@ fn builtin_payments_is_served_in_process_and_can_be_switched_off() {
     );
 }
 
+/// The regtest test switch swaps the real wallet for the no-funds dev wallet,
+/// never both; with the switch off the dev wallet is never registered.
+#[test]
+fn the_regtest_switch_serves_the_dev_wallet_in_place_of_the_real_one() {
+    let _build = WalletLexeBuild::present();
+    let names = |regtest: bool| -> Vec<String> {
+        super::config::TEST_REGTEST_PAYMENTS.with(|slot| *slot.borrow_mut() = Some(regtest));
+        let resolved = resolve_plugins(&MeshConfig::default(), private_host_mode()).unwrap();
+        super::config::TEST_REGTEST_PAYMENTS.with(|slot| *slot.borrow_mut() = None);
+        resolved.externals.iter().map(|s| s.name.clone()).collect()
+    };
+    assert_eq!(names(false), [BLOBSTORE_PLUGIN_ID, WALLET_LEXE_PLUGIN_ID]);
+    assert_eq!(names(true), [BLOBSTORE_PLUGIN_ID, WALLET_DEV_PLUGIN_ID]);
+}
+
 #[test]
 fn builtin_wallet_is_served_by_this_executable_like_blobstore() {
     let _build = WalletLexeBuild::present();

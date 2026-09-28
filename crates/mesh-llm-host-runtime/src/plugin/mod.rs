@@ -105,6 +105,9 @@ pub const BLOBSTORE_PLUGIN_ID: &str = "blobstore";
 /// `mesh-llm --plugin wallet-lexe`. Compiled in only with the `wallet-lexe`
 /// feature; the name stays defined so config validation is feature-independent.
 pub const WALLET_LEXE_PLUGIN_ID: &str = "wallet-lexe";
+/// Built-in no-funds test wallet (`mesh_llm_wallet::dev`), served as
+/// `mesh-llm --plugin wallet-dev`. Registered only with the regtest switch.
+pub const WALLET_DEV_PLUGIN_ID: &str = "wallet-dev";
 /// Built-in payments engine, served in-process as the `payments.v1`
 /// capability. Registered only with the `payments` feature.
 pub const PAYMENTS_PLUGIN_ID: &str = "payments";
@@ -1557,6 +1560,8 @@ pub async fn run_plugin_process(name: String) -> Result<()> {
         BLOBSTORE_PLUGIN_ID => crate::plugins::blobstore::run_plugin(name).await,
         #[cfg(feature = "wallet-lexe")]
         WALLET_LEXE_PLUGIN_ID => mesh_wallet_lexe::run_plugin(name).await,
+        #[cfg(feature = "wallet-dev")]
+        WALLET_DEV_PLUGIN_ID => mesh_llm_wallet::dev::run_plugin(name).await,
         _ => bail!("Unknown built-in plugin '{}'", name),
     }
 }

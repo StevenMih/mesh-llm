@@ -269,19 +269,23 @@ async fn open_refuses_a_different_wallet_identity() {
 
 #[tokio::test]
 async fn open_refuses_non_mainnet_wallets() {
-    let plugin = FakeWalletPlugin::new("w1");
-    plugin.identity.lock().unwrap().network = "signet".into();
-    let manager = manager_for(&plugin).await;
-    let factory = PluginWalletFactory::new(slot(manager));
-    let dir = tempfile::tempdir().unwrap();
-    let error = factory
-        .open(dir.path())
-        .await
-        .err()
-        .expect("open must fail")
-        .to_string();
-    assert!(error.contains("requires mainnet"), "{error}");
-    assert!(WalletPin::load(dir.path()).unwrap().is_none());
+    // Regtest too: without the operator's regtest switch, a test wallet is
+    // refused like any other non-mainnet one.
+    for network in ["signet", "regtest"] {
+        let plugin = FakeWalletPlugin::new("w1");
+        plugin.identity.lock().unwrap().network = network.into();
+        let manager = manager_for(&plugin).await;
+        let factory = PluginWalletFactory::new(slot(manager));
+        let dir = tempfile::tempdir().unwrap();
+        let error = factory
+            .open(dir.path())
+            .await
+            .err()
+            .expect("open must fail")
+            .to_string();
+        assert!(error.contains("requires mainnet"), "{network}: {error}");
+        assert!(WalletPin::load(dir.path()).unwrap().is_none());
+    }
 }
 
 #[tokio::test]

@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, ensure};
-use lightning_invoice::{Bolt11Invoice, Currency};
+use lightning_invoice::Bolt11Invoice;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -16,11 +16,18 @@ pub struct Invoice {
 }
 
 impl Invoice {
+    /// Parse and check an invoice for the network this process runs on
+    /// ([`crate::network`]): mainnet, or regtest only with the test switch.
     pub fn parse(bolt11: &str) -> Result<Self> {
+        Self::parse_for(bolt11, crate::network::regtest_enabled())
+    }
+
+    pub(crate) fn parse_for(bolt11: &str, regtest: bool) -> Result<Self> {
         let parsed: Bolt11Invoice = bolt11.parse().context("invalid BOLT11 invoice")?;
         ensure!(
-            parsed.currency() == Currency::Bitcoin,
-            "mainnet invoice required"
+            parsed.currency() == crate::network::expected_currency(regtest),
+            "{} invoice required",
+            crate::network::network_name(regtest)
         );
         let expires_at_ms = parsed
             .expires_at()
@@ -38,8 +45,17 @@ impl Invoice {
     }
 
     pub fn validate_payment(&self, amount_msat: u64, now_ms: u64) -> Result<()> {
+        self.validate_payment_for(amount_msat, now_ms, crate::network::regtest_enabled())
+    }
+
+    pub(crate) fn validate_payment_for(
+        &self,
+        amount_msat: u64,
+        now_ms: u64,
+        regtest: bool,
+    ) -> Result<()> {
         ensure!(
-            *self == Self::parse(&self.bolt11)?,
+            *self == Self::parse_for(&self.bolt11, regtest)?,
             "invoice metadata mismatch"
         );
         ensure!(self.expires_at_ms > now_ms, "invoice has expired");
@@ -60,7 +76,7 @@ impl Invoice {
 pub(crate) mod tests {
     use super::*;
     use bitcoin::secp256k1::{Secp256k1, SecretKey};
-    use lightning_invoice::{InvoiceBuilder, PaymentHash, PaymentSecret};
+    use lightning_invoice::{Currency, InvoiceBuilder, PaymentHash, PaymentSecret};
 
     /// A signed mainnet test invoice. Shared with other in-crate tests.
     pub(crate) fn sample_invoice(number: u8, amount_msat: u64) -> Invoice {
@@ -86,6 +102,29 @@ pub(crate) mod tests {
         assert_eq!(invoice.payment_hash, hex::encode([3u8; 32]));
         assert!(invoice.validate_payment(5000, crate::now_ms()).is_ok());
         assert!(invoice.validate_payment(4999, crate::now_ms()).is_err());
+    }
+
+    /// The regtest switch is exclusive: with it off only mainnet parses, with
+    /// it on only regtest does.
+    #[test]
+    fn each_network_accepts_only_its_own_invoices() {
+        let mainnet = sample_invoice(5, 1000).bolt11;
+        let secret = SecretKey::from_slice(&[7; 32]).unwrap();
+        let regtest = InvoiceBuilder::new(Currency::Regtest)
+            .description("test".into())
+            .payment_hash(PaymentHash([6; 32]))
+            .payment_secret(PaymentSecret([42; 32]))
+            .current_timestamp()
+            .expiry_time(std::time::Duration::from_secs(3600))
+            .min_final_cltv_expiry_delta(144)
+            .amount_milli_satoshis(1000)
+            .build_signed(|hash| Secp256k1::new().sign_ecdsa_recoverable(hash, &secret))
+            .unwrap()
+            .to_string();
+        assert!(Invoice::parse_for(&mainnet, false).is_ok());
+        assert!(Invoice::parse_for(&regtest, false).is_err());
+        assert!(Invoice::parse_for(&regtest, true).is_ok());
+        assert!(Invoice::parse_for(&mainnet, true).is_err());
     }
 
     #[test]

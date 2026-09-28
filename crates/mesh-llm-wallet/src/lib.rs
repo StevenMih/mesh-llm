@@ -17,6 +17,7 @@
 
 pub mod contract;
 pub mod invoice;
+pub mod network;
 pub mod provider;
 pub mod provisioning;
 
@@ -24,6 +25,9 @@ pub mod provisioning;
 pub mod backend;
 #[cfg(feature = "plugin-server")]
 pub mod plugin_server;
+
+#[cfg(feature = "dev-wallet")]
+pub mod dev;
 
 pub fn now_ms() -> u64 {
     std::time::SystemTime::now()
