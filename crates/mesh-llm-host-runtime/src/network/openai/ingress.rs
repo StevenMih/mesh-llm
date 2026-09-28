@@ -462,6 +462,82 @@ fn remote_mesh_nonce_source(
     })
 }
 
+/// What this node knows about an exchange a remote peer delivered while this
+/// node only routed it.
+struct RemoteDeliveredFacts<'a> {
+    exchange_id: String,
+    model_name: &'a str,
+    nonce: Option<String>,
+    nonce_source: Option<ClientNonceSource>,
+    peer_capsule_id: Option<String>,
+    /// An explicit `x-mesh-target`, when the client named the peer.
+    target: Option<iroh::EndpointId>,
+    /// The peer `route_model_request` saw deliver the attempt.
+    observed_served_by_hex: Option<String>,
+    request_digest: Option<String>,
+}
+
+/// The terminal envelope for an exchange a remote peer delivered: `RemoteMesh`,
+/// naming the peer that served it (never this node), with the digest of the
+/// request body this node forwarded and the digests over the response bytes
+/// it relayed. Both routes that can end at a peer publish this: the
+/// remote-mesh branch, and the local-candidates branch when election picked a
+/// peer over this node's own copy of the model.
+fn remote_delivered_terminal(
+    facts: RemoteDeliveredFacts<'_>,
+    outcome: &proxy::RouteDispatchOutcome,
+) -> OpenAiExchangeEnvelope {
+    let mut terminal = OpenAiExchangeEnvelope::terminal_remote_mesh(
+        facts.exchange_id,
+        facts.model_name,
+        plugin_route_status(outcome),
+        facts.nonce,
+        facts.nonce_source,
+        facts.peer_capsule_id,
+    );
+    if let Some(provenance) =
+        serving_provenance_for_remote_mesh(facts.target, facts.observed_served_by_hex, outcome)
+    {
+        terminal = terminal.with_serving_provenance(provenance);
+    }
+    if let Some(digest) = facts.request_digest {
+        terminal = terminal.with_request_digest(digest);
+    }
+    let output_digests = exchange_output_digests_from_outcome(outcome);
+    if output_digests.has_any() {
+        terminal = terminal.with_output_digests(output_digests);
+    }
+    terminal
+}
+
+/// The terminal for the local-candidates route. Election there may deliver
+/// from a peer that also serves the model rather than from this node: then
+/// this node only routed the exchange, so it records it as the asking side
+/// (`RemoteMesh`, the peer as `served_by`) and the peer's own record can
+/// confirm it. Recording it as host-served would name this node as the
+/// server, or name no server at all. Otherwise this node served it.
+async fn publish_local_route_terminal(
+    node: &mesh::Node,
+    channel: &dyn OpenAiExchangeChannel,
+    outcome: &proxy::RouteDispatchOutcome,
+    delivered_by_peer: Option<RemoteDeliveredFacts<'_>>,
+    host_served: RawProxyTerminalFacts<'_>,
+    exchange_id: &str,
+    model_name: &str,
+) {
+    match delivered_by_peer {
+        Some(facts) => {
+            channel
+                .publish(&remote_delivered_terminal(facts, outcome))
+                .await
+        }
+        None => {
+            publish_raw_proxy_terminal(node, channel, exchange_id, model_name, outcome, host_served)
+                .await
+        }
+    }
+}
+
 enum AutoRouteResolution {
     Continue {
         effective_model: Option<String>,
@@ -1195,64 +1271,35 @@ async fn route_missing_local_model(
             )
             .await;
             if let Some(ch) = channel {
-                let mut terminal = OpenAiExchangeEnvelope::terminal_remote_mesh(
-                    exchange_id,
-                    model_name,
-                    plugin_route_status(&outcome),
-                    forwarded_nonce,
-                    nonce_source,
-                    peer_capsule_id_sink.take(),
+                // The canonical digest of the REAL request body this node is
+                // forwarding to the peer: this node parsed and is relaying
+                // that exact body, so it digests it the same way the
+                // host-served branch does. `ensure_body_json` is idempotent
+                // and only paid here, inside the `channel.is_some()` branch.
+                request.ensure_body_json();
+                let request_digest = request
+                    .body_json
+                    .as_ref()
+                    .and_then(|body| request_body_digest(body, request.body_bytes.as_deref()));
+                // D1: name the real serving peer, never this node. Prefer the
+                // routing-observed served peer (the sink, set for the
+                // actually-served attempt on an untargeted request); fall back
+                // to the explicit `target`. See `remote_delivered_terminal`.
+                let mut terminal = remote_delivered_terminal(
+                    RemoteDeliveredFacts {
+                        exchange_id,
+                        model_name,
+                        nonce: forwarded_nonce,
+                        nonce_source,
+                        peer_capsule_id: peer_capsule_id_sink.take(),
+                        target,
+                        observed_served_by_hex: served_by_node_id_sink.take(),
+                        request_digest,
+                    },
+                    &outcome,
                 );
                 if let Some(bracket_id) = twin_bracket_id {
                     terminal = terminal.with_twin_bracket_id(bracket_id);
-                }
-                // D1: name the real serving peer, never this node -- see
-                // `serving_provenance_for_remote_mesh`'s doc for exactly when
-                // this is (and is not) knowable. Prefer the routing-observed
-                // served peer (the sink, set for the actually-served attempt on
-                // an untargeted request); fall back to the explicit `target`.
-                if let Some(provenance) = serving_provenance_for_remote_mesh(
-                    target,
-                    served_by_node_id_sink.take(),
-                    &outcome,
-                ) {
-                    terminal = terminal.with_serving_provenance(provenance);
-                }
-                // The canonical digest of the REAL request body this node is
-                // forwarding to the peer -- `terminal_remote_mesh` used to
-                // hard-code this absent with the reasoning "a routing node
-                // forwarding to a peer never resolves them for itself," which
-                // is true of the PEER's serving provenance (unknowable here)
-                // but not of the request body: this node parsed and is
-                // relaying that exact body, so it can digest it the same way
-                // the host-served branch above does. `ensure_body_json` is
-                // idempotent and only paid here, inside the `channel.is_some()`
-                // branch.
-                request.ensure_body_json();
-                if let Some(digest) = request
-                    .body_json
-                    .as_ref()
-                    .and_then(|body| request_body_digest(body, request.body_bytes.as_deref()))
-                {
-                    terminal = terminal.with_request_digest(digest);
-                }
-                // The digests over the REAL served response, exactly as the
-                // host-served terminal above attaches them. `terminal_remote_mesh`
-                // hard-coded these absent under the same "a routing node resolves
-                // nothing for itself" reasoning that (correctly) withholds the
-                // PEER's serving provenance -- but the response digests are NOT
-                // the peer's to resolve: this node relayed the peer's response
-                // bytes to the client through `route_model_request`, whose
-                // outcome carries the digest computed over exactly those relayed
-                // bytes at the JSON-relay delivery point (see
-                // `handle_delivered_route_model_attempt`). Omitting them left the
-                // requester half with a null response_digest, so the two halves
-                // never matched on response_digest and the CLOSED digest-equality
-                // gate could not fire. A no-op for an all-`None` bundle (nothing
-                // relayed had a body to digest), so nothing is fabricated.
-                let output_digests = exchange_output_digests_from_outcome(&outcome);
-                if output_digests.has_any() {
-                    terminal = terminal.with_output_digests(output_digests);
                 }
                 ch.publish(&terminal).await;
             }
@@ -1975,6 +2022,12 @@ async fn route_request(
         let served_by_hex = target
             .filter(|id| *id == self_id)
             .map(|id| hex::encode(id.as_bytes()));
+        // Election here chooses among this node AND every peer serving the
+        // model, so a delivered attempt may come from a peer. These sinks
+        // record which peer delivered (and the capsule id it asserted), so the
+        // terminal names the real server instead of this node.
+        let served_by_node_id_sink = proxy::ServedByNodeIdSink::new();
+        let peer_capsule_id_sink = proxy::PeerCapsuleIdSink::new();
         let outcome = proxy::route_model_request(
             ctx.node.clone(),
             tcp_stream,
@@ -1987,26 +2040,38 @@ async fn route_request(
                 affinity: ctx.affinity,
                 route_observer,
                 served_by_header: served_by_hex.as_deref(),
-                // Not the `RemoteMesh` dispatch path -- this node is serving
-                // (or election-selecting among candidates that may include
-                // itself) the exchange, not merely routing to a peer.
-                peer_capsule_id: None,
-                served_by_node_id: None,
+                peer_capsule_id: Some(&peer_capsule_id_sink),
+                served_by_node_id: Some(&served_by_node_id_sink),
             },
         )
         .await;
         if let Some((plugin_manager, exchange_id)) = announce.as_ref() {
-            publish_raw_proxy_terminal(
+            let delivered_by_peer = served_by_node_id_sink.take().map(|peer_hex| {
+                let (nonce, nonce_origin) = request.capsule_nonce_headers();
+                let nonce_source = remote_mesh_nonce_source(&nonce, &nonce_origin);
+                RemoteDeliveredFacts {
+                    exchange_id: exchange_id.clone(),
+                    model_name,
+                    nonce,
+                    nonce_source,
+                    peer_capsule_id: peer_capsule_id_sink.take(),
+                    target: None,
+                    observed_served_by_hex: Some(peer_hex),
+                    request_digest: request_digest.clone(),
+                }
+            });
+            publish_local_route_terminal(
                 ctx.node,
                 *plugin_manager,
-                exchange_id,
-                model_name,
                 &outcome,
+                delivered_by_peer,
                 RawProxyTerminalFacts {
                     served_locally: true, // host-served: this node's own weights and hardware survey
                     request_digest: request_digest.as_deref(),
                     requested_by_node_id: ctx.requested_by_node_id.as_deref(),
                 },
+                exchange_id,
+                model_name,
             )
             .await;
         }

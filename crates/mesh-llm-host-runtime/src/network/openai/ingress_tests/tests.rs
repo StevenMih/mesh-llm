@@ -2911,3 +2911,108 @@ async fn ambient_twin_primary_response_is_byte_identical_whether_or_not_twinned(
          the exchange was ambiently twinned"
     );
 }
+
+/// A node that serves a model can still have its request delivered by a peer
+/// that serves the same model: election on the local-candidates route picks
+/// among this node AND those peers. When a peer delivered, this node only
+/// routed the exchange, so its terminal is the asking side's (`RemoteMesh`)
+/// and names that peer as `served_by` -- never this node, never nobody -- so
+/// the peer's own record of the exchange can confirm it.
+///
+/// MUTANT: publishing the host-served terminal regardless of
+/// `delivered_by_peer` fails the dispatch-path and served-by assertions.
+#[tokio::test]
+async fn local_route_terminal_names_the_peer_that_delivered() {
+    use crate::plugin::openai_exchange::{OpenAiExchangeDispatchPath, OpenAiExchangePhase};
+
+    let node = mesh::Node::new_for_tests(crate::mesh::NodeRole::Worker)
+        .await
+        .expect("test node");
+    let recording = RecordingChannel::default();
+    let peer_hex = "ab".repeat(32);
+    let outcome = proxy::RouteDispatchOutcome::Responded(200);
+    publish_local_route_terminal(
+        &node,
+        &recording,
+        &outcome,
+        Some(RemoteDeliveredFacts {
+            exchange_id: "exchange-local-route".to_string(),
+            model_name: "acme/shared-model",
+            nonce: Some("nonce-local-route".to_string()),
+            nonce_source: Some(ClientNonceSource::ClientSupplied),
+            peer_capsule_id: None,
+            target: None,
+            observed_served_by_hex: Some(peer_hex.clone()),
+            request_digest: Some("d".repeat(64)),
+        }),
+        RawProxyTerminalFacts {
+            served_locally: true,
+            request_digest: Some(&"d".repeat(64)),
+            requested_by_node_id: None,
+        },
+        "exchange-local-route",
+        "acme/shared-model",
+    )
+    .await;
+
+    let events = recording.events.lock().unwrap();
+    assert_eq!(events.len(), 1);
+    let terminal = &events[0];
+    assert_eq!(terminal.phase, OpenAiExchangePhase::Terminal);
+    assert_eq!(
+        terminal.dispatch_path,
+        OpenAiExchangeDispatchPath::RemoteMesh
+    );
+    let served_by = terminal
+        .serving_provenance
+        .as_ref()
+        .map(|provenance| provenance.served_by_node_id.clone());
+    assert_eq!(served_by.as_deref(), Some(peer_hex.as_str()));
+    assert_ne!(served_by, Some(node.id().to_string()));
+    assert_eq!(terminal.nonce.as_deref(), Some("nonce-local-route"));
+    assert_eq!(
+        terminal.request_digest.as_deref(),
+        Some("d".repeat(64).as_str())
+    );
+}
+
+/// When no peer delivered (this node served it), the local-candidates route
+/// still publishes the host-served terminal naming this node.
+#[tokio::test]
+async fn local_route_terminal_stays_host_served_when_this_node_served() {
+    use crate::plugin::openai_exchange::OpenAiExchangeDispatchPath;
+
+    let node = mesh::Node::new_for_tests(crate::mesh::NodeRole::Worker)
+        .await
+        .expect("test node");
+    let recording = RecordingChannel::default();
+    let outcome = proxy::RouteDispatchOutcome::Responded(200);
+    publish_local_route_terminal(
+        &node,
+        &recording,
+        &outcome,
+        None,
+        RawProxyTerminalFacts {
+            served_locally: true,
+            request_digest: None,
+            requested_by_node_id: None,
+        },
+        "exchange-self-served",
+        "acme/shared-model",
+    )
+    .await;
+
+    let events = recording.events.lock().unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(
+        events[0].dispatch_path,
+        OpenAiExchangeDispatchPath::RawProxy
+    );
+    assert_eq!(
+        events[0]
+            .serving_provenance
+            .as_ref()
+            .map(|provenance| provenance.served_by_node_id.clone()),
+        Some(node.id().to_string())
+    );
+}
