@@ -189,6 +189,10 @@ export type ExchangeStreamRowProps = {
   onAskForRecord?: (row: ExchangeLedgerRow, target: AskTarget) => void
 }
 
+/** A row closed from the record this page asked for, not from one this node
+ *  holds and sealed: true for this page, not saved. */
+export const FETCHED_CLOSE_TEXT = 'Confirmed on this page from the record you asked for; not saved on this node yet.'
+
 export function ExchangeStreamRow({
   row,
   rail,
@@ -412,6 +416,13 @@ export function ExchangeStreamRow({
             <p className="text-xs text-foreground" data-right-cell-text="true">
               {cellText}
             </p>
+            {askOutcome?.kind === 'record' && state.kind === 'closed' ? (
+              // Judged here from the record this page asked for; nothing seals
+              // it on this node yet, so a reload shows the row as before.
+              <p className="type-caption text-fg-dim" data-fetched-close="true">
+                {FETCHED_CLOSE_TEXT}
+              </p>
+            ) : null}
             {action ? (
               <Button
                 className="ui-control h-7 w-fit gap-1 rounded-[var(--radius)] px-2 text-[length:var(--density-type-caption)]"

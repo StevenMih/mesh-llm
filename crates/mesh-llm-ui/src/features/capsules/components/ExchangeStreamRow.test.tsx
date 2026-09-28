@@ -5,7 +5,7 @@ import { formatExchangeTimestamp } from '@/features/capsules/lib/local-time'
 import { cleanup, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { ExchangeStreamRow } from '@/features/capsules/components/ExchangeStreamRow'
+import { ExchangeStreamRow, FETCHED_CLOSE_TEXT } from '@/features/capsules/components/ExchangeStreamRow'
 import { exchangeRowDomId } from '@/features/capsules/lib/exchange-pages'
 import type { ExchangeLedgerRow } from '@/features/capsules/lib/exchange-ledger'
 import { ASK_FOR_RECORD_AFTER_MS, type RightCellStateKind } from '@/features/capsules/lib/exchange-row-state'
@@ -1159,5 +1159,31 @@ describe('ExchangeStreamRow — [mesh-evidence-ui-entry-row-and-chips] §3A mode
     expect(shortEl).toHaveAttribute('title', longKey)
     await user.click(shortEl)
     expect(writeText).toHaveBeenCalledWith(longKey)
+  })
+})
+
+describe('ExchangeStreamRow — a row closed from the record this page asked for', () => {
+  it('says the confirmation is for this page only, not saved', () => {
+    const theirs = { ...LOCAL_RECORD_WITH_DIGESTS, capsule_id: 'theirs-1' } as Record<string, unknown>
+    render(
+      <ExchangeStreamRow
+        onAction={vi.fn()}
+        {...toggleProps()}
+        askOutcome={{
+          kind: 'record',
+          at: '2026-09-28T23:00:00Z',
+          evidence: { status: 'found', idMatch: true, signatureOk: true, peerRecord: theirs, fetch: vi.fn() }
+        }}
+        rail={NO_RAIL}
+        row={makeRow('open_not_given')}
+      />
+    )
+    expect(screen.getByText('CLOSED')).toBeInTheDocument()
+    expect(screen.getByText(FETCHED_CLOSE_TEXT)).toBeInTheDocument()
+  })
+
+  it('says nothing extra on a row closed from a record this node holds', () => {
+    render(<ExchangeStreamRow onAction={vi.fn()} {...toggleProps()} rail={NO_RAIL} row={makeRow('closed')} />)
+    expect(screen.queryByText(FETCHED_CLOSE_TEXT)).not.toBeInTheDocument()
   })
 })
