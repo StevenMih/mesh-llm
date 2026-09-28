@@ -198,6 +198,16 @@ async fn blocked_peer_is_skipped_by_routing_until_unblocked() -> Result<()> {
     client.start_accepting();
     client.sync_from_peer_for_tests(&host).await;
     wait_for_peer(&client, host.id()).await;
+    // Routing admits only a peer showing signs of life (upstream #2058);
+    // this sync carries no connection, so mark the host live as
+    // `insert_test_peer` does for a healthy peer.
+    let host_info = client
+        .peers()
+        .await
+        .into_iter()
+        .find(|peer| peer.id == host.id())
+        .expect("the host is a peer");
+    client.insert_test_peer(host_info).await;
     assert!(
         client
             .hosts_for_model("remote-coding-model")
