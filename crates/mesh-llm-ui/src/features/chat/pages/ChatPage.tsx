@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSearch } from '@tanstack/react-router'
 import { uiMessagesToThreadMessages } from '@/features/chat/api/use-chat-messages'
+import { usePersistentChatModel } from '@/features/chat/api/chat-model'
 import { ChatSessionProvider } from '@/features/chat/api/chat-session'
 import { createChatDraftConversationId } from '@/features/chat/api/chat-session-ids'
 import { useOptionalChatSession, useChatSession } from '@/features/chat/api/chat-session-hooks'
@@ -90,7 +91,9 @@ export function ChatPageContent({ data = CHAT_HARNESS, initialModel }: ChatPageP
   const [systemPromptDialogOpen, setSystemPromptDialogOpen] = useState(false)
   const [systemPromptDraft, setSystemPromptDraft] = useState('')
   const [composerDrafts, setComposerDrafts] = useState<Record<string, ConversationComposerDraft>>({})
-  const [model, setModel] = useState(() => initialModel ?? '')
+  // Kept across tab switches: the page unmounts when you leave Chat, and a
+  // choice held only in component state came back as automatic.
+  const { model, setModel } = usePersistentChatModel(initialModel)
   const modelExists = selectableModels.some((item) => item.name === model)
   // selectedModelValue is what the dropdown shows (always a value
   // present in `options`, so Radix Select can highlight it).

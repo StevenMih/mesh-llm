@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 import { ChatLayout } from '@/features/chat/layouts/ChatLayout'
@@ -316,6 +316,32 @@ describe('ChatPage', () => {
 
     expect(screen.getByText('Start Chatting')).toBeVisible()
     expect(screen.getByLabelText('Prompt')).toBeEnabled()
+  })
+
+  it('u97 (2): a chosen model sticks in the header, with M4 live ids', async () => {
+    const user = userEvent.setup()
+    vi.mocked(adaptModelsToSummary).mockReturnValue([
+      { ...CHAT_HARNESS.models[0], name: 'blocked-test-model', displayName: 'blocked-test-model', status: 'warm' },
+      {
+        ...CHAT_HARNESS.models[1],
+        name: 'local-gguf/sha256-74a4da8c9fdbcd15bd1f6d01d621410d31c6fc00986f5eb687824e7b93d7a9db',
+        displayName: 'qwen2.5-0.5b-instruct-q4_k_m',
+        status: 'warm'
+      }
+    ])
+
+    renderChatPage({ mode: 'live' })
+
+    const trigger = screen.getByRole('combobox', { name: 'Select model' })
+    await user.click(trigger)
+    await user.click(await screen.findByRole('option', { name: /qwen2\.5-0\.5b/ }))
+    expect(screen.getByRole('combobox', { name: 'Select model' })).toHaveTextContent('qwen2.5-0.5b-instruct-q4_k_m')
+
+    // Reproduced live on M4: leave Chat (the page unmounts) and come back.
+    // The choice must still be there, not "Mesh — automatic".
+    cleanup()
+    renderChatPage({ mode: 'live' })
+    expect(screen.getByRole('combobox', { name: 'Select model' })).toHaveTextContent('qwen2.5-0.5b-instruct-q4_k_m')
   })
 
   it('excludes cold live models from the chat model selector', async () => {

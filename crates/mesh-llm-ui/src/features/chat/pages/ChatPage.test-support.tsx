@@ -506,6 +506,7 @@ beforeEach(() => {
   installImageFallbackShim()
   installObjectUrlShim()
   window.localStorage.removeItem(APP_STORAGE_KEYS.featureFlagOverrides)
+  window.localStorage.removeItem(APP_STORAGE_KEYS.chatModel)
   window.localStorage.removeItem(APP_STORAGE_KEYS.chatSystemPrompt)
   vi.mocked(loadChatState).mockResolvedValue(undefined)
   vi.mocked(saveChatState).mockResolvedValue(undefined)
