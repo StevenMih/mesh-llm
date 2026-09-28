@@ -74,7 +74,7 @@
 
 use super::capsule_panes_settlement::{SettlementIndex, is_settlement_record, peer_counts};
 use serde_json::{Value, json};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 /// Sentinel for "this mechanism exists but isn't wired for a plugin-ledger
@@ -589,6 +589,17 @@ fn effective_ledger(ledger_dir: &Path) -> EffectiveLedger {
             local_records.push(record);
         }
     }
+
+    // `capsule_id` digests the body without `key_id`/`signature`, so a peer
+    // can re-sign one of OUR bodies and push it back under our own id. Such a
+    // half is never "received": drop the provenance and the foreign copy, so
+    // our record stays ours (and keeps its settlement join).
+    let local_ids: HashSet<&str> = local_records
+        .iter()
+        .filter_map(|record| record.get("capsule_id").and_then(Value::as_str))
+        .collect();
+    received_provenance.retain(|id, _| !local_ids.contains(id.as_str()));
+    resolved_foreign.retain(|id, _| !local_ids.contains(id.as_str()));
 
     for (half, prov) in received_provenance.iter_mut() {
         prov.their_log = their_log.get(half).cloned();
@@ -4470,6 +4481,50 @@ mod tests {
         assert_eq!(counts["paid_exchanges"], json!(2));
         assert_eq!(counts["settled_payer_observed"], json!(1));
         assert_eq!(counts["no_settlement_seen"], json!(1));
+    }
+
+    /// Review u81 #3: `capsule_id` digests the body without `key_id` and
+    /// `signature`, so a peer can re-sign one of OUR bodies and push it back
+    /// under our id. It is never a received half: our record stays ours, and
+    /// its settlement still joins.
+    #[test]
+    fn a_pushed_half_reusing_our_capsule_id_is_not_received() {
+        let dir = tempfile::tempdir().unwrap();
+        let ours = asked_record("cap-ours", "req-c", "ex-c");
+        let records = vec![
+            ours.clone(),
+            citing_fixture("cap-ours", "m4", true),
+            settlement_record("s1", "ex-c", "input_invoice_issued", Some(0), Some("aa")),
+            settlement_record(
+                "s2",
+                "ex-c",
+                "input_settlement_observed",
+                Some(0),
+                Some("aa"),
+            ),
+        ];
+        write_fixture_ledger(dir.path(), &records);
+        let mut replay = ours;
+        replay["key_id"] = json!("f".repeat(64));
+        std::fs::write(
+            dir.path().join("received-capsules.jsonl"),
+            format!("{}\n", serde_json::to_string(&replay).unwrap()),
+        )
+        .unwrap();
+
+        let el = effective_ledger(dir.path());
+        assert!(!el.received_provenance.contains_key("cap-ours"));
+        let copies = el
+            .pane_bc_records
+            .iter()
+            .filter(|r| r["capsule_id"] == json!("cap-ours"))
+            .count();
+        assert_eq!(copies, 1, "our record once, never a foreign copy beside it");
+
+        let pane_c = build_pane_json("pane-c", dir.path(), None, PaymentsPresence::On).unwrap();
+        let row = &pane_c["rows"][0];
+        assert_eq!(row["settlement"]["state"], json!("settled"));
+        assert_eq!(row["unilateral"], json!(true));
     }
 
     #[test]
