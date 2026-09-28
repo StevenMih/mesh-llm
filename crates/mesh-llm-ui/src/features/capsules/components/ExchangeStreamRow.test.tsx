@@ -1032,9 +1032,11 @@ describe('ExchangeStreamRow — [mesh-evidence-ui-entry-row-and-chips] §3A mode
 
   it('a CLOSED row says where their record sits in their log, once our records cite it', () => {
     const row = makeRow('closed')
-    row.raw.theirs.in_their_log = { leaf_index: 6, checkpoint_records: 8 }
+    row.raw.theirs.in_their_log = { leaf_index: 6, checkpoint_leaves: 8 }
     render(<ExchangeStreamRow onAction={vi.fn()} {...toggleProps()} rail={NO_RAIL} row={row} />)
-    expect(screen.getByText('CLOSED · in their log (checkpoint 8)')).toBeInTheDocument()
+    // No number: their checkpoint's leaves include their padding.
+    expect(screen.getByText('CLOSED · in their log')).toBeInTheDocument()
+    expect(screen.queryByText(/checkpoint 8|8 records/)).not.toBeInTheDocument()
   })
 
   it('shows the time in the viewer’s own zone, never an ISO/UTC stamp', () => {

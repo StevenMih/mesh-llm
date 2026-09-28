@@ -425,9 +425,10 @@ export type PaneCRow = {
      *  until it has run. */
     id_match?: boolean | null
     /** Where their record sits in their own log, from our record citing
-     *  their inclusion proof and checkpoint: `checkpoint_records` is the size
-     *  of their log that checkpoint covers. Null/absent until that arrives. */
-    in_their_log?: { leaf_index: number; checkpoint_records: number } | null
+     *  their inclusion proof and checkpoint: `checkpoint_leaves` is the leaves
+     *  that checkpoint covers, their padding included, so never a record
+     *  count. Null/absent until that arrives. */
+    in_their_log?: { leaf_index: number; checkpoint_leaves: number } | null
   }
   unilateral: boolean
   /** [mesh-closed-on-frozen-base] The STRUCTURAL digest reconciliation of a

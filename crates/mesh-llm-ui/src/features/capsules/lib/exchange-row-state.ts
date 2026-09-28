@@ -430,16 +430,13 @@ export function rightCellDetail(state: RightCellState): string {
   return ROW_STATE_TOOLTIPS[state.kind]
 }
 
-/** The row's state label, with "in their log (checkpoint N)" on a CLOSED
- *  row once our records cite their inclusion proof for it (§7.6b). */
-export function rowStatusLabel(
-  state: RightCellState,
-  inTheirLog: { checkpoint_records: number } | null | undefined
-): string {
+/** The row's state label, with "in their log" on a CLOSED row once our
+ *  records cite their inclusion proof for it (§7.6b). No number: their
+ *  checkpoint's leaf count includes their padding, so it is never a count of
+ *  their records. */
+export function rowStatusLabel(state: RightCellState, inTheirLog: object | null | undefined): string {
   const label = rightCellStatusLabel(state)
-  return state.kind === 'closed' && inTheirLog
-    ? `${label} · in their log (checkpoint ${inTheirLog.checkpoint_records})`
-    : label
+  return state.kind === 'closed' && inTheirLog ? `${label} · in their log` : label
 }
 
 export function rightCellStatusLabel(state: RightCellState): string {
