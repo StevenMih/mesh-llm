@@ -63,12 +63,7 @@ const chatRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/chat',
   head: () => ({ meta: [{ title: 'MeshLLM - Chat' }] }),
-  // `model`: optional pre-selection, e.g. from the Ledger Peers tab's
-  // "Route here" action ([mesh-ledger-peers-tab]).
-  validateSearch: (search: Record<string, unknown>): { model?: string } => ({
-    ...(typeof search['model'] === 'string' ? { model: search['model'] } : {})
-  }),
-  component: lazyRouteComponent(() => import('@/features/chat/pages/ChatPage'), 'ChatPageRoute'),
+  component: lazyRouteComponent(() => import('@/features/chat/pages/ChatPage'), 'ChatPageContent'),
   errorComponent: FeatureErrorBoundary
 })
 const ConfigurationRoutePage = lazyRouteComponent(

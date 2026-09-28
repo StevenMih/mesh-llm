@@ -339,7 +339,6 @@ beforeEach(() => {
   document.documentElement.removeAttribute('data-theme')
   document.body.style.userSelect = ''
   window.localStorage.removeItem(APP_STORAGE_KEYS.featureFlagOverrides)
-  window.localStorage.removeItem(APP_STORAGE_KEYS.chatModel)
   setFullscreenElement(null)
   Object.defineProperty(document, 'fullscreenElement', {
     configurable: true,
