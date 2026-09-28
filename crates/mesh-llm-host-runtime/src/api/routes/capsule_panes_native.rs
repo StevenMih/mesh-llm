@@ -3573,6 +3573,80 @@ mod tests {
         }
     }
 
+    /// mc:7 / Q on M4: Exchanges labelled BOTH rows of a twin pair with
+    /// provider A. Pane C must name each row's own provider: A on the row
+    /// whose half came from A, B on the other. Twin answers differ (their own
+    /// ids), so the halves pair by response digest.
+    #[test]
+    fn a_twin_pair_names_each_exchange_row_its_own_provider() {
+        let key_a = format!("aa{}", "0".repeat(62));
+        let key_b = format!("bb{}", "0".repeat(62));
+        let node_a = format!("a0a0{}", "1".repeat(60));
+        let node_b = format!("b0b0{}", "2".repeat(60));
+        let d = "d".repeat(64);
+        let (resp_a, resp_b) = ("e".repeat(64), "f".repeat(64));
+        let records = vec![
+            mesh_half_served_by(
+                "1".repeat(64).as_str(),
+                "requested",
+                &d,
+                &resp_a,
+                "me-a",
+                &node_a,
+            ),
+            mesh_half_served_by(
+                "2".repeat(64).as_str(),
+                "requested",
+                &d,
+                &resp_b,
+                "me-b",
+                &node_b,
+            ),
+            with_key(
+                mesh_half_served_by(
+                    "3".repeat(64).as_str(),
+                    "served",
+                    &d,
+                    &resp_a,
+                    "them-a",
+                    &node_a,
+                ),
+                &key_a,
+            ),
+            with_key(
+                mesh_half_served_by(
+                    "4".repeat(64).as_str(),
+                    "served",
+                    &d,
+                    &resp_b,
+                    "them-b",
+                    &node_b,
+                ),
+                &key_b,
+            ),
+        ];
+        let provenance: HashMap<String, ReceivedProvenance> = [
+            provenance_for("3".repeat(64).as_str(), &node_a),
+            provenance_for("4".repeat(64).as_str(), &node_b),
+        ]
+        .into_iter()
+        .collect();
+        let pane = build_pane_c_list(&records, &provenance);
+        let rows = pane["rows"].as_array().unwrap();
+        assert_eq!(rows.len(), 2, "{rows:#?}");
+        for (theirs, key) in [("3".repeat(64), &key_a), ("4".repeat(64), &key_b)] {
+            let row = rows
+                .iter()
+                .find(|r| r["theirs"]["capsule_id"] == json!(theirs))
+                .expect("the row holding this provider's half");
+            assert_eq!(
+                row["counterparty"],
+                json!(format!("key:{}", &key[..16])),
+                "{row:#?}"
+            );
+        }
+    }
+
     /// A node id from a record we RECEIVED never counts as ours, even on a
     /// requested-role record: only our own records route.
     #[test]
