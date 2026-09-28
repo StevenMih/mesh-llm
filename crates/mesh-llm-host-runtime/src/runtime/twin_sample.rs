@@ -28,7 +28,10 @@
 //! is exercised only by its own unit tests today (see its own
 //! `#[allow(dead_code)]` below).
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use rand::{Rng, RngExt};
+use serde_json::Value;
 
 /// Overrides the configured rate for this process. Mirrors the
 /// `OTEL_EXPORTER_OTLP_ENDPOINT` env-override pattern in `runtime::survey`:
@@ -69,6 +72,70 @@ fn valid_probability(rate: f64) -> bool {
 /// output.
 pub fn should_sample_ambient_twin(rate: f64, rng: &mut impl Rng) -> bool {
     valid_probability(rate) && rate > 0.0 && rng.random::<f64>() < rate
+}
+
+/// Why an exchange was not offered for twinning: its decoding is not
+/// greedy, so two honest providers can answer differently and a differing
+/// twin would prove nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TwinSkip {
+    /// No JSON body to read the decoding from.
+    NoBody,
+    /// No `temperature`: the OpenAI default (1) samples.
+    DefaultTemperature,
+    /// `temperature` above 0, and `top_k` is not 1.
+    Sampled,
+}
+
+impl TwinSkip {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NoBody => "no JSON body",
+            Self::DefaultTemperature => "no temperature (the default samples)",
+            Self::Sampled => "temperature above 0",
+        }
+    }
+}
+
+/// Greedy decoding: `temperature` 0, or `top_k` 1. Only a greedy request's
+/// answer is expected to match across honest providers, so only a greedy
+/// request is twinned.
+pub fn greedy_decoding(body: Option<&Value>) -> Result<(), TwinSkip> {
+    let body = body.ok_or(TwinSkip::NoBody)?;
+    if body.get("top_k").and_then(Value::as_f64) == Some(1.0) {
+        return Ok(());
+    }
+    match body.get("temperature").and_then(Value::as_f64) {
+        Some(0.0) => Ok(()),
+        Some(_) => Err(TwinSkip::Sampled),
+        None => Err(TwinSkip::DefaultTemperature),
+    }
+}
+
+static GREEDY_SEEN: AtomicU64 = AtomicU64::new(0);
+static SKIPPED_NOT_GREEDY: AtomicU64 = AtomicU64::new(0);
+
+/// Count one exchange considered for twinning, by whether it was greedy.
+pub fn count_twin_eligibility(greedy: bool) {
+    let counter = if greedy {
+        &GREEDY_SEEN
+    } else {
+        &SKIPPED_NOT_GREEDY
+    };
+    counter.fetch_add(1, Ordering::Relaxed);
+}
+
+/// (greedy exchanges seen, exchanges skipped as not greedy) since start,
+/// for the future "1 in N" readout.
+#[allow(
+    dead_code,
+    reason = "UI disclosure sentence readout not yet wired; see module doc"
+)]
+pub fn twin_eligibility_counts() -> (u64, u64) {
+    (
+        GREEDY_SEEN.load(Ordering::Relaxed),
+        SKIPPED_NOT_GREEDY.load(Ordering::Relaxed),
+    )
 }
 
 /// Mints a fresh twin-bracket id, host-side, per [ledger-T11-twins-visible]
@@ -138,6 +205,30 @@ pub fn twin_rate_denominator(rate: f64) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_greedy_decoding_is_twinned() {
+        use serde_json::json;
+        assert_eq!(greedy_decoding(Some(&json!({"temperature": 0}))), Ok(()));
+        assert_eq!(greedy_decoding(Some(&json!({"temperature": 0.0}))), Ok(()));
+        assert_eq!(
+            greedy_decoding(Some(&json!({"temperature": 0.7, "top_k": 1}))),
+            Ok(())
+        );
+        assert_eq!(
+            greedy_decoding(Some(&json!({"temperature": 0.7}))),
+            Err(TwinSkip::Sampled)
+        );
+        assert_eq!(
+            greedy_decoding(Some(&json!({"temperature": 0.7, "top_k": 40}))),
+            Err(TwinSkip::Sampled)
+        );
+        assert_eq!(
+            greedy_decoding(Some(&json!({"model": "m"}))),
+            Err(TwinSkip::DefaultTemperature)
+        );
+        assert_eq!(greedy_decoding(None), Err(TwinSkip::NoBody));
+    }
     use rand::SeedableRng;
     use rand::rngs::SmallRng;
 

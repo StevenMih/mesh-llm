@@ -1188,7 +1188,8 @@ async fn route_missing_local_model(
             // it via the same `proxy::route_model_request` primitive used
             // below. Both halves' effective/terminal envelopes carry the same
             // `twin_bracket_id` so the UI can bracket them; a `None` here
-            // (rate=0, only one candidate, or the sample roll missed) means
+            // (rate=0, decoding not greedy, only one candidate, or the
+            // sample roll missed) means
             // this exchange is untouched -- no twin id, no second dispatch,
             // byte-identical to pre-twin behavior.
             let twin_bracket_id =
@@ -1383,11 +1384,27 @@ fn maybe_spawn_ambient_twin(
     ctx: &IngressRouteContext<'_>,
     model_name: &str,
     mesh_targets: &election::ModelTargets,
-    request: &proxy::BufferedHttpRequest,
+    request: &mut proxy::BufferedHttpRequest,
     required_tokens: Option<u32>,
 ) -> Option<String> {
-    let rate = crate::runtime::twin_sample::configured_twin_sample_rate();
-    if !crate::runtime::twin_sample::should_sample_ambient_twin(rate, &mut rand::rng()) {
+    use crate::runtime::twin_sample;
+    let rate = twin_sample::configured_twin_sample_rate();
+    if rate <= 0.0 {
+        return None;
+    }
+    // Only a greedy request's answer should match across honest providers;
+    // twinning a sampled one risks a false "differs".
+    request.ensure_body_json();
+    let greedy = twin_sample::greedy_decoding(request.body_json.as_ref());
+    twin_sample::count_twin_eligibility(greedy.is_ok());
+    if let Err(skip) = greedy {
+        tracing::debug!(
+            reason = skip.as_str(),
+            "ambient twin skipped: decoding is not greedy"
+        );
+        return None;
+    }
+    if !twin_sample::should_sample_ambient_twin(rate, &mut rand::rng()) {
         return None;
     }
     let candidates = mesh_targets.candidates(model_name);

@@ -2589,9 +2589,20 @@ async fn insert_two_remote_peers(node: &mesh::Node, model: &str) {
 /// shape `route_missing_local_model_enters_remote_mesh_branch_when_peer_serves_model`
 /// builds inline, factored out here so the twin-dispatch tests below share
 /// one build path instead of repeating it three times.
+/// A greedy (temperature 0) chat request: the only kind that is twinned.
 fn twin_test_chat_request(model: &str, nonce: &str) -> proxy::BufferedHttpRequest {
-    let body = format!(r#"{{"model":"{model}","messages":[{{"role":"user","content":"hi"}}]}}"#)
-        .into_bytes();
+    twin_test_chat_request_at(model, nonce, "0")
+}
+
+fn twin_test_chat_request_at(
+    model: &str,
+    nonce: &str,
+    temperature: &str,
+) -> proxy::BufferedHttpRequest {
+    let body = format!(
+        r#"{{"model":"{model}","temperature":{temperature},"messages":[{{"role":"user","content":"hi"}}]}}"#
+    )
+    .into_bytes();
     let raw = format!(
         "POST /v1/chat/completions HTTP/1.1\r\nHost: t\r\nContent-Type: application/json\r\nContent-Length: {len}\r\nx-capsule-client-nonce: {nonce}\r\n\r\n",
         len = body.len(),
@@ -2785,6 +2796,65 @@ async fn ambient_twin_rate_zero_never_dual_dispatches() {
         events.iter().all(|event| event.twin_bracket_id.is_none()),
         "rate=0 must never attach a twin_bracket_id"
     );
+}
+
+/// u110: at temperature 0.7 two honest providers can answer differently, so
+/// a twin could only produce a false "differs". Even at rate=1 with two
+/// distinct peers, a sampled request gets NO second dispatch, and the skip
+/// is counted. MUTANT: drop the greedy check and a twin is dispatched.
+#[tokio::test]
+#[serial_test::serial]
+async fn ambient_twin_skips_a_sampled_request() {
+    let _env = TwinRateEnvGuard::set("1");
+    let model = "acme/twin-model-sampled-temp:Q4_K_M";
+    let node = mesh::Node::new_for_tests(mesh::NodeRole::Worker)
+        .await
+        .expect("test node");
+    insert_two_remote_peers(&node, model).await;
+
+    let targets = election::ModelTargets::default();
+    let affinity = affinity::AffinityRouter::new();
+    let recording = std::sync::Arc::new(RecordingChannel::default());
+    let (_client_side, server_side) = accept_loopback_tcp().await;
+    let mut request = twin_test_chat_request_at(model, "nonce-twin-temp", "0.7");
+
+    let ctx = IngressRouteContext {
+        node: &node,
+        targets: &targets,
+        affinity: &affinity,
+        plugin_manager: None,
+        requested_by_node_id: None,
+        exchange_channel: Some(&*recording),
+        twin_exchange_channel: Some(
+            std::sync::Arc::clone(&recording) as std::sync::Arc<dyn OpenAiExchangeChannel>
+        ),
+    };
+    let lifecycle = OpenAiLifecycleAttachment::unowned();
+    let (_, skipped_before) = crate::runtime::twin_sample::twin_eligibility_counts();
+
+    let _outcome = route_missing_local_model(
+        server_side.into(),
+        &mut request,
+        &ctx,
+        model,
+        None,
+        &[],
+        None,
+        lifecycle.route_observer(),
+    )
+    .await;
+
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    let events = recording.events.lock().unwrap();
+    assert_eq!(
+        events.len(),
+        2,
+        "a sampled request must publish only the primary's pair, got {} event(s)",
+        events.len()
+    );
+    assert!(events.iter().all(|event| event.twin_bracket_id.is_none()));
+    let (_, skipped_after) = crate::runtime::twin_sample::twin_eligibility_counts();
+    assert!(skipped_after > skipped_before, "the skip must be counted");
 }
 
 /// The twin peer is unreachable (a synthetic test `EndpointId` with no real
