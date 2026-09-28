@@ -6,6 +6,7 @@ mod chat;
 mod control_apply_diagnostics;
 mod diagnostics;
 mod discover;
+mod evidence_requests;
 mod health;
 pub(crate) mod kv_cache;
 pub(crate) mod logs;
@@ -153,6 +154,10 @@ pub(super) const DISPATCH_REQUEST: DispatchRequestFn =
                 }
                 (_, route_path) if peer_blocks::is_route(route_path) => {
                     peer_blocks::handle(stream, state, method, route_path, body).await?;
+                    Ok(true)
+                }
+                (_, route_path) if evidence_requests::is_route(route_path) => {
+                    evidence_requests::handle(stream, state, method, body).await?;
                     Ok(true)
                 }
                 ("GET", "/api/model-targets") => {

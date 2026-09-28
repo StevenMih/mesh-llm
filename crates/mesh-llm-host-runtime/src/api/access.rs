@@ -23,6 +23,10 @@ pub(crate) fn requires_trusted_local_access(method: &str, path: &str) -> bool {
     if path == "/api/peer-blocks" || path.starts_with("/api/peer-blocks/") {
         return true;
     }
+    // Asking another node for its record makes this node contact that node.
+    if path == "/api/evidence-requests" {
+        return true;
+    }
     if path == "/mcp"
         || path.starts_with("/api/plugins")
         || (method == "POST"
@@ -169,6 +173,7 @@ mod tests {
             ("GET", "/api/peer-blocks"),
             ("POST", "/api/peer-blocks"),
             ("POST", "/api/peer-blocks/unblock"),
+            ("POST", "/api/evidence-requests"),
             ("GET", "/api/capsules/panes/pane-a"),
             ("GET", "/api/capsules/panes/pane-b"),
             ("GET", "/api/capsules/panes/pane-c"),
