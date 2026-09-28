@@ -80,6 +80,7 @@ import {
   CHAIN_BAR_INFO,
   chainStripCaption,
   checkpointCoverageByRecord,
+  coveredRecordCount,
   checkpointRegistration,
   continuityFact,
   identityFact,
@@ -412,7 +413,7 @@ function ExchangesSection({
   // "no checkpoint covers this record" while Integrity says all are covered.
   const checkpointCoverage = useMemo(() => {
     const card = balanceQuery.data?.card ?? null
-    const covered = typeof card?.covered_leaf_count === 'number' ? card.covered_leaf_count : null
+    const covered = coveredRecordCount(card)
     return checkpointCoverageByRecord(
       (balanceQuery.data?.rows ?? []).map((r) => r.capsule_id),
       covered
@@ -1214,7 +1215,7 @@ function IntegritySection() {
   // distinct from `checkpoint_count` (the number of checkpoint lines). The chain
   // strip caption/shading read THIS, so a 1-line checkpoint over 8 leaves reads
   // "8 leaves", never "1 leaves".
-  const coveredLeafCount = typeof card?.covered_leaf_count === 'number' ? card.covered_leaf_count : null
+  const coveredLeafCount = coveredRecordCount(card)
   const continuity = typeof card?.continuity === 'string' ? card.continuity : null
   const witnesses: unknown[] = Array.isArray(card?.witnesses) ? (card.witnesses as unknown[]) : []
   const witnessCount = witnesses.length
@@ -1524,7 +1525,7 @@ export function LedgerPageContent({ focusExchangeKey }: { focusExchangeKey?: str
           checkpointNoLaterThan={
             typeof paneACard?.registered_no_later_than === 'string' ? paneACard.registered_no_later_than : null
           }
-          coveredRecords={typeof paneACard?.covered_leaf_count === 'number' ? paneACard.covered_leaf_count : null}
+          coveredRecords={coveredRecordCount(paneACard)}
           onExport={() =>
             saveTextFile('mesh-evidence.json', integrityEvidenceBundle(paneARows, paneACard), 'application/json')
           }

@@ -227,6 +227,16 @@ export function buildRegistrationCopy(card: JsonRecord | null | undefined): Regi
 // three-state absence handling and the leaf pluralization are unit-testable.
 // ---------------------------------------------------------------------------
 
+/** How many RECORDS the latest checkpoint covers: the card's
+ *  `covered_record_count`. Its `covered_leaf_count` also counts padding
+ *  leaves (covered, but never records), so comparing that with a record
+ *  count would read unsealed records as sealed. Null when the host reported
+ *  no coverage. */
+export function coveredRecordCount(card: JsonRecord | null | undefined): number | null {
+  const covered = card?.covered_record_count
+  return typeof covered === 'number' ? covered : null
+}
+
 export function chainStripCaption(
   sealedCount: number,
   checkpointCount: number | null,

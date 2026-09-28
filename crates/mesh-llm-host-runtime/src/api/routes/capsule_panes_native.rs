@@ -118,11 +118,22 @@ fn not_checked_state() -> Value {
     json!({ "state": NOT_CHECKED })
 }
 
-/// Parses `<ledger_dir>/capsules.jsonl`, one JSON object per line, same as
-/// `ledger_store_backend._read_flat_capsules_page`'s `json.loads(line)`.
-/// A missing file or an unparsable line is dropped, never a panic --
-/// mirrors `capsules.rs`'s own "file absent -> 404, not error" discipline.
-pub(super) fn read_capsule_records(ledger_dir: &Path) -> Vec<Value> {
+/// The reserved `record_type` of a padding record (Evidence Layer -00
+/// §12.1): a ledger line the plugin appends before a checkpoint so the
+/// checkpoint's leaf count falls on a bucket boundary. It is a leaf for
+/// inclusion and consistency, and never a record: nothing that counts, lists
+/// or summarises records includes it (the plugin's `padding::is_padding`).
+const RECORD_TYPE_PADDING: &str = "padding";
+
+fn is_padding_record(record: &Value) -> bool {
+    record.get("record_type").and_then(Value::as_str) == Some(RECORD_TYPE_PADDING)
+}
+
+/// Every parsed line of `<ledger_dir>/capsules.jsonl`, padding included, in
+/// leaf order. A missing file or an unparsable line is dropped, never a
+/// panic -- mirrors `capsules.rs`'s own "file absent -> 404, not error"
+/// discipline.
+fn read_ledger_lines(ledger_dir: &Path) -> Vec<Value> {
     let path = ledger_dir.join("capsules.jsonl");
     let Ok(text) = std::fs::read_to_string(&path) else {
         return Vec::new();
@@ -132,6 +143,29 @@ pub(super) fn read_capsule_records(ledger_dir: &Path) -> Vec<Value> {
         .filter(|line| !line.is_empty())
         .filter_map(|line| serde_json::from_str::<Value>(line).ok())
         .collect()
+}
+
+/// This node's records from `<ledger_dir>/capsules.jsonl`, same as
+/// `ledger_store_backend._read_flat_capsules_page`'s `json.loads(line)`,
+/// with padding records left out. Every pane counts and lists from here, so
+/// no pane, count or export ever shows a padding line.
+pub(super) fn read_capsule_records(ledger_dir: &Path) -> Vec<Value> {
+    read_ledger_lines(ledger_dir)
+        .into_iter()
+        .filter(|record| !is_padding_record(record))
+        .collect()
+}
+
+/// How many of the first `leaves` ledger lines are records rather than
+/// padding: what a checkpoint over `leaves` leaves covers, in records.
+fn records_among_first_leaves(ledger_dir: &Path, leaves: u64) -> u64 {
+    let leaves = usize::try_from(leaves).unwrap_or(usize::MAX);
+    let covered = read_ledger_lines(ledger_dir)
+        .iter()
+        .take(leaves)
+        .filter(|record| !is_padding_record(record))
+        .count();
+    u64::try_from(covered).unwrap_or(u64::MAX)
 }
 
 /// Inverts an MMR total-node count back to the LEAF count it covers.
@@ -221,7 +255,12 @@ fn read_checkpoint_card(ledger_dir: &Path) -> Value {
             .and_then(Value::as_u64)
             .and_then(mmr_leaf_count);
         if let Some(leaves) = carried_leaf.or(derived_leaf) {
+            // The leaf count stays the checkpoint's own fact (padding leaves
+            // included: they are covered too). What it covers in RECORDS is
+            // what the chain strip and "Your records" compare with the record
+            // count, so padding never makes unsealed records read as sealed.
             card["covered_leaf_count"] = json!(leaves);
+            card["covered_record_count"] = json!(records_among_first_leaves(ledger_dir, leaves));
         }
     }
     card
@@ -3676,6 +3715,74 @@ mod tests {
         conflict_b["model_attestation"]["compute_attestation"]["x-mesh-poc-v1"] =
             json!({ "serving_provenance": { "exchange_id": "same-id" } });
         assert_ne!(exchange_key_for(&conflict_a), exchange_key_for(&conflict_b));
+    }
+
+    fn padding_line(n: usize) -> Value {
+        json!({
+            "capsule_id": format!("{n:064x}"),
+            "record_type": "padding",
+            "epistemic_type": "producer_claim",
+            "store_nonce": format!("{:064x}", n + 1_000),
+        })
+    }
+
+    /// Padding records are leaves, never records: no pane counts or lists one,
+    /// and a checkpoint over a padded ledger reports what it covers in records
+    /// while its leaf count still covers the padding.
+    #[test]
+    fn padding_is_never_counted_or_listed_and_is_still_covered() {
+        let dir = tempfile::tempdir().unwrap();
+        // Two real records, then 6 padding lines up to a checkpoint over all 8
+        // leaves, then one real record sealed after the checkpoint.
+        let mut lines = vec![
+            fixture_record("cap-1", "2026-09-01T00:00:00Z", "req-1", None),
+            fixture_record("cap-2", "2026-09-01T00:01:00Z", "req-2", Some("cap-1")),
+        ];
+        lines.extend((0..6).map(padding_line));
+        lines.push(fixture_record(
+            "cap-3",
+            "2026-09-01T00:02:00Z",
+            "req-3",
+            Some("cap-2"),
+        ));
+        write_fixture_ledger(dir.path(), &lines);
+        std::fs::write(
+            dir.path().join("checkpoints.jsonl"),
+            "{\"kind\":\"mmr_checkpoint\",\"mmr_size\":15,\"root\":\"aa\",\"timestamp\":\"2026-09-01T00:01:30Z\",\"witnesses\":[]}\n",
+        )
+        .unwrap();
+
+        let pane_a = build_pane_json("pane-a", dir.path(), None).unwrap();
+        let ids: Vec<&str> = pane_a["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["capsule_id"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            ids,
+            ["cap-1", "cap-2", "cap-3"],
+            "Pane A lists records only"
+        );
+        // The checkpoint's own fact: 15 nodes = 8 leaves, padding included.
+        assert_eq!(pane_a["card"]["covered_leaf_count"], json!(8));
+        // In records it covers the two before it, not cap-3 after it.
+        assert_eq!(pane_a["card"]["covered_record_count"], json!(2));
+
+        let pane_c = build_pane_json("pane-c", dir.path(), None).unwrap();
+        assert_eq!(
+            pane_c["rows"].as_array().unwrap().len(),
+            3,
+            "Exchanges list records only"
+        );
+        let pane_b = build_pane_json("pane-b", dir.path(), None).unwrap();
+        assert!(!serde_json::to_string(&pane_b).unwrap().contains("padding"));
+        assert_eq!(read_capsule_records(dir.path()).len(), 3);
+        assert_eq!(
+            read_ledger_lines(dir.path()).len(),
+            9,
+            "the ledger itself keeps every leaf"
+        );
     }
 
     #[test]

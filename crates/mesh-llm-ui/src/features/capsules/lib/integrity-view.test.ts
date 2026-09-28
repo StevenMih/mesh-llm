@@ -14,7 +14,7 @@ import {
   INTEGRITY_TILE_INFO,
   RETENTION_FACT
 } from '@/features/capsules/lib/integrity-view'
-import { ownerLinked } from '@/features/capsules/lib/integrity-view'
+import { coveredRecordCount, ownerLinked } from '@/features/capsules/lib/integrity-view'
 import type { RecomputedIdentity } from '@/features/capsules/lib/recompute-identity'
 import { buildChecksRows } from '@/features/capsules/lib/security-checks-view'
 
@@ -209,6 +209,23 @@ describe('buildRegistrationCopy — only renders once a checkpoint exists', () =
 
     const withoutDate = buildRegistrationCopy({ checkpoint_count: 1, witnesses: [] })
     expect(withoutDate?.registeredNoLaterThan).toBeNull()
+  })
+})
+
+describe('coveredRecordCount — coverage in records, never padding leaves', () => {
+  it('reads the records a checkpoint covers, not its leaf count', () => {
+    // 8 leaves covered, of which 6 are padding: 2 records are covered.
+    expect(coveredRecordCount({ covered_leaf_count: 8, covered_record_count: 2 })).toBe(2)
+  })
+
+  it('is unknown, never the leaf count, when the host reports no record count', () => {
+    expect(coveredRecordCount({ covered_leaf_count: 8 })).toBeNull()
+    expect(coveredRecordCount(null)).toBeNull()
+  })
+
+  it('so a padded checkpoint never reads unsealed records as sealed', () => {
+    const covered = coveredRecordCount({ covered_leaf_count: 8, covered_record_count: 2 })
+    expect(chainStripCaption(3, 1, covered)).not.toMatch(/^All 3/)
   })
 })
 
