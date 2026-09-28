@@ -1276,7 +1276,7 @@ pub(super) fn build_pane_b_with_settlements(
     // attribute to that one row ([mesh-closed-pane-b-sibling-attribution]'s
     // fix, preserved); a `node:`-labeled local group merges onto a signing-key
     // row only when the evidence carries the same node id.
-    let mut attribution = peer_attribution(&siblings_by_key);
+    let mut attribution = peer_attribution(records, received_provenance, &siblings_by_key);
     // BTreeMap: deterministic (sorted) peer ordering; attributed peers first,
     // the unattributed residual last -- so an all-unattributed ledger yields
     // exactly the prior single-row output (rows[0] == the residual).
@@ -1488,7 +1488,35 @@ struct PeerAttribution {
     node_alias_to_row_key: HashMap<String, String>,
 }
 
+/// For each exchange key, the node THIS node's own requester record says its
+/// host routed the exchange to (`served_by_node_id` on a `requested` record
+/// we sealed ourselves, never a received one). That id is ours, not the
+/// peer's word, so it is one the console may block by.
+fn own_routed_node_by_key(
+    records: &[Value],
+    received_provenance: &HashMap<String, ReceivedProvenance>,
+) -> HashMap<String, String> {
+    let mut by_key = HashMap::new();
+    for record in records {
+        let received = record
+            .get("capsule_id")
+            .and_then(Value::as_str)
+            .is_some_and(|id| received_provenance.contains_key(id));
+        if received || label_role(record) != "requested" {
+            continue;
+        }
+        if let (Some(key), Some(node)) =
+            (exchange_key_for(record), full_counterparty_node_id(record))
+        {
+            by_key.entry(key).or_insert(node);
+        }
+    }
+    by_key
+}
+
 fn peer_attribution(
+    records: &[Value],
+    received_provenance: &HashMap<String, ReceivedProvenance>,
     siblings_by_key: &HashMap<String, Vec<CorrelatedSibling<'_>>>,
 ) -> PeerAttribution {
     let mut attribution = PeerAttribution {
@@ -1496,15 +1524,26 @@ fn peer_attribution(
         identity_by_row_key: HashMap::new(),
         node_alias_to_row_key: HashMap::new(),
     };
+    let own_routed = own_routed_node_by_key(records, received_provenance);
     for (key, siblings) in siblings_by_key {
         // A single exchange key correlates one counterparty half; take the
         // first sibling whose evidence resolves to any identity at all.
-        let Some((row_key, identity)) = siblings.iter().find_map(|sibling| {
+        let Some((row_key, mut identity)) = siblings.iter().find_map(|sibling| {
             let identity = sibling_peer_identity(sibling.record, sibling.provenance);
             peer_row_key(&identity).map(|row_key| (row_key, identity))
         }) else {
             continue;
         };
+        // Our own record of this exchange names the node our host routed it
+        // to: that id is ours, so it replaces the peer's own claim about
+        // itself (a requester that has only asked can then stop routing to
+        // it). A peer's self-asserted id alone stays `their_record`.
+        if let Some(node) = own_routed.get(key)
+            && (identity.node_id.is_none() || identity.node_id_self_asserted)
+        {
+            identity.node_id = Some(node.clone());
+            identity.node_id_self_asserted = false;
+        }
         attribution
             .row_key_by_exchange_key
             .insert(key.clone(), row_key.clone());
@@ -1738,7 +1777,7 @@ pub(super) fn build_pane_c_list_with_settlements(
     // record routed to (`served_by_node_id`) -- naming whom we asked is not a
     // claim to hold their half; the right cell still says OPEN.
     let siblings_by_key = received_siblings_by_key(records, received_provenance);
-    let attribution = peer_attribution(&siblings_by_key);
+    let attribution = peer_attribution(records, received_provenance, &siblings_by_key);
 
     // A sibling this node RECEIVED (has a provenance line) is `theirs`;
     // everything else in the group is `mine` (self-sealed here). This is the
@@ -2779,9 +2818,11 @@ mod tests {
     fn pane_b_labels_a_self_asserted_node_id_as_their_record() {
         let peer_key = "71eb26f8e583ccc99e0ae72e1eee88ead06a81159d8e721ba98eeffe5c30550d";
         let claimed = format!("b0b0{}", "4".repeat(60));
+        // Our own record names no serving node, so the only node id on the
+        // row is the peer's own claim.
         let local_requested = mesh_half_served_by(
             "a".repeat(64).as_str(), "requested",
-            "d".repeat(64).as_str(), "e".repeat(64).as_str(), "me-1", &claimed);
+            "d".repeat(64).as_str(), "e".repeat(64).as_str(), "me-1", "unknown");
         let pushed_served = with_key(
             mesh_half_served_by(
                 "b".repeat(64).as_str(), "served",
@@ -2800,6 +2841,66 @@ mod tests {
             .expect("the pushing peer is keyed by its signing key");
         assert_eq!(key_row["identity"]["node_id"], json!(claimed));
         assert_eq!(key_row["identity"]["node_id_source"], json!("their_record"));
+    }
+
+    /// The requester side: we only asked. Our own record of the exchange
+    /// names the node our host routed it to, so the peer row's node id is
+    /// ours and the console can stop routing to it -- whatever the peer's
+    /// own record claims about itself. MUTANT: drop the own-routed join and
+    /// the row reads `their_record` (not blockable) or the peer's claim.
+    #[test]
+    fn pane_b_takes_the_node_id_our_own_requester_record_routed_to() {
+        let peer_key = "71eb26f8e583ccc99e0ae72e1eee88ead06a81159d8e721ba98eeffe5c30550d";
+        let routed = format!("c1f5{}", "5".repeat(60));
+        for claimed in [routed.clone(), format!("b0b0{}", "4".repeat(60))] {
+            let local_requested = mesh_half_served_by(
+                "a".repeat(64).as_str(), "requested",
+                "d".repeat(64).as_str(), "e".repeat(64).as_str(), "me-1", &routed);
+            let pushed_served = with_key(
+                mesh_half_served_by(
+                    "b".repeat(64).as_str(), "served",
+                    "d".repeat(64).as_str(), "e".repeat(64).as_str(), "them-1", &claimed),
+                peer_key,
+            );
+            let provenance: HashMap<String, ReceivedProvenance> =
+                [provenance_for("b".repeat(64).as_str(), "e5ba9d1001")].into_iter().collect();
+
+            let pane = build_pane_b(&[local_requested, pushed_served], &provenance);
+            let rows = pane["rows"].as_array().unwrap();
+            assert_eq!(rows.len(), 1, "one peer row");
+            assert_eq!(rows[0]["peer_id"], json!("key:71eb26f8e583ccc9"));
+            assert_eq!(
+                rows[0]["identity"]["node_id"],
+                json!(routed),
+                "the node our host routed to"
+            );
+            assert_eq!(rows[0]["identity"]["node_id_source"], json!("your_records"));
+        }
+    }
+
+    /// A node id from a record we RECEIVED never counts as ours, even on a
+    /// requested-role record: only our own records route.
+    #[test]
+    fn a_received_requested_record_never_supplies_our_routed_node() {
+        let peer_key = "71eb26f8e583ccc99e0ae72e1eee88ead06a81159d8e721ba98eeffe5c30550d";
+        let claimed = format!("b0b0{}", "4".repeat(60));
+        let pushed_requested = with_key(
+            mesh_half_served_by(
+                "b".repeat(64).as_str(),
+                "requested",
+                "d".repeat(64).as_str(),
+                "e".repeat(64).as_str(),
+                "them-1",
+                &claimed,
+            ),
+            peer_key,
+        );
+        let provenance: HashMap<String, ReceivedProvenance> =
+            [provenance_for("b".repeat(64).as_str(), "e5ba9d1001")]
+                .into_iter()
+                .collect();
+        let own = own_routed_node_by_key(&[pushed_requested], &provenance);
+        assert!(own.is_empty());
     }
 
     /// The bridge case: the citing record carries `received_from_node_id`
