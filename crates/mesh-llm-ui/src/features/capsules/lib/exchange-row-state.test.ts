@@ -231,6 +231,60 @@ describe('deriveRightCellState — the ONE gate: pushed and fetched halves take 
     expect(state.kind).toBe('contradicted')
   })
 
+  describe('attack D: a swapped model never reads CLOSED', () => {
+    const asked = 'a'.repeat(64)
+    const swapped = 'b'.repeat(64)
+    function withWeights(
+      body: Record<string, unknown>,
+      modelId: string,
+      attested?: string,
+      served?: string
+    ): Record<string, unknown> {
+      const attestation = body.model_attestation as Record<string, Record<string, unknown>>
+      const compute = attestation.compute_attestation
+      const poc = compute['x-mesh-poc-v1'] as Record<string, Record<string, unknown>>
+      return {
+        ...body,
+        model_attestation: {
+          ...attestation,
+          model_id: modelId,
+          compute_attestation: {
+            ...compute,
+            ...(attested ? { weights_digest: { digest: attested } } : {}),
+            'x-mesh-poc-v1': {
+              ...poc,
+              serving_provenance: {
+                ...poc.serving_provenance,
+                ...(served ? { model: { weights_digest: served } } : {})
+              }
+            }
+          }
+        }
+      }
+    }
+    const kindFor = (ourModelId: string, theirModelId: string, attested: string, served: string) => {
+      const theirs = fixtureTheirsCell('agrees')
+      const record = withWeights(theirs.record as Record<string, unknown>, theirModelId, attested, served)
+      const ours = withWeights(fixtureHalfBody({ capsuleId: 'mine-1' }), ourModelId) as CapsuleRecord
+      return deriveRightCellState(pushedRow({ ...theirs, record }), undefined, ours).kind
+    }
+    const askedId = `local-gguf/sha256-${asked}`
+    const swappedId = `local-gguf/sha256-${swapped}`
+
+    it('control: every weights claim names the asked weights -> CLOSED', () => {
+      expect(kindFor(askedId, askedId, asked, asked)).toBe('closed')
+    })
+    it('case 1: only the serving provenance weights swapped -> CONTRADICTED', () => {
+      expect(kindFor(askedId, askedId, asked, swapped)).toBe('contradicted')
+    })
+    it('case 2: model_id and both weights fields swapped together -> CONTRADICTED', () => {
+      expect(kindFor(askedId, swappedId, swapped, swapped)).toBe('contradicted')
+    })
+    it('alias: our model_id is a name with no weights -> CLOSED', () => {
+      expect(kindFor('qwen', askedId, asked, asked)).toBe('closed')
+    })
+  })
+
   it('PROVISIONAL provider check (i): a pushed body naming a different server -> not CLOSED', () => {
     const theirs = fixtureTheirsCell('agrees')
     const record = fixtureHalfBody({ capsuleId: theirs.capsule_id ?? undefined, servedBy: 'd'.repeat(64) })

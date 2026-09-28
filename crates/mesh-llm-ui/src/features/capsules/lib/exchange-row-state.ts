@@ -125,6 +125,47 @@ function digestsDisagree(
   })
 }
 
+const WEIGHTS_PATHS = [
+  ['model_attestation', 'compute_attestation', 'weights_digest', 'digest'],
+  ['model_attestation', 'compute_attestation', 'x-mesh-poc-v1', 'serving_provenance', 'model', 'weights_digest']
+] as const
+
+/** Every weights digest a record claims (64 lower-hex): the compute
+ *  attestation's, the serving provenance's, and the hex after `sha256-` /
+ *  `sha256:` in `model_id`. A model name alone is never a claim (names alias).
+ *  Mirrors the host's `weights_claims`. */
+function weightsClaims(record: Record<string, unknown> | null | undefined): Set<string> {
+  const claims = new Set<string>()
+  const isDigest = (value: string) => /^[0-9a-f]{64}$/.test(value)
+  for (const path of WEIGHTS_PATHS) {
+    const value = recordString(record, path)?.toLowerCase()
+    if (value && isDigest(value)) claims.add(value)
+  }
+  const modelId = recordString(record, ['model_attestation', 'model_id'])?.toLowerCase()
+  if (modelId) {
+    for (const marker of ['sha256-', 'sha256:']) {
+      const start = modelId.indexOf(marker)
+      if (start < 0) continue
+      const hex = modelId.slice(start + marker.length, start + marker.length + 64)
+      if (isDigest(hex)) claims.add(hex)
+    }
+  }
+  return claims
+}
+
+/** Attack D: the provider's half names two different weights itself, or
+ *  weights disjoint from ours -- the model was swapped, whatever the digests
+ *  say. */
+function modelSwapped(
+  localRecord: CapsuleRecord | null | undefined,
+  peerRecord: Record<string, unknown> | null
+): boolean {
+  const ours = weightsClaims(localRecord)
+  const theirs = weightsClaims(peerRecord)
+  if (theirs.size > 1) return true
+  return ours.size > 0 && theirs.size > 0 && ![...theirs].some((claim) => ours.has(claim))
+}
+
 const SERVED_BY_PATH = [
   'model_attestation',
   'compute_attestation',
@@ -192,6 +233,7 @@ function counterpartyHalfState(
   if (evidence.signatureOk !== true) return 'open_not_held'
   if (!fromProvider) return 'open_not_held'
   if (digestsDisagree(localRecord, evidence.peerRecord)) return 'contradicted'
+  if (modelSwapped(localRecord, evidence.peerRecord)) return 'contradicted'
   if (digestsCiteOurHalf(localRecord, evidence.peerRecord)) return 'closed'
   return 'open_not_held'
 }
