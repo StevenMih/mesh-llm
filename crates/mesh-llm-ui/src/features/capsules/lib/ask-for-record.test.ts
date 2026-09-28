@@ -98,6 +98,16 @@ describe('judgeAskReply', () => {
     expect(stateAfterAsk(waitingRow(), outcome, null).kind).toBe('open_refused')
   })
 
+  it('reads a signed coverage lag as not yet provable: the row stays asked and can ask again', async () => {
+    const outcome = await judgeAskReply(
+      { kind: 'answer', answer: signedRefusal('coverage_unsatisfiable') },
+      null,
+      ASKED_AT
+    )
+    expect(outcome.kind).toBe('no_reply')
+    expect(stateAfterAsk(waitingRow(), outcome, null)).toEqual({ kind: 'open_asked', date: ASKED_AT })
+  })
+
   it('never takes a refusal whose signature does not verify', async () => {
     const forged = { ...signedRefusal('no_such_record'), reason: 'policy_decline' }
     const outcome = await judgeAskReply({ kind: 'answer', answer: forged }, null, ASKED_AT)

@@ -6,7 +6,9 @@
 //
 //   - a refusal counts only if its signature verifies under the key it names;
 //     `no_such_record` is their signed "I have no record of this", any other
-//     reason is a signed decline;
+//     reason is a signed decline, except `coverage_unsatisfiable`: they hold
+//     the record but can't prove it yet (no checkpoint covers it), so the row
+//     stays asked and can ask again;
 //   - a record goes through THE row gate (`deriveRightCellState`) as a fetched
 //     half: it closes the row only if its id recomputes, its signature
 //     verifies, it came from the node that served us and both digests equal
@@ -42,6 +44,9 @@ export type AskTarget = { peerId: string; nonce: string }
 
 const FULL_ID = /^[0-9a-f]{64}$/
 const NO_SUCH_RECORD = 'no_such_record'
+/** They hold the record but no checkpoint covers it yet: a lag, never a
+ *  decline. Asking again later can succeed. */
+const COVERAGE_LAG = 'coverage_unsatisfiable'
 
 function obj(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null
@@ -148,6 +153,9 @@ export async function judgeAskReply(
       return { kind: 'no_reply', at: askedAt, detail: 'their reply is signed with a key that does not verify it' }
     }
     const at = str(answer.issued_at) ?? askedAt
+    if (answer.reason === COVERAGE_LAG) {
+      return { kind: 'no_reply', at: askedAt, detail: 'they hold the record but cannot prove it yet; ask again later' }
+    }
     return answer.reason === NO_SUCH_RECORD ? { kind: 'no_record', at } : { kind: 'refused', at, reason: answer.reason }
   }
   const receipts = (Array.isArray(answer?.bundles) ? answer.bundles : [])
