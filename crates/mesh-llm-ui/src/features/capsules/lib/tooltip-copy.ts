@@ -313,3 +313,8 @@ export const YOUR_DEALINGS_TITLE = 'Your dealings with them'
 export const ROUTING_STOPPED_LABEL = 'routing stopped'
 export const ROUTING_STOPPED_TOOLTIP =
   'Your node isn’t sending requests to this peer, by your choice. Nobody else is told.'
+
+/** u108: where a check result in the checks panel came from, in words. */
+export const CHECK_SOURCE_WORDS = { here: 'checked here', node: 'node says' } as const
+export const CHECK_SOURCE_LEGEND =
+  'checked here = your browser redid this check just now; node says = taken from this node without re-checking.'
