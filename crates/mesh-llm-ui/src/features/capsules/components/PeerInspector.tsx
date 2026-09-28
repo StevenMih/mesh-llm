@@ -138,10 +138,15 @@ export function PeerInspector({ open, onClose, row, points, routing }: PeerInspe
               </DialogPrimitive.Close>
             </SharedModalHeader>
             <SharedModalBody className="min-h-0 flex-1 overflow-y-auto p-0">
+              {/* u100 (12): four tabs share the drill's width and a long label
+                 wraps, so the strip never clips "Exchanges" off its end. */}
               <TabPanel<PeerInspectorTab>
                 ariaLabel="Peer inspector sections"
                 contentClassName="px-5 pb-5 pt-4"
                 defaultValue="overview"
+                listClassName="h-auto min-h-[56px] w-full"
+                stretchTabs
+                triggerClassName="h-auto min-h-[44px] whitespace-normal px-2 py-2 text-center leading-tight"
                 tabs={[
                   {
                     value: 'overview',
