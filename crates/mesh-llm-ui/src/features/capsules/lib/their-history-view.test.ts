@@ -107,7 +107,7 @@ describe('their history -- "never asked" is never a zero', () => {
 
   it('a carried inbound log with nothing from this peer is a real zero, not "not shown"', () => {
     const view = askedOfYouView({ ...NEVER_ASKED, asked_of_you: { entries: [] } })
-    expect(view).toMatchObject({ kind: 'shown', asked: 0, answered: 0, text: '0 requests of you · 0 answered' })
+    expect(view).toMatchObject({ kind: 'shown', asked: 0, answered: 0, text: '0 requests that named you · 0 answered' })
   })
 
   it('a never-enriched card reads "not shown", not zero delivered', () => {
@@ -221,7 +221,7 @@ describe('asked of you', () => {
     })
     expect(view.kind).toBe('shown')
     if (view.kind !== 'shown') return
-    expect(view.text).toBe('2 requests of you · 1 answered')
+    expect(view.text).toBe('2 requests that named you · 1 answered')
     expect(view.lines).toEqual([
       {
         when: '26 Sep 06:00 UTC',

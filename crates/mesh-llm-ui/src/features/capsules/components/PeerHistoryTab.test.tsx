@@ -93,7 +93,7 @@ describe('PeerHistoryTab', () => {
       within(section('Verdicts on their exchanges')).getByText('1 · 0 acknowledged · 1 disputed')
     ).toBeInTheDocument()
     const asked = section('Asked of you')
-    expect(within(asked).getByText('1 request of you · 0 answered')).toBeInTheDocument()
+    expect(within(asked).getByText('1 request that named you · 0 answered')).toBeInTheDocument()
     expect(within(asked).getByText(/not shared under the sharing setting/)).toBeInTheDocument()
   })
 })

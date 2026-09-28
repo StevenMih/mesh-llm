@@ -211,7 +211,12 @@ pub(super) fn attach_asked_of_you(pane_b: &mut Value, entries: &[Value]) {
         return;
     };
     for row in rows {
-        row["asked_of_you"] = json!({ "entries": entries });
+        // Each entry's requester id is what the request declared about
+        // itself, never an identity this node checked.
+        row["asked_of_you"] = json!({
+            "entries": entries,
+            "requester_id_source": "self_declared",
+        });
     }
 }
 
@@ -4156,6 +4161,10 @@ mod tests {
         assert_eq!(
             pane["rows"][1]["asked_of_you"]["entries"][0]["subject_kind"],
             json!("record")
+        );
+        assert_eq!(
+            pane["rows"][0]["asked_of_you"]["requester_id_source"],
+            json!("self_declared")
         );
 
         assert!(read_received_log(tempfile::tempdir().unwrap().path()).is_empty());

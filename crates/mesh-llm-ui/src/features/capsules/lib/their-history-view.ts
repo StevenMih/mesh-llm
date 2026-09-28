@@ -311,7 +311,9 @@ export function askedOfYouView(row: PaneBRow): AskedOfYouView {
   const answered = entries.filter((entry) => entry.status === 'answered').length
   return {
     kind: 'shown',
-    text: `${plural(entries.length, 'request')} of you · ${answered} answered`,
+    // The requester id is self-declared, so the visible line says only what
+    // the request named, never who sent it.
+    text: `${plural(entries.length, 'request')} that named you · ${answered} answered`,
     asked: entries.length,
     answered,
     lines: entries.map((entry) => ({

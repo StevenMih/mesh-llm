@@ -230,7 +230,9 @@ export type PaneBRow = {
   /** [mesh-evidence-history-surface] Your node's `received_log.jsonl` lines,
    *  as the producer carries them to this row. No producer emits this yet; an
    *  absent field reads as "not shown in this view", never as zero requests. */
-  asked_of_you?: { entries: AskedOfYouEntry[] }
+  /** `requester_id_source` is always `self_declared`: each entry's requester
+   *  id is what the request said about itself. */
+  asked_of_you?: { entries: AskedOfYouEntry[]; requester_id_source?: 'self_declared' }
   exchange_count: number
   first_seen: string | null
   last_seen: string | null
