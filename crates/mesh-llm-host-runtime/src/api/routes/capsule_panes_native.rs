@@ -1786,6 +1786,18 @@ fn own_routed_node_by_key(
         .collect()
 }
 
+/// A pushed half points at `node` when it names `node` as its server, or the
+/// citing record names `node` as its sender (endpoint or node id). Same rule
+/// as the plugin's `half_points_at`, so the two panes attribute identically.
+fn half_points_at(sibling: &CorrelatedSibling<'_>, node: &str) -> bool {
+    let served_by = poc_block(sibling.record)
+        .and_then(|poc| poc.pointer("/serving_provenance/served_by_node_id"))
+        .and_then(Value::as_str);
+    served_by == Some(node)
+        || sibling.provenance.received_from.trim() == node
+        || sibling.provenance.received_from_node_id.as_deref() == Some(node)
+}
+
 fn peer_attribution(
     records: &[Value],
     received_provenance: &HashMap<String, ReceivedProvenance>,
@@ -1800,18 +1812,23 @@ fn peer_attribution(
     for (key, siblings) in siblings_by_key {
         // A single exchange key correlates one counterparty half; take the
         // first sibling whose evidence resolves to any identity at all.
-        let Some((row_key, mut identity)) = siblings.iter().find_map(|sibling| {
+        let Some((sibling, row_key, mut identity)) = siblings.iter().find_map(|sibling| {
             let identity = sibling_peer_identity(sibling.record, sibling.provenance);
-            peer_row_key(&identity).map(|row_key| (row_key, identity))
+            peer_row_key(&identity).map(|row_key| (sibling, row_key, identity))
         }) else {
             continue;
         };
         // Our own record of this exchange names the node our host routed it
         // to: that id is ours, so it replaces the peer's own claim about
         // itself (a requester that has only asked can then stop routing to
-        // it). A peer's self-asserted id alone stays `their_record`.
+        // it) -- but ONLY when this half points at that node
+        // (`half_points_at`). The key is a request digest, so another node's
+        // half for the same prompt shares it; that half keeps its own id,
+        // self-asserted, and never offers a block that would stop routing to
+        // our node.
         if let Some(node) = own_routed.get(key)
             && (identity.node_id.is_none() || identity.node_id_self_asserted)
+            && half_points_at(sibling, node)
         {
             identity.node_id = Some(node.clone());
             identity.node_id_self_asserted = false;
@@ -3301,49 +3318,112 @@ mod tests {
     }
 
     /// The requester side: we only asked. Our own record of the exchange
-    /// names the node our host routed it to, so the peer row's node id is
-    /// ours and the console can stop routing to it -- whatever the peer's
-    /// own record claims about itself. MUTANT: drop the own-routed join and
-    /// the row reads `their_record` (not blockable) or the peer's claim.
+    /// names the node our host routed it to, so when the pushed half is from
+    /// that node the peer row's node id is ours and the console can stop
+    /// routing to it. MUTANT: drop the own-routed join and the row reads
+    /// `their_record` (not blockable).
     #[test]
     fn pane_b_takes_the_node_id_our_own_requester_record_routed_to() {
         let peer_key = "71eb26f8e583ccc99e0ae72e1eee88ead06a81159d8e721ba98eeffe5c30550d";
         let routed = format!("c1f5{}", "5".repeat(60));
-        for claimed in [routed.clone(), format!("b0b0{}", "4".repeat(60))] {
-            let local_requested = mesh_half_served_by(
-                "a".repeat(64).as_str(),
-                "requested",
+        let local_requested = mesh_half_served_by(
+            "a".repeat(64).as_str(),
+            "requested",
+            "d".repeat(64).as_str(),
+            "e".repeat(64).as_str(),
+            "me-1",
+            &routed,
+        );
+        let pushed_served = with_key(
+            mesh_half_served_by(
+                "b".repeat(64).as_str(),
+                "served",
                 "d".repeat(64).as_str(),
                 "e".repeat(64).as_str(),
-                "me-1",
+                "them-1",
                 &routed,
-            );
-            let pushed_served = with_key(
+            ),
+            peer_key,
+        );
+        let provenance: HashMap<String, ReceivedProvenance> =
+            [provenance_for("b".repeat(64).as_str(), "e5ba9d1001")]
+                .into_iter()
+                .collect();
+
+        let pane = build_pane_b(&[local_requested, pushed_served], &provenance);
+        let rows = pane["rows"].as_array().unwrap();
+        assert_eq!(rows.len(), 1, "one peer row");
+        assert_eq!(rows[0]["peer_id"], json!("key:71eb26f8e583ccc9"));
+        assert_eq!(
+            rows[0]["identity"]["node_id"],
+            json!(routed),
+            "the node our host routed to"
+        );
+        assert_eq!(rows[0]["identity"]["node_id_source"], json!("your_records"));
+    }
+
+    /// e2 BLOCKER: we hold one requester record routed to H under request
+    /// digest d; node M pushes a served half with the same d. M's row must
+    /// keep M's own (self-declared) id and offer no block: our id for H is
+    /// never pinned on M, so blocking M's row can never stop routing to H.
+    /// The same holds when M's half names H as its server but our citing
+    /// record says M sent it: the row is M's, by our record. MUTANT: drop
+    /// `half_points_at` and M's row reads H as `your_records`.
+    #[test]
+    fn a_half_from_another_node_under_our_digest_never_takes_our_routed_node() {
+        let m_key = "71eb26f8e583ccc99e0ae72e1eee88ead06a81159d8e721ba98eeffe5c30550d";
+        let node_h = format!("c1f5{}", "5".repeat(60));
+        let node_m = format!("b0b0{}", "4".repeat(60));
+        let d = "d".repeat(64);
+        let to_h = mesh_half_served_by(
+            "a".repeat(64).as_str(),
+            "requested",
+            &d,
+            "e".repeat(64).as_str(),
+            "me-1",
+            &node_h,
+        );
+        // (the half's served_by, the sender the citing record names)
+        for (served_by, sender) in [(&node_m, None), (&node_h, Some(node_m.clone()))] {
+            let from_m = with_key(
                 mesh_half_served_by(
                     "b".repeat(64).as_str(),
                     "served",
-                    "d".repeat(64).as_str(),
+                    &d,
                     "e".repeat(64).as_str(),
                     "them-1",
-                    &claimed,
+                    served_by,
                 ),
-                peer_key,
+                m_key,
             );
-            let provenance: HashMap<String, ReceivedProvenance> =
-                [provenance_for("b".repeat(64).as_str(), "e5ba9d1001")]
-                    .into_iter()
-                    .collect();
+            let mut prov = provenance_for("b".repeat(64).as_str(), "e5ba9d1001");
+            prov.1.received_from_node_id = sender.clone();
+            let provenance: HashMap<String, ReceivedProvenance> = [prov].into_iter().collect();
 
-            let pane = build_pane_b(&[local_requested, pushed_served], &provenance);
-            let rows = pane["rows"].as_array().unwrap();
-            assert_eq!(rows.len(), 1, "one peer row");
-            assert_eq!(rows[0]["peer_id"], json!("key:71eb26f8e583ccc9"));
+            let pane = build_pane_b(&[to_h.clone(), from_m], &provenance);
+            let m_row = pane["rows"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|r| r["peer_id"] == json!("key:71eb26f8e583ccc9"))
+                .expect("M's row, keyed by its signing key");
+            // Never H. M's own id: self-declared from its half, or ours when
+            // our citing record names M as the sender.
             assert_eq!(
-                rows[0]["identity"]["node_id"],
-                json!(routed),
-                "the node our host routed to"
+                m_row["identity"]["node_id"],
+                json!(node_m),
+                "sender {sender:?}"
             );
-            assert_eq!(rows[0]["identity"]["node_id_source"], json!("your_records"));
+            let expected_source = if sender.is_some() {
+                "your_records"
+            } else {
+                "their_record"
+            };
+            assert_eq!(
+                m_row["identity"]["node_id_source"],
+                json!(expected_source),
+                "sender {sender:?}"
+            );
         }
     }
 
