@@ -305,12 +305,7 @@ impl PeerBlocks {
         self.update(|store| {
             store.prune(now_ms);
             store.blocks.remove(&peer_key(peer))?;
-            Some(store.push_choice(
-                RoutingChange::Unblock,
-                peer_key(peer),
-                now_ms,
-                None,
-            ))
+            Some(store.push_choice(RoutingChange::Unblock, peer_key(peer), now_ms, None))
         })
     }
 
@@ -366,7 +361,11 @@ mod tests {
         let undone = blocks.unblock(&bad, 5).unwrap().expect("was blocked");
         assert_eq!(undone.change, RoutingChange::Unblock);
         assert!(!blocks.is_blocked(&bad, 10));
-        assert_eq!(blocks.unblock(&bad, 11).unwrap(), None, "nothing left to undo");
+        assert_eq!(
+            blocks.unblock(&bad, 11).unwrap(),
+            None,
+            "nothing left to undo"
+        );
         assert_ne!(block.id, undone.id, "same millisecond, still two choices");
         assert_ne!(block.salt, undone.salt);
         let (_, choices) = blocks.snapshot(12);
@@ -426,7 +425,10 @@ mod tests {
         let blocks = PeerBlocks::load(&not_a_dir);
         let bad = peer();
         assert!(blocks.block(&bad, BlockLength::UntilUndone, 0).is_err());
-        assert!(!blocks.is_blocked(&bad, 1), "an unsaved block is never enforced");
+        assert!(
+            !blocks.is_blocked(&bad, 1),
+            "an unsaved block is never enforced"
+        );
         assert!(blocks.snapshot(1).1.is_empty(), "and never listed");
     }
 

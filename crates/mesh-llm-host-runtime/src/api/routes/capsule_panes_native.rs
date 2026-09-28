@@ -717,7 +717,10 @@ fn is_received_record(
 /// record whose answer differs is a separate exchange (the same request asked
 /// again, answered differently).
 fn push_own<'a>(own: &mut Vec<&'a Value>, record: &'a Value) {
-    if !own.iter().any(|o| response_digest(o) == response_digest(record)) {
+    if !own
+        .iter()
+        .any(|o| response_digest(o) == response_digest(record))
+    {
         own.push(record);
     }
 }
@@ -821,7 +824,10 @@ fn distinct_exchange_count(
     records: &[Value],
     received_provenance: &HashMap<String, ReceivedProvenance>,
 ) -> usize {
-    let uncorrelated = records.iter().filter(|r| exchange_key_for(r).is_none()).count();
+    let uncorrelated = records
+        .iter()
+        .filter(|r| exchange_key_for(r).is_none())
+        .count();
     let paired: usize = exchange_groups(records, received_provenance)
         .iter()
         .map(|(_, own, received)| pair_one_to_one(own, received).len())
@@ -1177,8 +1183,7 @@ fn dealt_with_row(
     // pushed half) share a correlation key and must count once, so confirmed
     // reads "3 / 3", never "3 / 6". See `distinct_exchange_count`.
     let total = distinct_exchange_count(records, received_provenance);
-    let confirmed_siblings =
-        confirmed_siblings_for(records, siblings_by_key, received_provenance);
+    let confirmed_siblings = confirmed_siblings_for(records, siblings_by_key, received_provenance);
     let served_count = records.iter().filter(|r| label_role(r) == "served").count();
     let requested_count = records
         .iter()
@@ -2928,7 +2933,10 @@ mod tests {
             .find(|r| r["peer_id"] == json!(format!("node:{}", short_id(&their_node, 16))))
             .expect("the unlinked node row stays separate");
         assert_eq!(node_row["identity"]["node_id"], json!(their_node));
-        assert_eq!(node_row["identity"]["node_id_source"], json!("your_records"));
+        assert_eq!(
+            node_row["identity"]["node_id_source"],
+            json!("your_records")
+        );
         assert_eq!(node_row["identity"]["signing_key_id"], Value::Null);
 
         // Exactly these two peers -- never an endpoint row AND a key row for
@@ -2958,16 +2966,28 @@ mod tests {
         // Our own record names no serving node, so the only node id on the
         // row is the peer's own claim.
         let local_requested = mesh_half_served_by(
-            "a".repeat(64).as_str(), "requested",
-            "d".repeat(64).as_str(), "e".repeat(64).as_str(), "me-1", "unknown");
+            "a".repeat(64).as_str(),
+            "requested",
+            "d".repeat(64).as_str(),
+            "e".repeat(64).as_str(),
+            "me-1",
+            "unknown",
+        );
         let pushed_served = with_key(
             mesh_half_served_by(
-                "b".repeat(64).as_str(), "served",
-                "d".repeat(64).as_str(), "e".repeat(64).as_str(), "them-1", &claimed),
+                "b".repeat(64).as_str(),
+                "served",
+                "d".repeat(64).as_str(),
+                "e".repeat(64).as_str(),
+                "them-1",
+                &claimed,
+            ),
             peer_key,
         );
         let provenance: HashMap<String, ReceivedProvenance> =
-            [provenance_for("b".repeat(64).as_str(), "e5ba9d1001")].into_iter().collect();
+            [provenance_for("b".repeat(64).as_str(), "e5ba9d1001")]
+                .into_iter()
+                .collect();
 
         let pane = build_pane_b(&[local_requested, pushed_served], &provenance);
         let key_row = pane["rows"]
@@ -2991,16 +3011,28 @@ mod tests {
         let routed = format!("c1f5{}", "5".repeat(60));
         for claimed in [routed.clone(), format!("b0b0{}", "4".repeat(60))] {
             let local_requested = mesh_half_served_by(
-                "a".repeat(64).as_str(), "requested",
-                "d".repeat(64).as_str(), "e".repeat(64).as_str(), "me-1", &routed);
+                "a".repeat(64).as_str(),
+                "requested",
+                "d".repeat(64).as_str(),
+                "e".repeat(64).as_str(),
+                "me-1",
+                &routed,
+            );
             let pushed_served = with_key(
                 mesh_half_served_by(
-                    "b".repeat(64).as_str(), "served",
-                    "d".repeat(64).as_str(), "e".repeat(64).as_str(), "them-1", &claimed),
+                    "b".repeat(64).as_str(),
+                    "served",
+                    "d".repeat(64).as_str(),
+                    "e".repeat(64).as_str(),
+                    "them-1",
+                    &claimed,
+                ),
                 peer_key,
             );
             let provenance: HashMap<String, ReceivedProvenance> =
-                [provenance_for("b".repeat(64).as_str(), "e5ba9d1001")].into_iter().collect();
+                [provenance_for("b".repeat(64).as_str(), "e5ba9d1001")]
+                    .into_iter()
+                    .collect();
 
             let pane = build_pane_b(&[local_requested, pushed_served], &provenance);
             let rows = pane["rows"].as_array().unwrap();
@@ -3850,7 +3882,7 @@ mod tests {
         )
         .unwrap();
 
-        let pane_a = build_pane_json("pane-a", dir.path(), None).unwrap();
+        let pane_a = build_pane_json("pane-a", dir.path(), None, PaymentsPresence::Off).unwrap();
         let ids: Vec<&str> = pane_a["rows"]
             .as_array()
             .unwrap()
@@ -3867,13 +3899,13 @@ mod tests {
         // In records it covers the two before it, not cap-3 after it.
         assert_eq!(pane_a["card"]["covered_record_count"], json!(2));
 
-        let pane_c = build_pane_json("pane-c", dir.path(), None).unwrap();
+        let pane_c = build_pane_json("pane-c", dir.path(), None, PaymentsPresence::Off).unwrap();
         assert_eq!(
             pane_c["rows"].as_array().unwrap().len(),
             3,
             "Exchanges list records only"
         );
-        let pane_b = build_pane_json("pane-b", dir.path(), None).unwrap();
+        let pane_b = build_pane_json("pane-b", dir.path(), None, PaymentsPresence::Off).unwrap();
         assert!(!serde_json::to_string(&pane_b).unwrap().contains("padding"));
         assert_eq!(read_capsule_records(dir.path()).len(), 3);
         assert_eq!(
@@ -3997,11 +4029,11 @@ mod tests {
         .unwrap();
 
         write(&[&local, &citing]);
-        let before = build_pane_json("pane-c", dir.path(), None).unwrap();
+        let before = build_pane_json("pane-c", dir.path(), None, PaymentsPresence::Off).unwrap();
         assert_eq!(before["rows"][0]["theirs"]["in_their_log"], Value::Null);
 
         write(&[&local, &citing, &inclusion]);
-        let pane_c = build_pane_json("pane-c", dir.path(), None).unwrap();
+        let pane_c = build_pane_json("pane-c", dir.path(), None, PaymentsPresence::Off).unwrap();
         assert_eq!(
             pane_c["row_count"],
             json!(1),
@@ -4011,7 +4043,7 @@ mod tests {
             pane_c["rows"][0]["theirs"]["in_their_log"],
             json!({ "leaf_index": 6, "checkpoint_records": 8 })
         );
-        let pane_a = build_pane_json("pane-a", dir.path(), None).unwrap();
+        let pane_a = build_pane_json("pane-a", dir.path(), None, PaymentsPresence::Off).unwrap();
         assert!(
             pane_a["rows"]
                 .as_array()
@@ -4493,6 +4525,7 @@ mod tests {
                 received_at: "2026-09-27T00:00:01Z".into(),
                 signature_ok: true,
                 received_from_node_id: None,
+                their_log: None,
             },
         );
         let mut settlements = SettlementIndex::default();
@@ -4577,7 +4610,10 @@ mod tests {
         assert_eq!(rows[1]["exchange_key"], json!(format!("{d}#2")));
         assert_eq!(rows[1]["mine"]["record"]["capsule_id"], json!("mine-2"));
         assert_eq!(rows[1]["digest_match"]["state"], json!(STATE_VERIFIED));
-        assert!(rows.iter().all(|r| r["digest_match"]["state"] != json!(STATE_FAILED)));
+        assert!(
+            rows.iter()
+                .all(|r| r["digest_match"]["state"] != json!(STATE_FAILED))
+        );
 
         let drill = build_pane_c_drilldown(&records, &provenance, &format!("{d}#2"));
         assert_eq!(drill["found"], json!(true));
@@ -4595,7 +4631,12 @@ mod tests {
             .as_array()
             .unwrap()
             .iter()
-            .flat_map(|r| r["confirmed_siblings"].as_array().cloned().unwrap_or_default())
+            .flat_map(|r| {
+                r["confirmed_siblings"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default()
+            })
             .collect();
         assert_eq!(siblings.len(), 1, "the half closes ONE of our records");
         assert_eq!(siblings[0]["digest_match"]["state"], json!(STATE_VERIFIED));

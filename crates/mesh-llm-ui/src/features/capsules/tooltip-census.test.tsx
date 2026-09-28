@@ -539,7 +539,7 @@ describe('settlement on the Evidence tab', () => {
     render(<LedgerPageContent />, { wrapper })
     await user.click(await screen.findByRole('tab', { name: /exchanges/i }))
     const closedRow = await screen.findByRole('group', { name: 'Exchange exch-closed' })
-    await user.click(within(closedRow).getByRole('button', { name: /checks/ }))
+    await user.click(within(closedRow).getByRole('button', { name: /how we checked/i }))
     const records = within(closedRow).getByRole('group', { name: 'payment records' })
     expect(within(records).getByText('recorded 900 msat')).toBeInTheDocument()
     expect(within(records).getAllByText('recorded 120 msat')).toHaveLength(2)
