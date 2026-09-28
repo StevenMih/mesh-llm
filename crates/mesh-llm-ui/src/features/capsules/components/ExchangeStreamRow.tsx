@@ -23,6 +23,13 @@ import {
   yourContentFixedText
 } from '@/features/capsules/lib/exchange-content-state'
 import type { ExchangeLedgerRow } from '@/features/capsules/lib/exchange-ledger'
+import {
+  askIsOffered,
+  askTarget,
+  stateAfterAsk,
+  type AskOutcome,
+  type AskTarget
+} from '@/features/capsules/lib/ask-for-record'
 import { entryRowChipMark, entryRowChipPropertyKey } from '@/features/capsules/lib/entry-row-chips'
 import { OWN_COPY_FAILS_WARNING } from '@/features/capsules/lib/tooltip-copy'
 import { checkRowDomId, exchangeRowDomId } from '@/features/capsules/lib/exchange-pages'
@@ -175,6 +182,10 @@ export type ExchangeStreamRowProps = {
   /** Toggle ② -- flips `checksExpanded` for this row (the `▸/▾ checks` control). */
   onToggleChecks: (row: ExchangeLedgerRow) => void
   onAction: (row: ExchangeLedgerRow) => void
+  /** What "Ask them for their record" produced for this row, if it asked. */
+  askOutcome?: AskOutcome | null
+  /** Sends the ask. Absent where the page can't ask (the row offers none). */
+  onAskForRecord?: (row: ExchangeLedgerRow, target: AskTarget) => void
 }
 
 export function ExchangeStreamRow({
@@ -190,7 +201,9 @@ export function ExchangeStreamRow({
   ownerLinked = null,
   onToggleContent,
   onToggleChecks,
-  onAction
+  onAction,
+  askOutcome = null,
+  onAskForRecord
 }: ExchangeStreamRowProps) {
   // Lifted here (not `SecurityChecksView`, which only mounts once `▸
   // checks` is expanded) so a fetch this hook's `.fetch()` triggers can
@@ -206,21 +219,40 @@ export function ExchangeStreamRow({
   // shows the same evidence.
   const peerFetch = usePeerLedgerRecompute(row.raw)
   const theirsRecompute = peerFetch.status === 'found' ? peerFetch : (pushedHalfRecompute(row.raw) ?? peerFetch)
-  const state = deriveRightCellState(row.raw, theirsRecompute, localRecord)
+  const gateState = deriveRightCellState(row.raw, theirsRecompute, localRecord)
+  // Once this row has asked the other side for its record, their reply (or
+  // its absence) is the state: a record goes through the same gate as a
+  // pushed one (`ask-for-record.ts`), a signed refusal reads as one.
+  const state = askOutcome ? stateAfterAsk(row.raw, askOutcome, localRecord) : gateState
   const alarm = isAlarmState(state)
+  // Whom to ask, and how to name the exchange, from our own record of it.
+  const askFor = askTarget(localRecord ?? (row.raw.mine.record as CapsuleRecord | undefined) ?? null)
   // [ledger-T1-ask-half-action] Do (2): an ask action with no recorded
   // counterparty renders no button at all, with the text branching on WHICH
   // truth holds -- a SERVED row has no remote other side to ask; an ASKED row
   // has one, but it's unknown/unrecorded. Never a single "nothing to ask yet"
   // that hides the difference.
-  const gatedByCounterparty = isAskAction(state.kind) && !row.counterparty
+  const gatedByCounterparty = isAskAction(state.kind) && !row.counterparty && !askFor
   const gatedText = row.roleTag === 'SERVED' ? NO_OTHER_SIDE_TEXT : OTHER_SIDE_NOT_KNOWN_TEXT
   const cellText = gatedByCounterparty ? gatedText : rightCellText(state)
   // UX §3: with push on, their record normally arrives when the exchange
   // finishes -- the ask is offered only once that has had time to happen.
   const nowMs = useNowMs()
   const askWaiting = isAskAction(state.kind) && !askForRecordIsDue(row.timestamp, nowMs)
-  const action = gatedByCounterparty || askWaiting ? null : rightCellAction(state)
+  // The ask is offered past the timeout on a row still waiting for their
+  // record, when we know whom to ask; never while an ask is in flight. An ask
+  // kind that can't be offered renders no button rather than a dead one.
+  const askOffered =
+    onAskForRecord !== undefined &&
+    askOutcome?.kind !== 'asking' &&
+    askIsOffered(state.kind, askFor, row.timestamp, nowMs)
+  const action = askOffered
+    ? state.kind === 'open_asked'
+      ? 'Ask again'
+      : 'Ask them for their record'
+    : gatedByCounterparty || askWaiting || isAskAction(state.kind)
+      ? null
+      : rightCellAction(state)
   // Look finding 1: the chip strip on the collapsed row must show the same
   // results as the panel, so this node's own record is recomputed for every
   // rendered row, not only an expanded one. It is a local hash + signature
@@ -386,7 +418,11 @@ export function ExchangeStreamRow({
                   // u99 (6): Compare opens this row's checks at "their record",
                   // where yours and theirs sit side by side. Other actions ask
                   // the page (a counterparty request, a statement to view).
-                  state.kind === 'contradicted' ? handleChipActivate(entryRowChipPropertyKey('theirs')) : onAction(row)
+                  state.kind === 'contradicted'
+                    ? handleChipActivate(entryRowChipPropertyKey('theirs'))
+                    : askOffered && askFor && onAskForRecord
+                      ? onAskForRecord(row, askFor)
+                      : onAction(row)
                 }
                 size="sm"
                 type="button"

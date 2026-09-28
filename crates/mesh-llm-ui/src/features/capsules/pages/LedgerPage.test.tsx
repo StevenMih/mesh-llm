@@ -46,6 +46,12 @@ vi.mock('@/features/capsules/api/sidecarClient', () => ({
   })
 }))
 
+// "Ask them for their record" (`POST /api/evidence-requests`): no peer in a
+// test, so every ask comes back unanswered unless a test says otherwise.
+vi.mock('@/features/capsules/api/evidenceRequestClient', () => ({
+  askForRecord: vi.fn().mockResolvedValue({ kind: 'no_answer', message: 'no peer in a test' })
+}))
+
 vi.mock('@/features/capsules/api/client', () => ({
   fetchCapsuleLedger: vi.fn().mockResolvedValue({ records: [], nodePubKeyPem: null }),
   fetchDisclosurePreimage: vi.fn().mockResolvedValue(null)
@@ -865,15 +871,42 @@ describe('LedgerPageContent — Part 3: Exchanges two-sided stream + row inspect
       peer_count: 1
     })
 
+    // Our own record names whom to ask (the node that served us) and the
+    // client nonce both records carry.
+    const { fetchCapsuleLedger } = await import('@/features/capsules/api/client')
+    vi.mocked(fetchCapsuleLedger).mockResolvedValue({
+      records: [
+        {
+          capsule_id: 'mine-known',
+          effect: { request_digest: 'a'.repeat(64) },
+          model_attestation: {
+            compute_attestation: {
+              'x-mesh-poc-v1': {
+                role: 'requested',
+                client_nonce: 'nonce-known',
+                serving_provenance: { served_by_node_id: 'c'.repeat(64) }
+              }
+            }
+          }
+        }
+      ],
+      nodePubKeyPem: null
+    } as never)
+    const { askForRecord } = await import('@/features/capsules/api/evidenceRequestClient')
+
     const user = userEvent.setup()
     render(<LedgerPageContent />, { wrapper: makeWrapper() })
     await user.click(screen.getByRole('tab', { name: /exchanges/i }))
 
     expect(await screen.findByText('You haven’t asked for their record.')).toBeInTheDocument()
-    const askButton = screen.getByRole('button', { name: 'Ask them for their record' })
+    const askButton = await screen.findByRole('button', { name: 'Ask them for their record' })
 
     await user.click(askButton)
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    // The ask went to the node that served us, naming the exchange by nonce,
+    // and with no answer the row says so.
+    expect(askForRecord).toHaveBeenCalledWith('c'.repeat(64), 'nonce-known')
+    expect(await screen.findByText(/^Asked .*No reply yet\.$/)).toBeInTheDocument()
 
     // Nothing on this row ever opens a dialog -- not the ask action, not
     // the `▸ checks` toggle either.

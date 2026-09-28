@@ -21,6 +21,8 @@ import { StatusBadge } from '@/components/ui/StatusBadge'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { TabPanel } from '@/components/ui/TabPanel'
 import { fetchCapsuleLedger } from '@/features/capsules/api/client'
+import { askForRecord } from '@/features/capsules/api/evidenceRequestClient'
+import { judgeAskReply, type AskOutcome, type AskTarget } from '@/features/capsules/lib/ask-for-record'
 import type { CapsuleRecord, JsonRecord } from '@/features/capsules/api/types'
 import { PaneFetchError, fetchPaneA, fetchPaneB, fetchPaneCList } from '@/features/capsules/api/sidecarClient'
 import { balanceCoverage } from '@/features/capsules/lib/balance-view'
@@ -455,13 +457,26 @@ function ExchangesSection({
   const [checksFilter, setChecksFilter] = useState<Set<string>>(new Set(ALL_CHECKS_VALUES))
   const [stateFilter, setStateFilter] = useState<Set<string>>(new Set(ALL_STATE_FILTER_VALUES))
   // [ledger-T1-ask-half-action] -- the row's action cell must never open a
-  // detail surface of its own. The evidence-request carrier this would
-  // actually dispatch through is still unwired end-to-end (exchange-row-
-  // state.ts's own forward-compat note; capsule-emit-mesh's evidence_
-  // responder.py: "not yet reachable over the wire"), so this stays a no-op
-  // stub -- honest absence of a real ask, never a fabricated one -- until
-  // that carrier lands.
+  // detail surface of its own. The remaining row actions (view a statement,
+  // ask them to state their content) have no carrier yet, so they stay a
+  // no-op -- honest absence, never a fabricated result.
   const handleAskForHalf = useCallback((_row: ExchangeLedgerRow) => {}, [])
+
+  // "Ask them for their record": one evidence request to the other side over
+  // the mesh (`POST /api/evidence-requests`), judged in `ask-for-record.ts`.
+  // The row shows "Asked …" at once, then whatever their reply proves.
+  const [askOutcomes, setAskOutcomes] = useState<ReadonlyMap<string, AskOutcome>>(() => new Map())
+  const handleAskForRecord = useCallback((row: ExchangeLedgerRow, target: AskTarget) => {
+    const askedAt = new Date().toISOString()
+    const record = row.raw.mine.record as { effect?: { request_digest?: unknown } } | undefined
+    const requestDigest = typeof record?.effect?.request_digest === 'string' ? record.effect.request_digest : null
+    const settle = (outcome: AskOutcome) =>
+      setAskOutcomes((previous) => new Map(previous).set(row.exchangeKey, outcome))
+    settle({ kind: 'asking', at: askedAt })
+    void askForRecord(target.peerId, target.nonce)
+      .then((reply) => judgeAskReply(reply, requestDigest, askedAt))
+      .then(settle)
+  }, [])
 
   // [mesh-ledger-b3-paging] -- windowed paging (v3 §2a) state. `pageIndex`
   // is the source of truth; render/handlers read `safePageIndex` so a
@@ -997,6 +1012,8 @@ function ExchangesSection({
                         }
                         nodePubKeyPem={nodePubKeyPem}
                         onAction={handleAskForHalf}
+                        askOutcome={askOutcomes.get(row.exchangeKey) ?? null}
+                        onAskForRecord={handleAskForRecord}
                         ownerLinked={nodeOwnerLinked}
                         onToggleChecks={handleToggleChecks}
                         onToggleContent={handleToggleContent}

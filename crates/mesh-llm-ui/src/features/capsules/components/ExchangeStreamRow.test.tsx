@@ -28,7 +28,18 @@ const RESPONSE_DIGEST = 'b'.repeat(64)
  *  `toggleProps()` on every render -- harmless for every non-`closed` kind,
  *  since `deriveRightCellState` never reads `localRecord` unless
  *  `idMatch`/`signatureOk` both already came back true. */
-const LOCAL_RECORD_WITH_DIGESTS: CapsuleRecord = fixtureHalfBody({ capsuleId: 'mine-1' }) as CapsuleRecord
+/** Our requested record: the digests, the node that served it, and the client
+ *  nonce both records carry -- what "Ask them for their record" names the
+ *  exchange by. */
+const LOCAL_RECORD_WITH_DIGESTS: CapsuleRecord = (() => {
+  const body = fixtureHalfBody({ capsuleId: 'mine-1' })
+  const poc = (body.model_attestation as Record<string, Record<string, Record<string, unknown>>>).compute_attestation[
+    'x-mesh-poc-v1'
+  ]
+  poc.role = 'requested'
+  poc.client_nonce = 'nonce-mine-1'
+  return body as CapsuleRecord
+})()
 
 // [mesh-console-evidence-tab-honesty-defects] finding 1: `ExchangeStreamRow`
 // now derives its own right-cell state from `row.raw` + a live
@@ -150,12 +161,23 @@ function makeRow(kind: RightCellStateKind, overrides: Partial<ExchangeLedgerRow>
   }
 }
 
+/** Our record when it names no other side: nothing to ask, whatever the time. */
+const RECORD_NAMING_NO_PEER: CapsuleRecord = fixtureHalfBody({
+  capsuleId: 'mine-1',
+  servedBy: 'unknown'
+}) as CapsuleRecord
+
 const NO_RAIL: RailSegment = { hasRail: false, isSegmentStart: false }
 
 /** Every test needs these two now that the modal is gone -- named to make
  *  call sites read like "row props", not boilerplate. */
 function toggleProps() {
-  return { localRecord: LOCAL_RECORD_WITH_DIGESTS, onToggleChecks: vi.fn(), onToggleContent: vi.fn() }
+  return {
+    localRecord: LOCAL_RECORD_WITH_DIGESTS,
+    onToggleChecks: vi.fn(),
+    onToggleContent: vi.fn(),
+    onAskForRecord: vi.fn()
+  }
 }
 
 describe('ExchangeStreamRow — L-A/L-B alarm styling', () => {
@@ -210,7 +232,7 @@ describe('ExchangeStreamRow — the states render distinct text/status/action', 
       kind: 'open_not_given',
       text: 'Their record hasn’t arrived yet.',
       status: 'OPEN',
-      action: null
+      action: 'Ask them for their record'
     },
     {
       kind: 'open_not_asked',
@@ -401,6 +423,7 @@ describe('ExchangeStreamRow — [ledger-T1-ask-half-action] counterparty gating 
       <ExchangeStreamRow
         onAction={vi.fn()}
         {...toggleProps()}
+        localRecord={RECORD_NAMING_NO_PEER}
         rail={NO_RAIL}
         row={makeRow('open_not_asked', { counterparty: null })}
       />
@@ -421,6 +444,7 @@ describe('ExchangeStreamRow — [ledger-T1-ask-half-action] counterparty gating 
       <ExchangeStreamRow
         onAction={vi.fn()}
         {...toggleProps()}
+        localRecord={RECORD_NAMING_NO_PEER}
         rail={NO_RAIL}
         row={makeRow('open_not_asked', { counterparty: null, roleTag: 'SERVED' })}
       />
@@ -436,6 +460,7 @@ describe('ExchangeStreamRow — [ledger-T1-ask-half-action] counterparty gating 
       <ExchangeStreamRow
         onAction={vi.fn()}
         {...toggleProps()}
+        localRecord={RECORD_NAMING_NO_PEER}
         rail={NO_RAIL}
         row={makeRow('open_asked', { counterparty: null })}
       />
@@ -574,6 +599,8 @@ describe('[ledger-T4-inline-inspector] ExchangeStreamRow — the two row toggles
     const onToggleChecks = vi.fn()
     render(
       <ExchangeStreamRow
+        localRecord={LOCAL_RECORD_WITH_DIGESTS}
+        onAskForRecord={vi.fn()}
         onAction={vi.fn()}
         onToggleChecks={onToggleChecks}
         onToggleContent={onToggleContent}
