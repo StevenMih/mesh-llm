@@ -298,6 +298,9 @@ export type PayerBook = {
   matched_by_segment_only?: boolean
   /** `not_available` until the provider side emits its own observations. */
   provider_book: string
+  /** The exchange ids whose books this summary covers; the row's state is the
+   *  worst of them. */
+  exchange_ids?: string[]
 }
 
 /** Per-peer counts. Provider-side states are `null`: this node cannot see

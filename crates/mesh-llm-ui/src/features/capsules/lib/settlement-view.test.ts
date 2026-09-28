@@ -170,10 +170,20 @@ describe('Close card counts', () => {
     const noReference = { ...book('settled'), matched_by_segment_only: true }
     expect(settlementRowView(noReference)?.label).toBe('settled · your wallet · no reference')
     const counts = settlementCloseCounts([paneRow('a', noReference), paneRow('b', book('settled'))], () => false)
-    expect(counts).toMatchObject({ paid: 2, settled: 2, settledWithoutReference: 1 })
+    expect(counts).toMatchObject({ paid: 2, settled: 1, settledWithoutReference: 1 })
     expect(settlementCloseLine(counts, 'on')).toBe(
-      '2 paid · 2 settled by your wallet (1 no reference) · provider’s book: not available'
+      '2 paid · 1 settled by your wallet · 1 settled · no reference · provider’s book: not available'
     )
+  })
+
+  it('one exchange book attached to two rows is counted once', () => {
+    const shared = { ...book('settled'), exchange_ids: ['ex-1'] }
+    const other = { ...book('no_settlement_seen'), exchange_ids: ['ex-2'] }
+    const counts = settlementCloseCounts(
+      [paneRow('a', shared), paneRow('a#2', shared), paneRow('b', other)],
+      () => false
+    )
+    expect(counts).toMatchObject({ paid: 2, settled: 1, settledWithoutReference: 0 })
   })
 
   it('payments off reads as off, never as zero settled', () => {

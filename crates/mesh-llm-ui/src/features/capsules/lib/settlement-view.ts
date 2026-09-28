@@ -165,15 +165,18 @@ export type SettlementCloseCounts = {
   exchanges: number
   closed: number
   paid: number
+  /** Rows that read "settled · your wallet". */
   settled: number
-  /** Of `settled`, the rows that read "settled · your wallet · no reference". */
+  /** Rows that read "settled · your wallet · no reference". */
   settledWithoutReference: number
 }
 
 /** The Close card's counts over the pane's rows: CLOSED through the predicate
  *  passed in (Integrity passes the one its "Confirmed by the other side" tile
- *  uses), paid and settled from each row's payer-book state. A row whose
- *  terms were accepted with no invoice is priced, not paid. */
+ *  uses), paid and settled from each row's payer-book state, read through the
+ *  row's own face so the card and the rows can never disagree. A row whose
+ *  terms were accepted with no invoice is priced, not paid. A book the host
+ *  attaches to two rows (one exchange id on both) is counted once. */
 export function settlementCloseCounts(
   rows: readonly PaneCRow[],
   isClosed: (row: PaneCRow) => boolean
@@ -182,33 +185,31 @@ export function settlementCloseCounts(
   let paid = 0
   let settled = 0
   let settledWithoutReference = 0
+  const counted = new Set<string>()
   for (const row of rows) {
     if (isClosed(row)) closed += 1
-    // Read through the row's own face, so the card counts exactly the rows
-    // that say "settled" -- with or without a reference -- and nothing else.
     const view = settlementRowView(row.settlement)
-    if (view?.chip === 'paid') {
-      paid += 1
-      if (view.stateKey === 'settled') settled += 1
-      if (view.stateKey === 'settled_without_reference') {
-        settled += 1
-        settledWithoutReference += 1
-      }
-    }
+    if (view?.chip !== 'paid') continue
+    const ids = row.settlement?.exchange_ids
+    const book = ids && ids.length > 0 ? `ids:${[...ids].sort().join(' ')}` : `row:${row.exchange_key}`
+    if (counted.has(book)) continue
+    counted.add(book)
+    paid += 1
+    if (view.stateKey === 'settled') settled += 1
+    if (view.stateKey === 'settled_without_reference') settledWithoutReference += 1
   }
   return { exchanges: rows.length, closed, paid, settled, settledWithoutReference }
 }
 
-/** The Close card's payment line. Payments off says so; unknown says so;
- *  neither ever reads as "0 settled". */
+/** The Close card's payment line, in the rows' own words. Payments off says
+ *  so; unknown says so; neither ever reads as "0 settled". */
 export function settlementCloseLine(counts: SettlementCloseCounts, payments: PaymentsPresence | undefined): string {
   if (payments === 'off' && counts.paid === 0) return 'Payments: off on this node.'
   if (payments !== 'on' && counts.paid === 0) return 'Payments: not known for this node.'
-  const settled =
-    counts.settledWithoutReference > 0
-      ? `${counts.settled} settled by your wallet (${counts.settledWithoutReference} no reference)`
-      : `${counts.settled} settled by your wallet`
-  return `${counts.paid} paid · ${settled} · ${PROVIDER_BOOK_NOT_AVAILABLE_TEXT}`
+  const parts = [`${counts.paid} paid`, `${counts.settled} settled by your wallet`]
+  if (counts.settledWithoutReference > 0) parts.push(`${counts.settledWithoutReference} settled · no reference`)
+  parts.push(PROVIDER_BOOK_NOT_AVAILABLE_TEXT)
+  return parts.join(' · ')
 }
 
 /** Settlement records the host could not join to any row -- by an exchange
