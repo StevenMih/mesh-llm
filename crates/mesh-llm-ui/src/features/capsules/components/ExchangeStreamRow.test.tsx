@@ -485,6 +485,25 @@ describe('[ledger-T4-inline-inspector] ExchangeStreamRow — the two row toggles
     expect(screen.getByRole('button', { name: 'What was said ▸' })).toHaveAttribute('aria-expanded', 'false')
   })
 
+  it('u99 (6): Compare on a CONTRADICTED row opens its checks (yours beside theirs), never a silent no-op', async () => {
+    const user = userEvent.setup()
+    const onAction = vi.fn()
+    const onToggleChecks = vi.fn()
+    const row = makeRow('contradicted')
+    render(
+      <ExchangeStreamRow
+        onAction={onAction}
+        onToggleChecks={onToggleChecks}
+        onToggleContent={vi.fn()}
+        rail={NO_RAIL}
+        row={row}
+      />
+    )
+    await user.click(screen.getByRole('button', { name: 'Compare' }))
+    expect(onToggleChecks).toHaveBeenCalledWith(row)
+    expect(onAction).not.toHaveBeenCalled()
+  })
+
   it('clicking `▸ content` calls onToggleContent with this row only; clicking `▸ checks` calls onToggleChecks only', async () => {
     const user = userEvent.setup()
     const onToggleContent = vi.fn()

@@ -23,6 +23,7 @@ import {
   yourContentFixedText
 } from '@/features/capsules/lib/exchange-content-state'
 import type { ExchangeLedgerRow } from '@/features/capsules/lib/exchange-ledger'
+import { entryRowChipPropertyKey } from '@/features/capsules/lib/entry-row-chips'
 import { checkRowDomId, exchangeRowDomId } from '@/features/capsules/lib/exchange-pages'
 import {
   askForRecordIsDue,
@@ -377,7 +378,12 @@ export function ExchangeStreamRow({
             {action ? (
               <Button
                 className="ui-control h-7 w-fit gap-1 rounded-[var(--radius)] px-2 text-[length:var(--density-type-caption)]"
-                onClick={() => onAction(row)}
+                onClick={() =>
+                  // u99 (6): Compare opens this row's checks at "their record",
+                  // where yours and theirs sit side by side. Other actions ask
+                  // the page (a counterparty request, a statement to view).
+                  state.kind === 'contradicted' ? handleChipActivate(entryRowChipPropertyKey('theirs')) : onAction(row)
+                }
                 size="sm"
                 type="button"
                 variant="outline"
