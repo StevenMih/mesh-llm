@@ -35,7 +35,13 @@ export const OWNER_NOT_LINKED_PHRASE = 'not linked to an owner'
 export const SAMPLE_DATA_UNAVAILABLE = 'Not available on sample data.'
 
 /** The InfoBanner description under the tab title. */
-export const HERO_DESCRIPTION = 'Everything here is checked on this machine, from sealed records.'
+/** u105 (4): your own copy fails its checks; said beside any badge, CLOSED
+ *  included, so a CLOSED never sits silently next to a failed check. */
+export const OWN_COPY_FAILS_WARNING =
+  'Your own copy fails its checks, so neither side can rely on it, whatever the badge says.'
+
+export const HERO_DESCRIPTION =
+  'Your records and the other side’s are checked on this machine. Witnesses, payments and the owner link are read from this node, not checked here.'
 
 /** Peers table column headers. */
 export const PEER_COLUMN_TOOLTIPS = {
@@ -97,8 +103,9 @@ export const PEER_ATTENTION = {
 /** The row's state badge: the (i) beside CLOSED / CONTRADICTED / OPEN. */
 export const ROW_STATE_TOOLTIPS = {
   closed:
-    'They sent their own signed record of this exchange. It checks out on this machine, and it has the same request and answer as yours.',
-  contradicted: 'You both have a record of this exchange, and they disagree about the request or the answer.',
+    'They sent their own signed record of this exchange from the node that served you. It checks out on this machine: its id, its signature, the same request and answer as yours, and no other model weights.',
+  contradicted:
+    'Your record and theirs don’t agree: the request, the answer or the model weights differ, or their record doesn’t match its own id, or your node refused their record because it named another server or other weights. Use Compare to see where.',
   open_refused:
     'They declined to share their record and signed the refusal. The refusal is the evidence; the exchange stays open.',
   open_absent:

@@ -2,7 +2,7 @@ import { formatExchangeTimestamp } from '@/features/capsules/lib/local-time'
 // [mesh-ledger-b2-two-sided-row] — component-level enforcement of v3 §2's
 // normative rules, on top of the pure-function tests in
 // `exchange-row-state.test.ts` / `exchange-stream.test.ts`.
-import { render, screen, within } from '@testing-library/react'
+import { cleanup, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ExchangeStreamRow } from '@/features/capsules/components/ExchangeStreamRow'
@@ -13,7 +13,11 @@ import { durationText, formatModelIdentity, tokenFlowText } from '@/features/cap
 import type { RailSegment } from '@/features/capsules/lib/exchange-stream'
 import type { PaneCRow } from '@/features/capsules/api/sidecarTypes'
 import type { CapsuleRecord } from '@/features/capsules/api/types'
-import { usePeerLedgerRecompute, type PeerRecomputeState } from '@/features/capsules/lib/recompute-identity'
+import {
+  usePeerLedgerRecompute,
+  useRecomputedIdentity,
+  type PeerRecomputeState
+} from '@/features/capsules/lib/recompute-identity'
 import { fixtureHalfBody } from '@/features/capsules/lib/pushed-half-fixtures'
 
 const REQUEST_DIGEST = 'a'.repeat(64)
@@ -37,7 +41,11 @@ const LOCAL_RECORD_WITH_DIGESTS: CapsuleRecord = fixtureHalfBody({ capsuleId: 'm
 // real.
 vi.mock('@/features/capsules/lib/recompute-identity', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/features/capsules/lib/recompute-identity')>()
-  return { ...actual, usePeerLedgerRecompute: vi.fn() }
+  return {
+    ...actual,
+    usePeerLedgerRecompute: vi.fn(),
+    useRecomputedIdentity: vi.fn(actual.useRecomputedIdentity)
+  }
 })
 
 const NOT_FETCHED: PeerRecomputeState = {
@@ -288,7 +296,9 @@ describe('ExchangeStreamRow — the states render distinct text/status/action', 
     // The (i), wired to the fuller CLOSED story.
     const glyph = screen.getByRole('button', { name: 'About the CLOSED state' })
     const description = document.getElementById(glyph.getAttribute('aria-describedby') as string)
-    expect(description).toHaveTextContent('They sent their own signed record of this exchange.')
+    expect(description).toHaveTextContent(
+      'They sent their own signed record of this exchange from the node that served you.'
+    )
     expect(description).toHaveTextContent('same request and answer as yours')
   })
 
@@ -483,6 +493,26 @@ describe('[ledger-T4-inline-inspector] ExchangeStreamRow — the two row toggles
     )
     expect(screen.getByRole('button', { name: 'How we checked ▾' })).toHaveAttribute('aria-expanded', 'true')
     expect(screen.getByRole('button', { name: 'What was said ▸' })).toHaveAttribute('aria-expanded', 'false')
+  })
+
+  it('u105 (4): a CLOSED row whose own copy fails its checks says so, never a silent CLOSED', () => {
+    vi.mocked(useRecomputedIdentity).mockReturnValue({ idMatch: false, signatureOk: true })
+    try {
+      render(<ExchangeStreamRow onAction={vi.fn()} {...toggleProps()} rail={NO_RAIL} row={makeRow('closed')} />)
+      expect(screen.getByText('CLOSED')).toBeInTheDocument()
+      expect(screen.getByText(/Your own copy fails its checks/)).toBeInTheDocument()
+    } finally {
+      vi.mocked(useRecomputedIdentity).mockReset()
+    }
+    // Your copy checks out: no warning.
+    vi.mocked(useRecomputedIdentity).mockReturnValue({ idMatch: true, signatureOk: true })
+    try {
+      cleanup()
+      render(<ExchangeStreamRow onAction={vi.fn()} {...toggleProps()} rail={NO_RAIL} row={makeRow('closed')} />)
+      expect(screen.queryByText(/Your own copy fails its checks/)).not.toBeInTheDocument()
+    } finally {
+      vi.mocked(useRecomputedIdentity).mockReset()
+    }
   })
 
   it('u99 (6): Compare on a CONTRADICTED row opens its checks (yours beside theirs), never a silent no-op', async () => {

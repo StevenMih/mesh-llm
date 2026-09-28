@@ -23,7 +23,8 @@ import {
   yourContentFixedText
 } from '@/features/capsules/lib/exchange-content-state'
 import type { ExchangeLedgerRow } from '@/features/capsules/lib/exchange-ledger'
-import { entryRowChipPropertyKey } from '@/features/capsules/lib/entry-row-chips'
+import { entryRowChipMark, entryRowChipPropertyKey } from '@/features/capsules/lib/entry-row-chips'
+import { OWN_COPY_FAILS_WARNING } from '@/features/capsules/lib/tooltip-copy'
 import { checkRowDomId, exchangeRowDomId } from '@/features/capsules/lib/exchange-pages'
 import {
   askForRecordIsDue,
@@ -235,6 +236,9 @@ export function ExchangeStreamRow({
   // The bracket strip, drawn in words (UX §3): `Yours ● sealed —— Theirs ●
   // same`. Same state the badge renders.
   const strip = bracketStripText(bracketStrip(row.raw, state))
+  // u105 (4): your own copy failed "words match" or "signed". Whatever the
+  // badge says (CLOSED included), the row says so.
+  const ownCopyFails = entryRowChipMark(checksRows, 'content') === '✗' || entryRowChipMark(checksRows, 'sig') === '✗'
   // UX §3 "Left: the event in words" -- role, peer, model, tokens, duration,
   // all read from this row's own record (the fetched `localRecord`, else the
   // body the pane sent with the pair). Any field the record doesn't carry is
@@ -398,6 +402,11 @@ export function ExchangeStreamRow({
           checks={checksRows}
           onChipActivate={handleChipActivate}
         />
+        {ownCopyFails ? (
+          <p className="type-caption font-medium text-bad" data-own-copy-fails="true" role="note">
+            {OWN_COPY_FAILS_WARNING}
+          </p>
+        ) : null}
         {/* Payments sit beside the inference state, never inside it: CLOSED
            is about the two records of the exchange; settlement is this
            node's own payment records for it. */}

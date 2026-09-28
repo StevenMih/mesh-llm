@@ -143,14 +143,22 @@ describe('LedgerPageContent', () => {
   it('shows the premise line', () => {
     render(<LedgerPageContent />, { wrapper: makeWrapper() })
 
-    expect(screen.getByText('Everything here is checked on this machine, from sealed records.')).toBeInTheDocument()
+    expect(
+      screen.getByText(
+        'Your records and the other side’s are checked on this machine. Witnesses, payments and the owner link are read from this node, not checked here.'
+      )
+    ).toBeInTheDocument()
   })
 
   it('Item 4: the honesty banner STAYS visible while the chip (i)s carry their detail (hovers explain, never hide, the banner)', () => {
     render(<LedgerPageContent />, { wrapper: makeWrapper() })
 
     // The load-bearing banner is still on the face -- hovers do not replace it.
-    expect(screen.getByText('Everything here is checked on this machine, from sealed records.')).toBeInTheDocument()
+    expect(
+      screen.getByText(
+        'Your records and the other side’s are checked on this machine. Witnesses, payments and the owner link are read from this node, not checked here.'
+      )
+    ).toBeInTheDocument()
 
     // The storage pills and `Your records` each carry their one sentence in
     // a persistent aria-describedby (HoverChip), not only mid-hover.
@@ -454,7 +462,7 @@ describe('LedgerPageContent', () => {
     expect(screen.queryByText(/sealed by you/)).not.toBeInTheDocument()
   })
 
-  it('"Register a checkpoint" beside the Exchanges headline opens Integrity; there is no top-level ask for their record', async () => {
+  it('"Set up a witness" beside the Exchanges headline opens Integrity; there is no top-level ask for their record', async () => {
     const { fetchPaneCList } = await import('@/features/capsules/api/sidecarClient')
     vi.mocked(fetchPaneCList).mockResolvedValue({
       rows: [
@@ -485,7 +493,7 @@ describe('LedgerPageContent', () => {
     // Asking for the other side's record is each row's, and only once its
     // wait is up -- never a top-level control.
     expect(screen.queryByRole('button', { name: 'Get the other side’s record' })).not.toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: 'Register a checkpoint' }))
+    await user.click(screen.getByRole('button', { name: 'Set up a witness' }))
     expect(await screen.findByText('Chain integrity')).toBeInTheDocument()
   })
 
@@ -602,7 +610,7 @@ describe('LedgerPageContent', () => {
       const user = userEvent.setup()
       render(<LedgerPageContent />, { wrapper: makeWrapper() })
       await user.click(screen.getByRole('tab', { name: /exchanges/i }))
-      for (const name of ['Register a checkpoint']) {
+      for (const name of ['Set up a witness']) {
         const button = await screen.findByRole('button', { name })
         expect(button).toBeDisabled()
         const wrapper = button.closest('[aria-describedby]') as HTMLElement
@@ -704,7 +712,7 @@ describe('LedgerPageContent', () => {
     expect(screen.queryByText('Local only')).not.toBeInTheDocument()
     expect(screen.queryByText("This node's copy")).not.toBeInTheDocument()
     expect(await screen.findByTestId('hero-status-line')).toHaveTextContent(
-      '0 records · 0 confirmed by the other side · 0 disagreements · checkable only by you (witness off — your choice)'
+      '0 records · 0 confirmed by the other side · 0 disagreements · no outside witness (off — your choice)'
     )
   })
 })
@@ -1269,9 +1277,7 @@ describe('LedgerPageContent — Part T6: Integrity section completion', () => {
     await user.click(screen.getByRole('tab', { name: /integrity/i }))
 
     expect(
-      await screen.findByText(
-        'Continuity: 1 checkpoint so far. The next one will be checked against it. A witness is what lets someone else check it too.'
-      )
+      await screen.findByText('Continuity: 1 checkpoint so far. A witness is what lets someone else check it.')
     ).toBeInTheDocument()
     // Finding 7: the unwitnessed checkpoint is said by step 1 -- not again as
     // a separate "Checkpointed locally" line.

@@ -25,7 +25,7 @@ type StaticExplanation = {
 
 const STATIC: Record<string, StaticExplanation> = {
   content_binding: {
-    meaning: 'The response bytes hash to the digest this record commits to.',
+    meaning: 'The record’s own fingerprint, recomputed here over the whole record, equals its id.',
     doesNotEstablish: 'Who produced the response, or that the request itself was answered honestly.',
     howToSupply: 'Recompute runs automatically in your browser against the sealed bytes; there is nothing to ask for.'
   },

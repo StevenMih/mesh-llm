@@ -773,13 +773,14 @@ function ExchangesSection({
              never a click that silently goes nowhere useful. */}
           {/* The ask for the other side's record lives on each row, and only
              once its wait is up (§3, §8 rule 5) -- never a top-level control. */}
-          {(['Register a checkpoint'] as const).map((label) => (
+          {(['Set up a witness'] as const).map((label) => (
             <DisabledReason key={label} reason={sampleData ? SAMPLE_DATA_UNAVAILABLE : null}>
               <Button
                 className="ui-control h-8 gap-1.5 rounded-[var(--radius)] px-2.5 text-[length:var(--density-type-caption)]"
                 disabled={sampleData}
                 onClick={onGoToIntegrity}
                 size="sm"
+                title={sampleData ? undefined : 'Go to Integrity to turn on a witness.'}
                 type="button"
                 variant="outline"
               >

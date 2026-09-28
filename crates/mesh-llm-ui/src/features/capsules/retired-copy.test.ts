@@ -61,7 +61,14 @@ const RETIRED_PHRASES = [
   'registered no later than',
   'Register your checkpoints',
   'inclusion proof',
-  'nothing here is registered'
+  'nothing here is registered',
+  // [u105] tooltip honesty: no claim the code doesn't back.
+  'Everything here is checked on this machine',
+  'checkable only by you',
+  'The next one will be checked against it',
+  'Register a checkpoint',
+  'The response bytes hash to the digest',
+  'disagree about the request or the answer'
 ] as const
 
 const HERE = dirname(fileURLToPath(import.meta.url))

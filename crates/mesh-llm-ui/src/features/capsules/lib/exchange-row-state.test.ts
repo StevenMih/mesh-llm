@@ -498,7 +498,7 @@ describe('rightCellDetail — Item 4: the fuller story behind each state, moved 
 
   it('CLOSED says what was checked -- their signed record, the same request and answer -- in plain words', () => {
     expect(rightCellDetail(stateOf('closed'))).toBe(
-      'They sent their own signed record of this exchange. It checks out on this machine, and it has the same request and answer as yours.'
+      'They sent their own signed record of this exchange from the node that served you. It checks out on this machine: its id, its signature, the same request and answer as yours, and no other model weights.'
     )
   })
 
