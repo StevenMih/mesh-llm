@@ -25,7 +25,10 @@ use crate::network::peer_blocks::{
 
 pub(super) const ROUTE: &str = "/api/peer-blocks";
 const UNBLOCK_ROUTE: &str = "/api/peer-blocks/unblock";
-const PLUGIN: &str = "admission-policy";
+/// The capsule plugin seals the record. It installs as `capsule-emit-mesh`;
+/// `admission-policy` is the id it had before, still tried if the first is
+/// not there.
+const PLUGIN_IDS: [&str; 2] = ["capsule-emit-mesh", "admission-policy"];
 const SEAL_OPERATION: &str = "mesh_local_routing_choice";
 
 pub(super) fn is_route(path: &str) -> bool {
@@ -179,10 +182,8 @@ async fn seal_and_attach(
     plugin_manager: &crate::plugin::PluginManager,
     entry: ChoiceEntry,
 ) -> ChangeResponse {
-    let sealed = plugin_manager
-        .invoke_operation(PLUGIN, SEAL_OPERATION, &seal_arguments(&entry).to_string())
+    let sealed = invoke_seal(plugin_manager, &seal_arguments(&entry).to_string())
         .await
-        .map_err(|error| error.to_string())
         .and_then(|result| {
             if result.is_error {
                 Err(result.content_json)
@@ -214,6 +215,27 @@ async fn seal_and_attach(
             seal_error: Some(error),
         },
     }
+}
+
+/// Ask the capsule plugin to seal, under the id it is installed as. Only when
+/// the call to one id fails is the next tried; the first error is reported.
+async fn invoke_seal(
+    plugin_manager: &crate::plugin::PluginManager,
+    arguments: &str,
+) -> Result<crate::plugin::ToolCallResult, String> {
+    let mut first_error = None;
+    for plugin in PLUGIN_IDS {
+        match plugin_manager
+            .invoke_operation(plugin, SEAL_OPERATION, arguments)
+            .await
+        {
+            Ok(result) => return Ok(result),
+            Err(error) => {
+                first_error.get_or_insert_with(|| error.to_string());
+            }
+        }
+    }
+    Err(first_error.unwrap_or_default())
 }
 
 /// A seal counts only if its commitment is the one this store's salt and peer
@@ -269,6 +291,72 @@ mod tests {
         let args = seal_arguments(&entry(RoutingChange::Unblock, None));
         assert_eq!(args["change"], "unblock");
         assert!(args["until"].is_null());
+    }
+
+    /// UI-QA: "Stop routing" sealed nothing, because the seal was asked of
+    /// `admission-policy` while the plugin is installed as
+    /// `capsule-emit-mesh`. A block now seals through the installed id and
+    /// the record is attached to the choice. MUTANT: seal through
+    /// `admission-policy` only and `sealed` is false.
+    #[tokio::test]
+    async fn stop_routing_seals_through_the_plugin_as_installed() {
+        struct CapsulePlugin(std::sync::Mutex<Vec<String>>);
+        impl crate::plugin::PluginRpcBridge for CapsulePlugin {
+            fn handle_request(
+                &self,
+                plugin_name: String,
+                _method: String,
+                params_json: String,
+            ) -> crate::plugin::BridgeFuture<
+                Result<crate::plugin::RpcResult, crate::plugin::proto::ErrorResponse>,
+            > {
+                self.0.lock().unwrap().push(plugin_name);
+                let request: mesh_llm_plugin::OperationRequest =
+                    serde_json::from_str(&params_json).unwrap();
+                assert_eq!(request.name, SEAL_OPERATION);
+                let peer = request.arguments["peer_id"].as_str().unwrap().to_string();
+                let salt: [u8; 32] = hex::decode(request.arguments["salt"].as_str().unwrap())
+                    .unwrap()
+                    .try_into()
+                    .unwrap();
+                let record = serde_json::json!({
+                    "capsule_id": "c".repeat(64),
+                    "peer_commitment": crate::network::peer_blocks::peer_commitment(&peer, &salt),
+                });
+                Box::pin(async move {
+                    Ok(crate::plugin::RpcResult {
+                        result_json: serde_json::to_string(
+                            &rmcp::model::CallToolResult::structured(record),
+                        )
+                        .unwrap(),
+                    })
+                })
+            }
+            fn handle_notification(
+                &self,
+                _plugin_name: String,
+                _method: String,
+                _params_json: String,
+            ) -> crate::plugin::BridgeFuture<()> {
+                Box::pin(async {})
+            }
+        }
+
+        let bridge = std::sync::Arc::new(CapsulePlugin(std::sync::Mutex::new(Vec::new())));
+        let manager =
+            crate::plugin::PluginManager::for_test_bridge(&["capsule-emit-mesh"], bridge.clone());
+        let blocks = PeerBlocks::in_memory();
+        let peer = iroh::SecretKey::generate().public();
+        let entry = blocks
+            .block(&peer, BlockLength::UntilUndone, now_ms())
+            .unwrap();
+        let response = seal_and_attach(&blocks, &manager, entry).await;
+        assert!(response.sealed, "{:?}", response.seal_error);
+        assert_eq!(response.choice.capsule_id, Some("c".repeat(64)));
+        assert_eq!(*bridge.0.lock().unwrap(), ["capsule-emit-mesh"]);
+        // The block itself stops routing to THAT node, and only that one.
+        assert!(blocks.is_blocked(&peer, now_ms()));
+        assert!(!blocks.is_blocked(&iroh::SecretKey::generate().public(), now_ms()));
     }
 
     #[test]
