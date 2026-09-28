@@ -65,7 +65,9 @@ describe('CleanUpRecordsDialog', () => {
     const deleteOption = radios.find((r) => (r as HTMLInputElement).value === 'delete_stored_text') as HTMLInputElement
     expect(deleteOption).toBeDisabled()
     expect(deleteOption).not.toBeChecked()
-    expect(within(dialog).getByText('No prompt or answer text is kept, so there is nothing to delete.')).toBeInTheDocument()
+    expect(
+      within(dialog).getByText('No prompt or answer text is kept, so there is nothing to delete.')
+    ).toBeInTheDocument()
     expect(within(dialog).queryByRole('button', { name: 'Delete stored text' })).not.toBeInTheDocument()
     expect(fetchSpy).not.toHaveBeenCalled()
   })

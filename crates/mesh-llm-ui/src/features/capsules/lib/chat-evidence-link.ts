@@ -122,7 +122,7 @@ export function evidenceRowKeyForLink(
   )
 }
 
-export type ChatEvidenceChipKind = 'confirmed' | 'awaiting' | 'not_asked' | 'differs' | 'declined' | 'they_have_none'
+export type ChatEvidenceChipKind = 'confirmed' | 'awaiting' | 'differs' | 'declined' | 'they_have_none'
 
 export type ChatEvidenceChip = {
   readonly kind: ChatEvidenceChipKind
@@ -133,7 +133,6 @@ export type ChatEvidenceChip = {
 const CHIP_LABELS: Record<ChatEvidenceChipKind, string> = {
   confirmed: 'sealed ✓ · confirmed by the other side',
   awaiting: 'sealed · their record not received yet',
-  not_asked: 'sealed · their record not asked for',
   differs: 'sealed · their record differs',
   declined: 'sealed · they declined to share their record',
   they_have_none: 'sealed · they say they have no record'
@@ -152,8 +151,9 @@ function chipKind(state: RightCellStateKind): ChatEvidenceChipKind {
       return 'declined'
     case 'open_absent':
       return 'they_have_none'
+    // In Chat, the design's second variant (§7.6-1): their record usually
+    // arrives on its own, so "not asked for" is the tab's word, not Chat's.
     case 'open_not_asked':
-      return 'not_asked'
     case 'open_asked':
     case 'open_not_held':
     case 'open_not_given':

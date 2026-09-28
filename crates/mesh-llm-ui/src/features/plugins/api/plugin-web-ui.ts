@@ -155,6 +155,17 @@ export function buildPluginWebUiNavItems(entries: readonly PluginWebUiEntry[]): 
   })
 }
 
+/** Nav items minus any whose label repeats a built-in tab's: a plugin page
+ *  named like a console tab would put two identical entries in the top nav.
+ *  The page stays reachable at its own URL and from the plugins list. */
+export function withoutBuiltInTabNames<T extends { label: string }>(
+  items: readonly T[],
+  builtInLabels: readonly string[]
+): readonly T[] {
+  const taken = new Set(builtInLabels.map((label) => label.trim().toLowerCase()))
+  return items.filter((item) => !taken.has(item.label.trim().toLowerCase()))
+}
+
 export function usePluginSummariesQuery(options?: { enabled?: boolean }) {
   return useQuery({
     queryKey: pluginKeys.list(),

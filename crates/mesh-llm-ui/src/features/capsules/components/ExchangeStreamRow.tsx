@@ -51,6 +51,7 @@ import {
   tokenFlowText
 } from '@/features/capsules/lib/serving-provenance'
 import { shortId } from '@/features/capsules/lib/short-id'
+import { formatExchangeTimestamp } from '@/features/capsules/lib/local-time'
 import { copyStateLabel } from '@/lib/copyStateLabel'
 import { useClipboardCopy } from '@/lib/useClipboardCopy'
 
@@ -76,20 +77,6 @@ function useNowMs(): number {
     return () => window.clearInterval(timer)
   }, [])
   return nowMs
-}
-
-/** "Sep 27, 9:56 PM" in the viewer's own time zone, the way Chat shows it. */
-const LOCAL_TIME = new Intl.DateTimeFormat(undefined, {
-  month: 'short',
-  day: 'numeric',
-  hour: 'numeric',
-  minute: '2-digit'
-})
-
-export function formatExchangeTimestamp(timestamp: string | null): string {
-  if (!timestamp) return 'timestamp unavailable'
-  const date = new Date(timestamp)
-  return Number.isNaN(date.getTime()) ? timestamp : LOCAL_TIME.format(date)
 }
 
 function roleText(roleTag: string): string {

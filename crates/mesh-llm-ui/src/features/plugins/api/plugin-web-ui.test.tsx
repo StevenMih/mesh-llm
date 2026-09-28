@@ -14,7 +14,8 @@ import {
   requestPluginWebUiConfigMutation,
   resolvePluginWebUiAssetUrl,
   usePluginWebUiQuery,
-  useSetPluginWebUiEnabledMutation
+  useSetPluginWebUiEnabledMutation,
+  withoutBuiltInTabNames
 } from '@/features/plugins/api/plugin-web-ui'
 
 const READY_WEB_UI = {
@@ -255,3 +256,14 @@ function jsonResponse(body: unknown) {
     headers: { 'Content-Type': 'application/json' }
   })
 }
+
+describe('withoutBuiltInTabNames', () => {
+  it('drops a plugin page named like a built-in tab, so the nav never shows two of one name', () => {
+    const items = [
+      { pluginName: 'capsule-emit-mesh', pageId: 'evidence', label: 'Evidence', route: '/evidence' },
+      { pluginName: 'demo', pageId: 'feed', label: 'Feed', route: '/feed' }
+    ]
+    expect(withoutBuiltInTabNames(items, ['Network', 'Evidence ']).map((i) => i.label)).toEqual(['Feed'])
+    expect(withoutBuiltInTabNames(items, [])).toHaveLength(2)
+  })
+})

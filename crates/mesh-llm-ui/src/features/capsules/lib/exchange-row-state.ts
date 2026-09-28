@@ -388,7 +388,9 @@ export function rowStatusLabel(
   inTheirLog: { checkpoint_records: number } | null | undefined
 ): string {
   const label = rightCellStatusLabel(state)
-  return state.kind === 'closed' && inTheirLog ? `${label} · in their log (checkpoint ${inTheirLog.checkpoint_records})` : label
+  return state.kind === 'closed' && inTheirLog
+    ? `${label} · in their log (checkpoint ${inTheirLog.checkpoint_records})`
+    : label
 }
 
 export function rightCellStatusLabel(state: RightCellState): string {

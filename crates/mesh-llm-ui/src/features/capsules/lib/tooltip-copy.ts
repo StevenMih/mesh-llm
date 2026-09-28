@@ -123,7 +123,6 @@ export const CHAT_EVIDENCE_CHIP_TOOLTIPS = {
   confirmed:
     'This node sealed a record of this exchange. The other side sent their own signed record, it checks out on this machine, and it has the same request and answer.',
   awaiting: 'This node sealed a record of this exchange. The other side’s record hasn’t arrived yet.',
-  not_asked: 'This node sealed a record of this exchange. You haven’t asked the other side for theirs.',
   differs:
     'This node sealed a record of this exchange. The other side’s record disagrees about the request or the answer.',
   declined:

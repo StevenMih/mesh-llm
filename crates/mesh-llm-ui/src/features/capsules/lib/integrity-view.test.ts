@@ -34,7 +34,10 @@ describe('buildSetupSteps — ledger-ux-from-the-user §6, three steps in value 
     expect(steps[2].status).toBe('none received yet')
     // Each explains what it buys and what it does not.
     expect(steps[0].body).toMatch(/does not make your records true/)
-    expect(steps[1].body).toMatch(/does not prove who you are/)
+    expect(steps[1].body).toMatch(/only your own claim about who you are/)
+    expect(steps[1].body).not.toMatch(/`|prove/)
+    // The unregistered checkpoint step offers the one next action.
+    expect(steps[0].action).toEqual({ label: 'Turn on a witness ↗', href: '/configuration/plugins' })
     expect(steps[2].body).toMatch(/usually arrives on its own/)
     expect(steps[2].body).not.toMatch(/corroboration|half/i)
     // The retired "never asked" framing is gone -- a half can arrive by push.
@@ -86,6 +89,7 @@ describe('buildSetupSteps — ledger-ux-from-the-user §6, three steps in value 
     const steps = buildSetupSteps({ checkpoint_count: 3, witnesses: [{}] }, null)
     expect(steps[0].done).toBe(true)
     expect(steps[0].status).toBe('registered')
+    expect(steps[0].action).toBeUndefined()
     expect(steps[0].body).toBeNull()
   })
 

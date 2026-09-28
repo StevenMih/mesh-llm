@@ -1,10 +1,11 @@
+import { formatExchangeTimestamp } from '@/features/capsules/lib/local-time'
 // [mesh-ledger-b2-two-sided-row] — component-level enforcement of v3 §2's
 // normative rules, on top of the pure-function tests in
 // `exchange-row-state.test.ts` / `exchange-stream.test.ts`.
 import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { ExchangeStreamRow, formatExchangeTimestamp } from '@/features/capsules/components/ExchangeStreamRow'
+import { ExchangeStreamRow } from '@/features/capsules/components/ExchangeStreamRow'
 import { exchangeRowDomId } from '@/features/capsules/lib/exchange-pages'
 import type { ExchangeLedgerRow } from '@/features/capsules/lib/exchange-ledger'
 import { ASK_FOR_RECORD_AFTER_MS, type RightCellStateKind } from '@/features/capsules/lib/exchange-row-state'

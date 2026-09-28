@@ -1154,7 +1154,8 @@ describe('LedgerPageContent — Part T6: Integrity section completion', () => {
     expect(screen.getByText(/Get the other side’s record/)).toBeInTheDocument()
     expect(screen.getByText(/Their record usually arrives on its own/)).toBeInTheDocument()
     expect(screen.getByText(/does not make your records true/)).toBeInTheDocument()
-    expect(screen.getByText(/does not prove who you are/)).toBeInTheDocument()
+    expect(screen.getByText(/only your own claim about who you are/)).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Turn on a witness ↗' })).toHaveAttribute('href', '/configuration/plugins')
   })
 
   it('Integrity reads a NULL card as "checkpoint status not reported", never a false "no checkpoint yet"', async () => {

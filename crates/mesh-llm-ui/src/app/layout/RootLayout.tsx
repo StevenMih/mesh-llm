@@ -18,8 +18,10 @@ import { useStatusQuery } from '@/features/network/api/use-status-query'
 import {
   adaptPluginSummariesToWebUiEntries,
   buildPluginWebUiNavItems,
-  usePluginSummariesQuery
+  usePluginSummariesQuery,
+  withoutBuiltInTabNames
 } from '@/features/plugins/api/plugin-web-ui'
+import { useI18n } from '@/lib/i18n'
 import { useUIPreferences } from '@/features/shell/hooks/useUiPreferences'
 import { SHELL_HARNESS } from '@/features/app-tabs/data'
 import { env, hrefWithBasePath, stripBasePath } from '@/lib/env'
@@ -173,16 +175,25 @@ export function RootLayout({ data = SHELL_HARNESS }: RootLayoutProps = {}) {
     [newConfigurationPageEnabled, newReservesPageEnabled, logsPageEnabled, clientOnlyNode]
   )
 
+  const { t } = useI18n()
+  const builtInTabLabels = useMemo(
+    () =>
+      (['tabs.network', 'tabs.reserves', 'tabs.chat', 'tabs.logs', 'tabs.capsules', 'tabs.configuration'] as const).map(
+        (key) => t(key)
+      ),
+    [t]
+  )
   const pluginNavItems = useMemo<readonly TopNavPluginPageItem[]>(() => {
     if (!liveMode || !Array.isArray(pluginSummariesQuery.data)) return []
-    return buildPluginWebUiNavItems(adaptPluginSummariesToWebUiEntries(pluginSummariesQuery.data)).map((item) => ({
+    const items = buildPluginWebUiNavItems(adaptPluginSummariesToWebUiEntries(pluginSummariesQuery.data))
+    return withoutBuiltInTabNames(items, builtInTabLabels).map((item) => ({
       pluginName: item.pluginName,
       pageId: item.pageId,
       label: item.label,
       href: hrefWithBasePath(`/plugins/${encodeURIComponent(item.pluginName)}/${encodeURIComponent(item.pageId)}`),
       active: pathname === `/plugins/${item.pluginName}/${item.pageId}`
     }))
-  }, [liveMode, pathname, pluginSummariesQuery.data])
+  }, [builtInTabLabels, liveMode, pathname, pluginSummariesQuery.data])
 
   const onPluginPageChange = useCallback(
     (item: TopNavPluginPageItem) => {

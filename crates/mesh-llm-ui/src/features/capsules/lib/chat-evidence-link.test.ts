@@ -164,9 +164,9 @@ describe('chatEvidenceChip -- the Evidence row gate, restated for Chat', () => {
     }
   })
 
-  it('a row with no one asked says so, not "not received yet"', () => {
+  it("Chat uses the design's two words even when nobody was asked: not received yet", () => {
     expect(chatEvidenceChip(row({ counterparty: null, theirs: { state: 'absent', capsule_id: null } }))?.label).toBe(
-      'sealed · their record not asked for'
+      'sealed · their record not received yet'
     )
   })
 

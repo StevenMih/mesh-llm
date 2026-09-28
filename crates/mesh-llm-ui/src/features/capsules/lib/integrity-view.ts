@@ -105,7 +105,12 @@ export type SetupStep = {
    *  explanatory sentence is written for someone deciding whether to do
    *  the step, not for someone who already has. */
   body: string | null
+  /** One thing to do next, when there is one: a link, never a fake button. */
+  action?: { label: string; href: string }
 }
+
+/** Where the witness switch lives (the plugin's config). */
+export const WITNESS_SETTINGS_HREF = '/configuration/plugins'
 
 export function buildSetupSteps(
   card: JsonRecord | null | undefined,
@@ -144,7 +149,8 @@ export function buildSetupSteps(
         ? null
         : registration.reported
           ? 'Right now your records are checkable only against themselves. Registering a checkpoint with a service you don’t run is what makes a later rewrite detectable by someone else. It does not make your records true.'
-          : 'This node did not report its checkpoint status. That is not the same as having none — the status was not reported, so nothing can be concluded either way.'
+          : 'This node did not report its checkpoint status. That is not the same as having none — the status was not reported, so nothing can be concluded either way.',
+      ...(registration.registered ? {} : { action: { label: 'Turn on a witness ↗', href: WITNESS_SETTINGS_HREF } })
     },
     {
       key: 'identity',
@@ -154,7 +160,7 @@ export function buildSetupSteps(
       // UX §4: "bound" alone overclaims -- the done state says what it is.
       body: bound
         ? OWNER_LINKED_SENTENCE
-        : '`mesh-llm auth init` binds your records to a key you hold, so a later denial is harder. It is self-asserted: it does not prove who you are.'
+        : 'Binding your records to a key you hold (mesh-llm auth init) makes a later denial harder. It is only your own claim about who you are.'
     },
     {
       key: 'ask_peer',

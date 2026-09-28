@@ -1141,6 +1141,15 @@ function SetupChecklist({ steps }: { steps: readonly SetupStep[] }) {
             {index + 1} · {step.title} — <span className="font-medium text-foreground">{step.status}</span>
           </p>
           {step.body ? <p className="type-caption text-fg-dim">{step.body}</p> : null}
+          {step.action ? (
+            <a
+              className="type-caption w-fit underline underline-offset-2 text-foreground hover:text-accent"
+              data-setup-action={step.key}
+              href={step.action.href}
+            >
+              {step.action.label}
+            </a>
+          ) : null}
         </div>
       ))}
     </div>
