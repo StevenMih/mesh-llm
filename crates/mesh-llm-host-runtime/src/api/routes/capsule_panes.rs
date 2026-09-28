@@ -140,6 +140,10 @@ pub(super) async fn handle(
     handle_sidecar_forward(stream, path, pane).await
 }
 
+/// The directory the evidence door writes `received_log.jsonl` into (its
+/// `--received-log-dir`). Unset: the drill says "Asked of you" is not shown.
+const RECEIVED_LOG_DIR_ENV: &str = "MESH_LLM_CAPSULE_RECEIVED_LOG_DIR";
+
 /// [mesh-C3-ledger-tab-reads-plugin-not-sidecar]: local read of the
 /// plugin-written ledger -- no sidecar process, no network call, so an
 /// unreachable/absent sidecar cannot break this path.
@@ -151,7 +155,7 @@ async fn handle_native(
 ) -> anyhow::Result<()> {
     let ledger_dir = super::capsules::ledger_dir();
     let exchange_id = exchange_id_query_param(path);
-    let Some(payload) = super::capsule_panes_native::build_pane_json(
+    let Some(mut payload) = super::capsule_panes_native::build_pane_json(
         pane,
         &ledger_dir,
         exchange_id.as_deref(),
@@ -159,6 +163,14 @@ async fn handle_native(
     ) else {
         return respond_error(stream, 404, "Not found").await;
     };
+    // "Asked of you": the evidence door's inbound log, when the operator
+    // points the host at the directory the door writes it to.
+    if pane == "pane-b"
+        && let Some(dir) = std::env::var_os(RECEIVED_LOG_DIR_ENV).filter(|dir| !dir.is_empty())
+    {
+        let entries = super::capsule_panes_native::read_received_log(std::path::Path::new(&dir));
+        super::capsule_panes_native::attach_asked_of_you(&mut payload, &entries);
+    }
     let body = match serde_json::to_vec(&payload) {
         Ok(body) => body,
         Err(err) => {
