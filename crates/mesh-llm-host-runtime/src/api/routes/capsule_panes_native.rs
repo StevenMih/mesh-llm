@@ -520,6 +520,111 @@ fn digest_match_state(mine: &Value, theirs: &Value) -> &'static str {
     }
 }
 
+/// One exchange-key group's records paired ONE-TO-ONE.
+///
+/// `exchange_key_for` groups by request digest alone, so two requests with the
+/// same wire bytes (a user asking the same thing twice) land in one group.
+/// Pairing every received half with every own record there set request 1's
+/// record against request 2's half and rendered a false CONTRADICTED (the
+/// M4+M3 round2-m3c run: both halves of each real exchange agreed). Here each
+/// received half closes at most ONE own record: first an unpaired one whose
+/// response digest also matches; only a half that matches none of them is set
+/// against a leftover own record, which is a real disagreement and still
+/// renders CONTRADICTED. Own records and halves left over stand alone.
+/// Order: own records in ledger order, then the halves that paired with none.
+fn pair_one_to_one<'a>(
+    own: &[&'a Value],
+    received: &[&'a Value],
+) -> Vec<(Option<&'a Value>, Option<&'a Value>)> {
+    let mut theirs_for: Vec<Option<&'a Value>> = vec![None; own.len()];
+    let mut leftover: Vec<&'a Value> = Vec::new();
+    for half in received {
+        let same_answer = (0..own.len()).find(|&i| {
+            theirs_for[i].is_none()
+                && response_digest(own[i]).is_some()
+                && response_digest(own[i]) == response_digest(half)
+        });
+        match same_answer {
+            Some(i) => theirs_for[i] = Some(*half),
+            None => leftover.push(*half),
+        }
+    }
+    let mut unmatched: Vec<&'a Value> = Vec::new();
+    for half in leftover {
+        match (0..own.len()).find(|&i| theirs_for[i].is_none()) {
+            Some(i) => theirs_for[i] = Some(half),
+            None => unmatched.push(half),
+        }
+    }
+    let mut pairs: Vec<(Option<&'a Value>, Option<&'a Value>)> = own
+        .iter()
+        .zip(theirs_for)
+        .map(|(mine, theirs)| (Some(*mine), theirs))
+        .collect();
+    pairs.extend(unmatched.into_iter().map(|half| (None, Some(half))));
+    pairs
+}
+
+fn is_received_record(
+    record: &Value,
+    received_provenance: &HashMap<String, ReceivedProvenance>,
+) -> bool {
+    record
+        .get("capsule_id")
+        .and_then(Value::as_str)
+        .is_some_and(|id| received_provenance.contains_key(id))
+}
+
+/// Adds an own record to one key's exchanges. An own record with the same
+/// response digest as one already there is another copy of the SAME exchange
+/// (e.g. both halves of one exchange held on one node, or a peer's half that
+/// carries no provenance line) and folds into it, as before; only an own
+/// record whose answer differs is a separate exchange (the same request asked
+/// again, answered differently).
+fn push_own<'a>(own: &mut Vec<&'a Value>, record: &'a Value) {
+    if !own.iter().any(|o| response_digest(o) == response_digest(record)) {
+        own.push(record);
+    }
+}
+
+/// Records grouped by `exchange_key_for`, in encounter order, each group split
+/// into this node's own exchanges (`push_own`) and the received
+/// (provenance-carrying) halves. A record with no correlator is not in any
+/// group.
+fn exchange_groups<'a>(
+    records: &'a [Value],
+    received_provenance: &HashMap<String, ReceivedProvenance>,
+) -> Vec<(String, Vec<&'a Value>, Vec<&'a Value>)> {
+    let mut groups: Vec<(String, Vec<&'a Value>, Vec<&'a Value>)> = Vec::new();
+    let mut index: HashMap<String, usize> = HashMap::new();
+    for record in records {
+        let Some(key) = exchange_key_for(record) else {
+            continue;
+        };
+        let i = *index.entry(key.clone()).or_insert_with(|| {
+            groups.push((key, Vec::new(), Vec::new()));
+            groups.len() - 1
+        });
+        if is_received_record(record, received_provenance) {
+            groups[i].2.push(record);
+        } else {
+            push_own(&mut groups[i].1, record);
+        }
+    }
+    groups
+}
+
+/// The Pane C row key of the `n`th (0-based) pair of an exchange-key group:
+/// the group key itself for the first, `<key>#<n+1>` for later ones, so two
+/// same-digest exchanges get two rows the drill-down can still resolve.
+fn pair_row_key(group_key: &str, n: usize) -> String {
+    if n == 0 {
+        group_key.to_string()
+    } else {
+        format!("{group_key}#{}", n + 1)
+    }
+}
+
 /// `x-mesh-poc-v1` block, `capsule_mesh_view._poc_block`.
 fn poc_block(record: &Value) -> Option<&Value> {
     record.pointer("/model_attestation/compute_attestation/x-mesh-poc-v1")
@@ -574,18 +679,19 @@ fn exchange_key_for(record: &Value) -> Option<String> {
 /// collapses the two halves back to one exchange. A record with NO correlator
 /// (`None`) cannot be joined to any other, so it counts as its own exchange --
 /// never silently merged into a single bucket.
-fn distinct_exchange_count(records: &[Value]) -> usize {
-    let mut keys: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut uncorrelated = 0usize;
-    for record in records {
-        match exchange_key_for(record) {
-            Some(key) => {
-                keys.insert(key);
-            }
-            None => uncorrelated += 1,
-        }
-    }
-    keys.len() + uncorrelated
+///
+/// Within one key the halves are paired ONE-TO-ONE (`pair_one_to_one`): two
+/// same-digest requests are two exchanges, never merged into one.
+fn distinct_exchange_count(
+    records: &[Value],
+    received_provenance: &HashMap<String, ReceivedProvenance>,
+) -> usize {
+    let uncorrelated = records.iter().filter(|r| exchange_key_for(r).is_none()).count();
+    let paired: usize = exchange_groups(records, received_provenance)
+        .iter()
+        .map(|(_, own, received)| pair_one_to_one(own, received).len())
+        .sum();
+    paired + uncorrelated
 }
 
 /// [ledger-T11b-twin-bracket] the id shared by BOTH halves of an ambient
@@ -935,8 +1041,9 @@ fn dealt_with_row(
     // the two halves of one cross-node exchange (this node's own + the peer's
     // pushed half) share a correlation key and must count once, so confirmed
     // reads "3 / 3", never "3 / 6". See `distinct_exchange_count`.
-    let total = distinct_exchange_count(records);
-    let confirmed_siblings = confirmed_siblings_for(records, siblings_by_key, received_provenance);
+    let total = distinct_exchange_count(records, received_provenance);
+    let confirmed_siblings =
+        confirmed_siblings_for(records, siblings_by_key, received_provenance);
     let served_count = records.iter().filter(|r| label_role(r) == "served").count();
     let requested_count = records
         .iter()
@@ -1019,7 +1126,7 @@ fn unattributed_row(
         .count();
     // Distinct exchanges by the ONE correlator, NOT records.len() -- same
     // record-vs-exchange discipline as the dealt-with rows (`distinct_exchange_count`).
-    let total = distinct_exchange_count(records);
+    let total = distinct_exchange_count(records, received_provenance);
     let (role, role_text) = if requested_count > 0 && served_count > 0 {
         (
             "both",
@@ -1499,22 +1606,37 @@ fn confirmed_siblings_for(
     siblings_by_key: &HashMap<String, Vec<CorrelatedSibling<'_>>>,
     received_provenance: &HashMap<String, ReceivedProvenance>,
 ) -> Vec<Value> {
-    let mut out = Vec::new();
+    // This peer's own records grouped by correlator (ledger order), each group
+    // paired ONE-TO-ONE with the received halves under the same key: a half
+    // closes at most one of our records (`pair_one_to_one`).
+    let mut order: Vec<String> = Vec::new();
+    let mut own_by_key: HashMap<String, Vec<&Value>> = HashMap::new();
     for mine in peer_records {
-        let is_received = mine
-            .get("capsule_id")
-            .and_then(Value::as_str)
-            .is_some_and(|id| received_provenance.contains_key(id));
-        if is_received {
+        if is_received_record(mine, received_provenance) {
             continue;
         }
         let Some(key) = exchange_key_for(mine) else {
             continue;
         };
+        if !own_by_key.contains_key(&key) {
+            order.push(key.clone());
+        }
+        push_own(own_by_key.entry(key).or_default(), mine);
+    }
+    let mut out = Vec::new();
+    for key in order {
         let Some(siblings) = siblings_by_key.get(&key) else {
             continue;
         };
-        for sibling in siblings {
+        let halves: Vec<&Value> = siblings.iter().map(|s| s.record).collect();
+        for (mine, theirs) in pair_one_to_one(&own_by_key[&key], &halves) {
+            let (Some(mine), Some(theirs)) = (mine, theirs) else {
+                continue;
+            };
+            let sibling = siblings
+                .iter()
+                .find(|s| std::ptr::eq(s.record, theirs))
+                .expect("a paired half is one of this key's siblings");
             out.push(json!({
                 "mine": mine_pair_cell(mine),
                 "theirs": theirs_sibling_cell(sibling.record, sibling.provenance),
@@ -1605,24 +1727,10 @@ pub(super) fn build_pane_c_list_with_settlements(
     // One pass, ledger order preserved: the first record of each exchange_key
     // seeds a row in encounter order; later halves of the same exchange fold
     // into that same row (never a second row -- the "6 rows not 3 pairs" bug).
-    let mut order: Vec<String> = Vec::new();
-    let mut groups: HashMap<String, Vec<&Value>> = HashMap::new();
-    for record in records {
-        let Some(exchange_key) = exchange_key_for(record) else {
-            continue;
-        };
-        if !groups.contains_key(&exchange_key) {
-            order.push(exchange_key.clone());
-        }
-        groups.entry(exchange_key).or_default().push(record);
-    }
-
-    let is_received_sibling = |record: &Value| -> bool {
-        record
-            .get("capsule_id")
-            .and_then(Value::as_str)
-            .is_some_and(|id| received_provenance.contains_key(id))
-    };
+    // Each group is then split ONE-TO-ONE into exchanges (`pair_one_to_one`):
+    // two same-digest requests are two rows, never one row comparing request 1
+    // against request 2's half.
+    let groups = exchange_groups(records, received_provenance);
 
     // [mesh-citing-record-shots-four-defects] D4(a): the SAME peer attribution
     // Pane B rows use, so an Exchanges row and the Peers table can never name
@@ -1632,21 +1740,26 @@ pub(super) fn build_pane_c_list_with_settlements(
     let siblings_by_key = received_siblings_by_key(records, received_provenance);
     let attribution = peer_attribution(&siblings_by_key);
 
+    // A sibling this node RECEIVED (has a provenance line) is `theirs`;
+    // everything else in the group is `mine` (self-sealed here). This is the
+    // native-ledger equivalent of Python's `my_ids` split -- a single
+    // `capsules.jsonl` instead of two lists, so provenance is the honest
+    // discriminator of which half came from a counterparty.
+    let exchanges = groups.iter().flat_map(|(group_key, own, received)| {
+        pair_one_to_one(own, received)
+            .into_iter()
+            .enumerate()
+            .map(move |(n, (mine, theirs))| (pair_row_key(group_key, n), mine, theirs))
+    });
     let mut rows = Vec::new();
     let mut joined_exchange_ids: Vec<String> = Vec::new();
-    for exchange_key in order {
-        let group = &groups[&exchange_key];
-        // A sibling this node RECEIVED (has a provenance line) is `theirs`;
-        // everything else in the group is `mine` (self-sealed here). This is
-        // the native-ledger equivalent of Python's `my_ids` split -- a single
-        // `capsules.jsonl` instead of two lists, so provenance is the honest
-        // discriminator of which half came from a counterparty.
-        let mine = group.iter().copied().find(|r| !is_received_sibling(r));
-        let theirs_sibling = group.iter().copied().find(|r| is_received_sibling(r));
+    for (exchange_key, mine, theirs_sibling) in exchanges {
         // The row anchors on the local half when there is one; a received
         // sibling with no local half of its own still renders (its own column
         // filled), matching `build_exchange_row`'s `anchor = mine or theirs`.
-        let anchor = mine.or(theirs_sibling).unwrap_or(group[0]);
+        let Some(anchor) = mine.or(theirs_sibling) else {
+            continue;
+        };
 
         let mine_cell = match mine {
             Some(record) if theirs_sibling.is_some() => mine_pair_cell(record),
@@ -1698,11 +1811,7 @@ pub(super) fn build_pane_c_list_with_settlements(
         // records are this node's observations of its own requests, so a
         // counterparty's pushed record never supplies a join id: a peer's
         // record naming one of our ids must not attach our settlement here.
-        let row_exchange_ids: Vec<&str> = group
-            .iter()
-            .filter(|r| !is_received_sibling(r))
-            .filter_map(|r| record_exchange_id(r))
-            .collect();
+        let row_exchange_ids: Vec<&str> = mine.into_iter().filter_map(record_exchange_id).collect();
         joined_exchange_ids.extend(row_exchange_ids.iter().map(|id| id.to_string()));
         let settlement = settlements.summary_for(row_exchange_ids.iter().copied());
 
@@ -1755,12 +1864,27 @@ pub(super) fn build_pane_c_list_with_settlements(
 
 /// Pane C drill-down (`exchange_id` supplied) -- `capsule_exchange_tab.
 /// build_exchange_view`, same field-availability restriction as the list.
-pub(super) fn build_pane_c_drilldown(records: &[Value], exchange_id: &str) -> Value {
-    let group: Vec<&Value> = records
-        .iter()
-        .filter(|r| exchange_key_for(r).as_deref() == Some(exchange_id))
-        .collect();
-    let Some(anchor) = group.first() else {
+///
+/// `exchange_id` is a Pane C row key: the group key, or `<key>#<n>` for the
+/// `n`th same-digest exchange of that group (`pair_row_key`).
+pub(super) fn build_pane_c_drilldown(
+    records: &[Value],
+    received_provenance: &HashMap<String, ReceivedProvenance>,
+    exchange_id: &str,
+) -> Value {
+    let (group_key, n) = match exchange_id.rsplit_once('#') {
+        Some((key, n)) => match n.parse::<usize>() {
+            Ok(n) if n >= 2 => (key, n - 1),
+            _ => return json!({ "exchange_key": exchange_id, "found": false }),
+        },
+        None => (exchange_id, 0),
+    };
+    let anchor = exchange_groups(records, received_provenance)
+        .into_iter()
+        .find(|(key, _, _)| key == group_key)
+        .and_then(|(_, own, received)| pair_one_to_one(&own, &received).into_iter().nth(n))
+        .and_then(|(mine, theirs)| mine.or(theirs));
+    let Some(anchor) = anchor else {
         return json!({ "exchange_key": exchange_id, "found": false });
     };
     json!({
@@ -1804,7 +1928,9 @@ pub(super) fn build_pane_json(
             build_pane_b_with_settlements(&pane_bc_records, &received_provenance, &settlements)
         }
         "pane-c" => match exchange_id {
-            Some(id) if !id.is_empty() => build_pane_c_drilldown(&pane_bc_records, id),
+            Some(id) if !id.is_empty() => {
+                build_pane_c_drilldown(&pane_bc_records, &received_provenance, id)
+            }
             _ => build_pane_c_list_with_settlements(
                 &pane_bc_records,
                 &received_provenance,
@@ -2255,8 +2381,11 @@ mod tests {
             ));
         }
         assert_eq!(records.len(), 6);
+        let provenance: HashMap<String, ReceivedProvenance> = (0..3)
+            .map(|i| provenance_for(&format!("theirs-{i}"), "m3"))
+            .collect();
         assert_eq!(
-            distinct_exchange_count(&records),
+            distinct_exchange_count(&records, &provenance),
             3,
             "6 halves -> 3 exchanges, never 6"
         );
@@ -2267,7 +2396,7 @@ mod tests {
         assert!(exchange_key_for(&uncorrelated).is_none());
         uncorrelated["effect"] = json!({});
         records.push(uncorrelated);
-        assert_eq!(distinct_exchange_count(&records), 4);
+        assert_eq!(distinct_exchange_count(&records, &provenance), 4);
     }
 
     /// The peer-row "N exchanges" figure counts DISTINCT exchanges, so a peer
@@ -3346,11 +3475,11 @@ mod tests {
             "req-1",
             None,
         )];
-        let found = build_pane_c_drilldown(&records, "digest:req-1");
+        let found = build_pane_c_drilldown(&records, &HashMap::new(), "digest:req-1");
         assert_eq!(found["found"], json!(true));
         assert_eq!(found["view"]["capsule_id"], json!("cap-1"));
 
-        let not_found = build_pane_c_drilldown(&records, "digest:nonexistent");
+        let not_found = build_pane_c_drilldown(&records, &HashMap::new(), "digest:nonexistent");
         assert_eq!(not_found["found"], json!(false));
         assert!(not_found.get("view").is_none());
     }
@@ -3433,7 +3562,7 @@ mod tests {
 
         // The drilldown groups both halves under the one shared key -- the
         // CLOSED-eligible pair the reconcile must produce, not two OPEN rows.
-        let pane = build_pane_c_drilldown(&both, "digest:shared-req-digest");
+        let pane = build_pane_c_drilldown(&both, &HashMap::new(), "digest:shared-req-digest");
         assert_eq!(pane["found"], json!(true));
 
         // And a CONFLICTING pair (equal host-minted exchange_id, DIFFERENT
@@ -4006,5 +4135,80 @@ mod tests {
         assert_eq!(pane_c["settlement_unjoined"], json!([]));
         assert_eq!(pane_c["settlement_missing_exchange_id"], json!(0));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// round2-m3c (M4 + M3, 2026-09-28): the same prompt asked twice gives two
+    /// exchanges with ONE request digest. Our two records answer differently
+    /// (`1…`, `2…`); the peer's pushed half is request 2's. Pairing it with
+    /// every own record under the key compared request 1 against it and
+    /// rendered a false CONTRADICTED. One-to-one: two rows, request 2 closes,
+    /// request 1 stays open, nothing fails.
+    fn same_prompt_twice() -> (Vec<Value>, HashMap<String, ReceivedProvenance>) {
+        let d = "d".repeat(64);
+        let records = vec![
+            mesh_half("mine-1", "requested", &d, &"1".repeat(64), "m4-first"),
+            mesh_half("mine-2", "requested", &d, &"2".repeat(64), "m4-second"),
+            mesh_half("theirs-2", "served", &d, &"2".repeat(64), "m3-second"),
+        ];
+        let provenance = [provenance_for("theirs-2", "m3")].into_iter().collect();
+        (records, provenance)
+    }
+
+    #[test]
+    fn pane_c_same_digest_requests_pair_one_to_one_not_contradicted() {
+        let (records, provenance) = same_prompt_twice();
+        let pane = build_pane_c_list(&records, &provenance);
+        let rows = pane["rows"].as_array().unwrap();
+        assert_eq!(rows.len(), 2, "two exchanges, never merged into one row");
+        let d = format!("digest:{}", "d".repeat(64));
+        assert_eq!(rows[0]["exchange_key"], json!(d));
+        assert_eq!(rows[0]["mine"]["capsule_id"], json!("mine-1"));
+        assert_eq!(rows[0]["unilateral"], json!(true));
+        assert_eq!(rows[0]["digest_match"]["state"], json!(STATE_ABSENT));
+        assert_eq!(rows[1]["exchange_key"], json!(format!("{d}#2")));
+        assert_eq!(rows[1]["mine"]["record"]["capsule_id"], json!("mine-2"));
+        assert_eq!(rows[1]["digest_match"]["state"], json!(STATE_VERIFIED));
+        assert!(rows.iter().all(|r| r["digest_match"]["state"] != json!(STATE_FAILED)));
+
+        let drill = build_pane_c_drilldown(&records, &provenance, &format!("{d}#2"));
+        assert_eq!(drill["found"], json!(true));
+        assert_eq!(drill["view"]["capsule_id"], json!("mine-2"));
+        let past_the_end = build_pane_c_drilldown(&records, &provenance, &format!("{d}#3"));
+        assert_eq!(past_the_end["found"], json!(false));
+    }
+
+    #[test]
+    fn pane_b_same_digest_requests_confirm_one_and_count_two() {
+        let (records, provenance) = same_prompt_twice();
+        assert_eq!(distinct_exchange_count(&records, &provenance), 2);
+        let pane = build_pane_b(&records, &provenance);
+        let siblings: Vec<Value> = pane["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|r| r["confirmed_siblings"].as_array().cloned().unwrap_or_default())
+            .collect();
+        assert_eq!(siblings.len(), 1, "the half closes ONE of our records");
+        assert_eq!(siblings[0]["digest_match"]["state"], json!(STATE_VERIFIED));
+        assert_eq!(siblings[0]["mine"]["record"]["capsule_id"], json!("mine-2"));
+    }
+
+    /// One-to-one never hides a real disagreement: a pushed half whose answer
+    /// matches none of our records under the key is still set against one of
+    /// them and fails, so the gate still renders CONTRADICTED.
+    #[test]
+    fn a_half_matching_none_of_our_records_still_fails() {
+        let d = "d".repeat(64);
+        let records = vec![
+            mesh_half("mine-1", "requested", &d, &"1".repeat(64), "m4-first"),
+            mesh_half("theirs-x", "served", &d, &"9".repeat(64), "m3-x"),
+        ];
+        let provenance: HashMap<String, ReceivedProvenance> =
+            [provenance_for("theirs-x", "m3")].into_iter().collect();
+        let pane = build_pane_c_list(&records, &provenance);
+        let rows = pane["rows"].as_array().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["digest_match"]["state"], json!(STATE_FAILED));
+        assert_eq!(distinct_exchange_count(&records, &provenance), 1);
     }
 }
