@@ -345,6 +345,8 @@ async fn paid_exchange_on(
         .set(provider_service.clone())
         .map_err(|_| anyhow::anyhow!("service already initialized"))?;
     crate::network::payments::node_ext::attach_payments_plugin(&provider).await?;
+    let provider_events =
+        crate::network::openai::ingress::record_paid_exchanges_for_test(&provider);
     let payer = Node::new_for_tests(NodeRole::Client).await?;
     let payer_payments =
         super::client::Payments::attach_for_tests(&payer, payer_service.clone()).await?;
@@ -377,6 +379,9 @@ async fn paid_exchange_on(
     let (mut send, recv) = connection.open_bi().await?;
     let id = uuid::Uuid::new_v4().to_string();
     let request = paid_request(requested)?;
+    let expected_request_digest =
+        crate::plugin::openai_exchange::request_body_digest(&request.body, None);
+    let payer_node_id = hex::encode(payer.endpoint.id().as_bytes());
     wire::write(
         &mut send,
         &Frame::Request {
@@ -419,6 +424,14 @@ async fn paid_exchange_on(
     result?;
     backend.await??;
     let output_tokens = if output_allowance > 4096 { 5000 } else { 3 };
+    if !cancel_after_output {
+        assert_seller_published_the_exchange(
+            &provider_events.events(),
+            expected_request_digest.as_deref(),
+            &payer_node_id,
+            output_tokens,
+        );
+    }
     assert_settlement(&network, &payer_service, &provider_service, output_tokens)?;
     assert_eq!(
         payer_service.ledger.requests()?[0].terms.max_output_tokens,
@@ -427,6 +440,57 @@ async fn paid_exchange_on(
     payer.endpoint.close().await;
     provider.endpoint.close().await;
     Ok(())
+}
+
+/// mc:4's host gap: the seller's paid serving path must publish the same
+/// exchange events as the free path -- an effective and a terminal event under
+/// one exchange id, with this node's serving provenance naming the payer, the
+/// payer's request digest, and the digests of the response it delivered -- so
+/// its plugin seals a served record that pairs with the payer's.
+fn assert_seller_published_the_exchange(
+    events: &[crate::plugin::openai_exchange::OpenAiExchangeEnvelope],
+    expected_request_digest: Option<&str>,
+    payer_node_id: &str,
+    output_tokens: u64,
+) {
+    use crate::plugin::openai_exchange::{
+        ExchangeOutputDigests, OpenAiExchangeDispatchPath, OpenAiExchangeEnvelope,
+    };
+    assert_eq!(
+        events.len(),
+        2,
+        "one effective + one terminal event: {events:?}"
+    );
+    let (effective, terminal) = (&events[0], &events[1]);
+    assert_eq!(effective.exchange_id, terminal.exchange_id);
+    let terminal_json = serde_json::to_value(terminal).unwrap();
+    assert_eq!(terminal_json["phase"], "terminal");
+    assert_eq!(terminal.status, Some(200));
+    assert!(expected_request_digest.is_some());
+    assert_eq!(terminal.request_digest.as_deref(), expected_request_digest);
+    // The same construction the free relay uses on the body it delivered.
+    let body = serde_json::json!({
+        "choices": [{"text": "test output"}],
+        "usage": {"prompt_tokens": 40, "completion_tokens": output_tokens, "total_tokens": 40 + output_tokens}
+    });
+    let expected = OpenAiExchangeEnvelope::terminal(
+        String::new(),
+        OpenAiExchangeDispatchPath::RawProxy,
+        "test",
+        Some(200),
+        None,
+        None,
+    )
+    .with_output_digests(ExchangeOutputDigests::from_response_body(
+        &serde_json::to_vec(&body).unwrap(),
+    ));
+    assert!(expected.response_digest.is_some());
+    assert_eq!(terminal.response_digest, expected.response_digest);
+    let provenance = serde_json::to_string(&terminal.serving_provenance).unwrap();
+    assert!(
+        provenance.contains(payer_node_id),
+        "requested_by the payer: {provenance}"
+    );
 }
 
 fn paid_request(max_tokens: Option<u32>) -> Result<super::request::PaidRequest> {
