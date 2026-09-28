@@ -391,7 +391,6 @@ describe('tooltip census -- the copy itself', () => {
   it('every registered tooltip is one or two plain sentences with no banned word; outside Dig, no engineer’s words', () => {
     const face: string[] = [
       ...Object.values(COPY.HERO_TOOLTIPS),
-      COPY.HERO_DESCRIPTION,
       ...Object.values(COPY.PEER_COLUMN_TOOLTIPS),
       COPY.SELF_REPORTED_TOOLTIP,
       COPY.ROUTING_STOPPED_TOOLTIP,
@@ -425,6 +424,9 @@ describe('tooltip census -- the copy itself', () => {
     }
     expect(face.flatMap((text) => checkWords(text, 'face'))).toEqual([])
     expect(dig.flatMap((text) => checkWords(text, 'dig'))).toEqual([])
+    // u107: the hero sentence is the banner, in the PM's exact words, not a
+    // tooltip, so the two-sentence rule doesn't apply; the word rules do.
+    expect(checkWords(COPY.HERO_DESCRIPTION, 'face')).toEqual([])
   })
 
   it('the peer drill’s routing section and dialog carry no banned or engineer’s word, and never report or share', () => {

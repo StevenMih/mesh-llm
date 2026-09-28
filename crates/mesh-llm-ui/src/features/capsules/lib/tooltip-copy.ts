@@ -40,8 +40,15 @@ export const SAMPLE_DATA_UNAVAILABLE = 'Not available on sample data.'
 export const OWN_COPY_FAILS_WARNING =
   'Your own copy fails its checks, so neither side can rely on it, whatever the badge says.'
 
-export const HERO_DESCRIPTION =
-  'Your records and the other side’s are checked on this machine. Witnesses, payments and the owner link are read from this node, not checked here.'
+/** u107 (PM wording, exact): the one sentence under the Evidence title. The
+ *  last words link "docs" to the trust map: the capsule-emit-mesh repo doc
+ *  until agentactioncapsule.org has a trust-map page. */
+export const HERO_DESCRIPTION_BEFORE_LINK =
+  "Evidence: every exchange this node sealed at the moment it happened. A sealed record cannot change without it showing. Depending on what is turned on, it can also be shown to sit in a signed checkpoint, be witnessed by an outside log, and match the other side's record. The chips on each row say which of these were checked here. See the "
+export const HERO_DESCRIPTION_LINK_TEXT = 'docs'
+export const HERO_DESCRIPTION_AFTER_LINK = ' for the full trust map.'
+export const HERO_DESCRIPTION = HERO_DESCRIPTION_BEFORE_LINK + HERO_DESCRIPTION_LINK_TEXT + HERO_DESCRIPTION_AFTER_LINK
+export const TRUST_MAP_DOC_URL = 'https://github.com/action-state-group/capsule-emit-mesh/blob/main/docs/TRUST-MODEL.md'
 
 /** Peers table column headers. */
 export const PEER_COLUMN_TOOLTIPS = {

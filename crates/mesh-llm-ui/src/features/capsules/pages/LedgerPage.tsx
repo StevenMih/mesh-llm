@@ -120,8 +120,11 @@ import { useYourRecords } from '@/features/capsules/lib/use-your-records'
 import { heroStatusLine, nothingIsShared, promptsPill } from '@/features/capsules/lib/your-records'
 import {
   CLOSE_CARD_TOOLTIP,
-  HERO_DESCRIPTION,
+  HERO_DESCRIPTION_AFTER_LINK,
+  HERO_DESCRIPTION_BEFORE_LINK,
+  HERO_DESCRIPTION_LINK_TEXT,
   HERO_TOOLTIPS,
+  TRUST_MAP_DOC_URL,
   SAMPLE_DATA_UNAVAILABLE,
   WITNESS_OFF
 } from '@/features/capsules/lib/tooltip-copy'
@@ -1464,7 +1467,20 @@ export function LedgerPageContent({ focusExchangeKey }: { focusExchangeKey?: str
     <TooltipProvider delayDuration={250} skipDelayDuration={120}>
       <div className="mx-auto flex w-full max-w-[1440px] flex-col gap-[calc(var(--shell-normal)*2)]">
         <InfoBanner
-          description={HERO_DESCRIPTION}
+          description={
+            <>
+              {HERO_DESCRIPTION_BEFORE_LINK}
+              <a
+                className="underline underline-offset-2 hover:text-foreground"
+                href={TRUST_MAP_DOC_URL}
+                rel="noreferrer"
+                target="_blank"
+              >
+                {HERO_DESCRIPTION_LINK_TEXT}
+              </a>
+              {HERO_DESCRIPTION_AFTER_LINK}
+            </>
+          }
           leadingIcon={<ShieldCheck aria-hidden="true" className="size-4" />}
           status={
             <div className="flex flex-wrap items-center gap-2">

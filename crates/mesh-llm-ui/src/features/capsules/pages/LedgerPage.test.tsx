@@ -16,6 +16,7 @@
 //      pills, the whole-tab line, and `Your records` / `Clean up records`
 //      ([mesh-evidence-hero-your-history-and-cleanup], retiring the dead
 //      "This node's copy" label)
+import { HERO_DESCRIPTION, TRUST_MAP_DOC_URL } from '@/features/capsules/lib/tooltip-copy'
 import { formatExchangeTimestamp } from '@/features/capsules/lib/local-time'
 import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -150,10 +151,9 @@ describe('LedgerPageContent', () => {
     render(<LedgerPageContent />, { wrapper: makeWrapper() })
 
     expect(
-      screen.getByText(
-        'Your records and the other side’s are checked on this machine. Witnesses, payments and the owner link are read from this node, not checked here.'
-      )
+      screen.getByText((_, element) => element?.tagName === 'DIV' && element.textContent === HERO_DESCRIPTION)
     ).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'docs' })).toHaveAttribute('href', TRUST_MAP_DOC_URL)
   })
 
   it('Item 4: the honesty banner STAYS visible while the chip (i)s carry their detail (hovers explain, never hide, the banner)', () => {
@@ -161,10 +161,9 @@ describe('LedgerPageContent', () => {
 
     // The load-bearing banner is still on the face -- hovers do not replace it.
     expect(
-      screen.getByText(
-        'Your records and the other side’s are checked on this machine. Witnesses, payments and the owner link are read from this node, not checked here.'
-      )
+      screen.getByText((_, element) => element?.tagName === 'DIV' && element.textContent === HERO_DESCRIPTION)
     ).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'docs' })).toHaveAttribute('href', TRUST_MAP_DOC_URL)
 
     // The storage pills and `Your records` each carry their one sentence in
     // a persistent aria-describedby (HoverChip), not only mid-hover.
@@ -1353,7 +1352,10 @@ describe('LedgerPageContent — Part T6: Integrity section completion', () => {
     await user.click(screen.getByRole('tab', { name: /integrity/i }))
     await screen.findByText(`held by a witness no later than ${formatExchangeTimestamp('2026-09-10')}`)
 
-    const sectionText = (container.textContent ?? '').toLowerCase()
+    // The Integrity panel only: the hero sentence above the tabs says "be
+    // witnessed by an outside log" (u107, qualified), which is not this rule.
+    const integrityPanel = container.querySelector('[role="tabpanel"][data-state="active"]') ?? container
+    const sectionText = (integrityPanel.textContent ?? '').toLowerCase()
     expect(sectionText).not.toMatch(/timestamped/)
     expect(sectionText).not.toMatch(/\bwitnessed\b/)
   })
