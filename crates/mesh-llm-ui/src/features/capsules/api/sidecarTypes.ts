@@ -232,6 +232,10 @@ export type PaneBRow = {
    *  absent field reads as "not shown in this view", never as zero requests. */
   /** `requester_id_source` is always `self_declared`: each entry's requester
    *  id is what the request said about itself. */
+  /** Exchanges with this peer the door refused because their signed claims
+   *  contradict our record (another server named, other weights). Absent
+   *  when none. They count as disagreements. */
+  claims_refused?: number
   asked_of_you?: { entries: AskedOfYouEntry[]; requester_id_source?: 'self_declared' }
   exchange_count: number
   first_seen: string | null

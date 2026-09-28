@@ -2274,7 +2274,10 @@ pub(super) fn build_pane_json(
         // not ours).
         "pane-a" => build_pane_a(&our_records, read_checkpoint_card(ledger_dir)),
         "pane-b" => {
-            build_pane_b_with_settlements(&pane_bc_records, &received_provenance, &settlements)
+            let mut pane =
+                build_pane_b_with_settlements(&pane_bc_records, &received_provenance, &settlements);
+            count_claims_refused_by_peer(&mut pane, &our_records, &read_claim_refusals(ledger_dir));
+            pane
         }
         "pane-c" => {
             let mut pane = match exchange_id {
@@ -2373,21 +2376,72 @@ fn mark_claims_refused(pane: &mut Value, our_records: &[Value], refusals: &[Clai
         else {
             continue;
         };
-        if label_role(mine) != "requested" {
-            continue;
-        }
-        let (Some(digest), Some(server)) = (request_digest(mine), full_counterparty_node_id(mine))
-        else {
-            continue;
-        };
-        if let Some(refusal) = refusals
-            .iter()
-            .rev()
-            .find(|r| r.request_digest == digest && r.sender == server)
-        {
+        if let Some(refusal) = refusal_of_our_request(mine, refusals) {
             row["theirs"]["evidence_outcome"] = json!("claims_refused");
             row["theirs"]["evidence_outcome_date"] = json!(refusal.rejected_at);
             row["theirs"]["evidence_outcome_reason"] = json!(refusal.reason);
+        }
+    }
+}
+
+/// The door's claim refusal about one of OUR requester records: a refusal of
+/// a push from the very node our record says served it, for the same request
+/// digest. A refusal of a push from anyone else says nothing about our
+/// exchange.
+fn refusal_of_our_request<'a>(
+    record: &Value,
+    refusals: &'a [ClaimRefusal],
+) -> Option<&'a ClaimRefusal> {
+    if label_role(record) != "requested" {
+        return None;
+    }
+    let (Some(digest), Some(server)) = (request_digest(record), full_counterparty_node_id(record))
+    else {
+        return None;
+    };
+    refusals
+        .iter()
+        .rev()
+        .find(|r| r.request_digest == digest && r.sender == server)
+}
+
+/// u102 (4): each Peers row carries `claims_refused`, how many of our
+/// exchanges with that peer the door refused because its signed claims
+/// contradicted our record. They are disagreements, so the row's "differ"
+/// count must include them; otherwise Peers reads "0 differ" while the hero
+/// counts them.
+fn count_claims_refused_by_peer(
+    pane: &mut Value,
+    our_records: &[Value],
+    refusals: &[ClaimRefusal],
+) {
+    if refusals.is_empty() {
+        return;
+    }
+    let mut by_server: HashMap<String, u64> = HashMap::new();
+    for record in our_records {
+        if refusal_of_our_request(record, refusals).is_some()
+            && let Some(server) = full_counterparty_node_id(record)
+        {
+            *by_server.entry(server).or_default() += 1;
+        }
+    }
+    let Some(rows) = pane.get_mut("rows").and_then(Value::as_array_mut) else {
+        return;
+    };
+    for row in rows {
+        let node_id = row["identity"]["node_id"].as_str().map(str::to_string);
+        let peer_id = row["peer_id"].as_str().map(str::to_string);
+        let count: u64 = by_server
+            .iter()
+            .filter(|(server, _)| {
+                node_id.as_deref() == Some(server.as_str())
+                    || peer_id.as_deref() == Some(format!("node:{}", short_id(server, 16)).as_str())
+            })
+            .map(|(_, count)| count)
+            .sum();
+        if count > 0 {
+            row["claims_refused"] = json!(count);
         }
     }
 }
@@ -4550,6 +4604,15 @@ mod tests {
             pane["rows"][0]["theirs"].get("evidence_outcome").is_none(),
             "not from our provider, or not a claim check"
         );
+        let peers = build_pane_json("pane-b", dir.path(), None, PaymentsPresence::Off).unwrap();
+        assert!(
+            peers["rows"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|row| row.get("claims_refused").is_none()),
+            "no refusal of OUR provider, so no peer row counts one: {peers:#}"
+        );
 
         write(&[refusal(&provider, "model_mismatch")]);
         let pane = build_pane_json("pane-c", dir.path(), None, PaymentsPresence::Off).unwrap();
@@ -4560,6 +4623,19 @@ mod tests {
             theirs["evidence_outcome_date"],
             json!("2026-09-28T08:00:00Z")
         );
+
+        // u102 (4): the Peers row of that provider counts the refusal as a
+        // disagreement, so Peers never reads "0 differ" beside the hero's count.
+        let peers = build_pane_json("pane-b", dir.path(), None, PaymentsPresence::Off).unwrap();
+        let counted: Vec<&Value> = peers["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|row| row.get("claims_refused").is_some())
+            .collect();
+        assert_eq!(counted.len(), 1, "{peers:#}");
+        assert_eq!(counted[0]["claims_refused"], json!(1));
+        assert_eq!(counted[0]["identity"]["node_id"], json!(provider));
     }
 
     /// Review u81(a) item 7: a line typed "padding" that carries more than a
