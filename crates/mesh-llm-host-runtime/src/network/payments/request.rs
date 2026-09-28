@@ -7,6 +7,31 @@ pub(crate) struct PaidRequest {
     pub path: String,
     pub body: Value,
     pub intent: Option<mesh_llm_payments_types::intent::PaymentIntent>,
+    /// The request's capsule nonce headers (`x-capsule-client-nonce`, and
+    /// `x-capsule-nonce-origin` when present), carried to the backend so it
+    /// echoes them on the response, as it does on the free path. Without
+    /// them a paid Chat turn comes back with no nonce and its evidence chip
+    /// cannot find the turn's record.
+    pub capsule_nonce_headers: Vec<(String, String)>,
+}
+
+/// The capsule nonce headers a paid request carries through to the backend.
+fn capsule_nonce_headers(headers: &[httparse::Header<'_>]) -> Vec<(String, String)> {
+    [
+        openai_frontend::lifecycle::CLIENT_NONCE_HEADER.as_str(),
+        openai_frontend::lifecycle::CLIENT_NONCE_ORIGIN_HEADER.as_str(),
+    ]
+    .into_iter()
+    .filter_map(|name| {
+        let value = headers
+            .iter()
+            .find(|header| header.name.eq_ignore_ascii_case(name))
+            .and_then(|header| std::str::from_utf8(header.value).ok())?
+            .trim();
+        (!value.is_empty() && !value.contains(['\r', '\n']))
+            .then(|| (name.to_string(), value.to_string()))
+    })
+    .collect()
 }
 
 impl PaidRequest {
@@ -22,6 +47,7 @@ impl PaidRequest {
             "paid inference requires POST"
         );
         let path = request.path.context("missing request path")?;
+        let nonce_headers = capsule_nonce_headers(request.headers);
         ensure!(
             matches!(path, "/v1/chat/completions" | "/v1/completions"),
             "paid endpoint unsupported"
@@ -71,6 +97,7 @@ impl PaidRequest {
             path: path.into(),
             body,
             intent,
+            capsule_nonce_headers: nonce_headers,
         })
     }
 
@@ -92,7 +119,12 @@ impl PaidRequest {
 
     pub fn backend_http(&self, request_id: &str) -> Result<Vec<u8>> {
         let bytes = serde_json::to_vec(&self.body)?;
-        let mut raw = format!("POST {} HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nConnection: close\r\nx-request-id: {}\r\nContent-Length: {}\r\n\r\n", self.path, request_id, bytes.len()).into_bytes();
+        let nonce: String = self
+            .capsule_nonce_headers
+            .iter()
+            .map(|(name, value)| format!("{name}: {value}\r\n"))
+            .collect();
+        let mut raw = format!("POST {} HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nConnection: close\r\nx-request-id: {}\r\n{nonce}Content-Length: {}\r\n\r\n", self.path, request_id, bytes.len()).into_bytes();
         raw.extend(bytes);
         Ok(raw)
     }
@@ -145,6 +177,30 @@ mod tests {
         assert!(!stripped.contains("mesh_payment"));
         assert!(stripped.contains("x-request-id: kept"));
         assert!(PaidRequest::parse(b"POST /v1/completions HTTP/1.1\r\n\r\n{\"model\":\"m\",\"mesh_payment\":{\"mode\":\"bad\"}}").is_err());
+    }
+
+    /// mc:4: a paid Chat turn came back with no nonce, because the rebuilt
+    /// backend request dropped the capsule nonce headers. They now ride along
+    /// payer -> seller -> backend, so the backend echoes them as on the free
+    /// path. MUTANT: drop them in `backend_http` and the backend never sees one.
+    #[test]
+    fn the_capsule_nonce_rides_through_to_the_backend() {
+        let raw = b"POST /v1/chat/completions HTTP/1.1\r\nx-capsule-client-nonce: 0f8fad5b-d9cb-469f-a165-70867728950e\r\nx-capsule-nonce-origin: frontend\r\n\r\n{\"model\":\"m\",\"messages\":[]}";
+        let payer = PaidRequest::parse(raw).unwrap();
+        // The payer sends backend_http to the seller, which parses it again
+        // and sends its own backend_http to the backend.
+        let seller = PaidRequest::parse(&payer.backend_http("id-1").unwrap()).unwrap();
+        let to_backend = String::from_utf8(seller.backend_http("id-2").unwrap()).unwrap();
+        assert!(
+            to_backend.contains("x-capsule-client-nonce: 0f8fad5b-d9cb-469f-a165-70867728950e\r\n")
+        );
+        assert!(to_backend.contains("x-capsule-nonce-origin: frontend\r\n"));
+
+        let without =
+            PaidRequest::parse(b"POST /v1/chat/completions HTTP/1.1\r\n\r\n{\"model\":\"m\"}")
+                .unwrap();
+        let to_backend = String::from_utf8(without.backend_http("id").unwrap()).unwrap();
+        assert!(!to_backend.contains("x-capsule"));
     }
 
     #[test]
