@@ -1033,7 +1033,7 @@ if ($HostOnly) {
             $hostArgs += "--release"
             $hostOutputProfile = "release"
         }
-        $hostArgs += @("--locked", "-p", "mesh-llm", "--bin", "mesh-llm", "--no-default-features", "--features", "web-ui,dynamic-native-runtime,payments,wallet-lexe")
+        $hostArgs += @("--locked", "-p", "mesh-llm", "--bin", "mesh-llm", "--no-default-features", "--features", "web-ui,dynamic-native-runtime,payments,wallet-lexe,wallet-dev")
         Invoke-NativeCommand "cargo" $hostArgs
         Write-Host "Mesh backend-neutral host: target\\$hostOutputProfile\\mesh-llm.exe"
     }
@@ -1220,7 +1220,7 @@ Invoke-InRepo {
 
     Write-Host "Building mesh-llm..."
     $env:LLAMA_STAGE_BUILD_DIR = $buildDir
-    $cargoFeatureArgs = @("--no-default-features", "--features", "web-ui,dynamic-native-runtime,payments,wallet-lexe")
+    $cargoFeatureArgs = @("--no-default-features", "--features", "web-ui,dynamic-native-runtime,payments,wallet-lexe,wallet-dev")
     Set-BuildVersionStamp
     switch ($buildProfile) {
         "dev" {
