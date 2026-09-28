@@ -67,12 +67,3 @@ export function twinResponseTexts(rows: readonly ExchangeLedgerRow[]): [string |
   const [a, b] = rows
   return [a?.raw.mine.text ?? null, b?.raw.mine.text ?? null]
 }
-
-/** u103 (d): what the two providers' sealed answer texts say, as a fact, never
- *  a verdict: the referee's signed verdict is its own line once one exists. */
-export function twinAnswerFact(rows: readonly ExchangeLedgerRow[]): string {
-  const sameAnswer = rows.map((row) => row.raw.twin?.same_answer).find((value) => value !== undefined)
-  if (sameAnswer === true) return 'Answer text: the same from both peers'
-  if (sameAnswer === false) return 'Answer text: not the same from the two peers'
-  return 'Answer text: not compared yet'
-}
