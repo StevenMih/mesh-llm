@@ -9,6 +9,12 @@
 //!
 //! Loopback-only (`api::access::requires_trusted_local_access`): the route
 //! makes this node contact another one.
+//!
+//! The reply also carries the key this node was told the peer signs with
+//! (`announced_key_id`, from `ADMISSION_POLICY_PEER_KEYS`, the same operator
+//! map the capsule plugin's door checks pushes against). The console judges
+//! a refusal or a record only under that key, never under the key the reply
+//! names itself; `null` when the peer has no announced key.
 
 use serde::{Deserialize, Serialize};
 use tokio::net::TcpStream;
@@ -24,6 +30,9 @@ pub(super) const ROUTE: &str = "/api/evidence-requests";
 /// not there.
 const PLUGIN_IDS: [&str; 2] = ["capsule-emit-mesh", "admission-policy"];
 const ASK_OPERATION: &str = "mesh_evidence_request";
+/// Peer id -> the key that peer signs with, as a JSON object; set by the
+/// operator (the capsule plugin's `peer_keys.py` reads the same variable).
+const PEER_KEYS_ENV: &str = "ADMISSION_POLICY_PEER_KEYS";
 
 pub(super) fn is_route(path: &str) -> bool {
     path == ROUTE
@@ -41,6 +50,8 @@ struct AskRequest {
 struct AskResponse {
     /// The peer's reply as it sent it: an artifact, or a signed refusal.
     answer: serde_json::Value,
+    /// The key this node was told `peer` signs with; `None` when unknown.
+    announced_key_id: Option<String>,
 }
 
 pub(super) async fn handle(
@@ -64,7 +75,15 @@ pub(super) async fn handle(
     }
     let plugin_manager = state.inner.lock().await.plugin_manager.clone();
     match ask(&plugin_manager, &ask_arguments(&peer, &request.request)).await {
-        Ok(answer) => respond_json(stream, 200, &AskResponse { answer }).await,
+        Ok(answer) => {
+            let registry = std::env::var(PEER_KEYS_ENV).ok();
+            respond_json(
+                stream,
+                200,
+                &ask_response(answer, registry.as_deref(), &peer),
+            )
+            .await
+        }
         Err(reason) => respond_error(stream, 502, &reason).await,
     }
 }
@@ -74,6 +93,24 @@ fn full_peer_id(value: &str) -> Option<String> {
     let bytes: [u8; 32] = hex::decode(value.trim()).ok()?.try_into().ok()?;
     iroh::EndpointId::from_bytes(&bytes).ok()?;
     Some(hex::encode(bytes))
+}
+
+/// The reply: the peer's answer, unchanged, and the key it is announced with.
+fn ask_response(answer: serde_json::Value, registry: Option<&str>, peer: &str) -> AskResponse {
+    AskResponse {
+        answer,
+        announced_key_id: announced_key_for(registry, peer),
+    }
+}
+
+/// The key `peer` is announced with in `registry` (the JSON object in
+/// `ADMISSION_POLICY_PEER_KEYS`), lower-case. `None` when the variable is
+/// unset, not a JSON object, or has no non-empty string for `peer`: never a
+/// guess, as `peer_keys.announced_key_for` reads it.
+fn announced_key_for(registry: Option<&str>, peer: &str) -> Option<String> {
+    let registry: serde_json::Value = serde_json::from_str(registry?).ok()?;
+    let key = registry.as_object()?.get(peer)?.as_str()?.trim();
+    (!key.is_empty()).then(|| key.to_ascii_lowercase())
 }
 
 fn ask_arguments(peer: &str, request: &serde_json::Value) -> String {
@@ -187,6 +224,69 @@ mod tests {
         assert_eq!(asked[0].0, "capsule-emit-mesh");
         assert_eq!(asked[0].1["peer_id"], serde_json::Value::from(peer));
         assert_eq!(asked[0].1["request"], request);
+    }
+
+    /// The console judges a reply only under this key. MUTANT: return the
+    /// first key in the map, or any key for an unknown peer, and this fails.
+    #[test]
+    fn the_announced_key_is_the_one_configured_for_that_peer_only() {
+        let peer = "a".repeat(64);
+        let other = "b".repeat(64);
+        let registry = format!(
+            r#"{{"{other}":"{}","{peer}":"{}"}}"#,
+            "1".repeat(64),
+            "2F".repeat(32)
+        );
+        assert_eq!(
+            announced_key_for(Some(&registry), &peer),
+            Some("2f".repeat(32))
+        );
+        assert_eq!(announced_key_for(Some(&registry), &"c".repeat(64)), None);
+        assert_eq!(announced_key_for(None, &peer), None);
+        assert_eq!(announced_key_for(Some("not json"), &peer), None);
+        assert_eq!(
+            announced_key_for(Some(&format!(r#"{{"{peer}":""}}"#)), &peer),
+            None
+        );
+        assert_eq!(announced_key_for(Some(r#"["x"]"#), &peer), None);
+    }
+
+    /// The reply names the asked peer's announced key, or null. MUTANT: drop
+    /// it from the response and the console can never verify anything.
+    #[test]
+    fn the_reply_carries_the_asked_peers_announced_key() {
+        let peer = "a".repeat(64);
+        let registry = format!(r#"{{"{peer}":"{}"}}"#, "2".repeat(64));
+        let body = serde_json::to_value(ask_response(
+            serde_json::json!({"reason": "no_such_record"}),
+            Some(&registry),
+            &peer,
+        ))
+        .unwrap();
+        assert_eq!(body["answer"]["reason"], "no_such_record");
+        assert_eq!(
+            body["announced_key_id"],
+            serde_json::Value::from("2".repeat(64))
+        );
+        let unknown =
+            serde_json::to_value(ask_response(serde_json::json!({}), None, &peer)).unwrap();
+        assert_eq!(unknown["announced_key_id"], serde_json::Value::Null);
+    }
+
+    /// The console digests the request bytes it sends and a refusal must name
+    /// that digest; the bytes survive this route and the plugin's
+    /// `serde_json::to_vec` unchanged (keys already sorted, compact).
+    /// MUTANT: pretty-print or reorder here and the digests part.
+    #[test]
+    fn the_console_request_bytes_survive_serde_unchanged() {
+        let sent =
+            r#"{"coverage":{},"subject":{"by":"nonce","kind":"correlation","value":"nonce-1"}}"#;
+        let arguments = ask_arguments(&"a".repeat(64), &serde_json::from_str(sent).unwrap());
+        let arguments: serde_json::Value = serde_json::from_str(&arguments).unwrap();
+        assert_eq!(
+            serde_json::to_vec(&arguments["request"]).unwrap(),
+            sent.as_bytes()
+        );
     }
 
     #[test]

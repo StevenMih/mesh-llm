@@ -11,6 +11,7 @@ import {
   askIsOffered,
   askTarget,
   judgeAskReply,
+  producerSignatureVerifies,
   refusalSigningBody,
   stateAfterAsk,
   type AskJudges
@@ -38,12 +39,48 @@ function waitingRow(): PaneCRow {
   } as unknown as PaneCRow
 }
 
-function signedRefusal(reason: string) {
-  const secret = ed25519.utils.randomSecretKey()
-  const refusal = { request_digest: 'f'.repeat(64), reason, issued_at: '2026-09-28T21:00:05Z' }
+const hex = (bytes: Uint8Array) => Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')
+
+/** The peer's own key, as this node was told it (`announced_key_id`). */
+const PEER_SECRET = ed25519.utils.randomSecretKey()
+const ANNOUNCED = hex(ed25519.getPublicKey(PEER_SECRET))
+/** The digest of the request bytes this node sent. */
+const SENT = 'f'.repeat(64)
+
+function signedRefusal(reason: string, { secret = PEER_SECRET, requestDigest = SENT } = {}) {
+  const refusal = { request_digest: requestDigest, reason, issued_at: '2026-09-28T21:00:05Z' }
   const sig = ed25519.sign(refusalSigningBody(refusal), secret)
-  const hex = (bytes: Uint8Array) => Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')
   return { ...refusal, key_id: hex(ed25519.getPublicKey(secret)), sig: hex(sig) }
+}
+
+function answer(body: unknown, announcedKeyId: string | null = ANNOUNCED) {
+  return { kind: 'answer' as const, answer: body, announcedKeyId, sentRequestDigest: SENT }
+}
+
+/** A COSE_Sign1 (EdDSA, attached payload) over `payload`, as the producer
+ *  signs a record's `capsule_id`. */
+function coseSign1(payload: Uint8Array, secret: Uint8Array): string {
+  const protectedHeader = Uint8Array.of(0xa1, 0x01, 0x27)
+  const sigStructure = Uint8Array.of(
+    0x84,
+    0x6a,
+    ...new TextEncoder().encode('Signature1'),
+    0x43,
+    ...protectedHeader,
+    0x40,
+    0x58,
+    payload.length,
+    ...payload
+  )
+  const sig = ed25519.sign(sigStructure, secret)
+  return hex(
+    Uint8Array.of(0xd2, 0x84, 0x43, ...protectedHeader, 0xa0, 0x58, payload.length, ...payload, 0x58, 0x40, ...sig)
+  )
+}
+
+function signedRecord(secret: Uint8Array): Record<string, unknown> {
+  const id = new Uint8Array(32).fill(7)
+  return { capsule_id: hex(id), key_id: hex(ed25519.getPublicKey(secret)), signature: coseSign1(id, secret) }
 }
 
 const trustingJudges: AskJudges = {
@@ -87,32 +124,47 @@ describe('askIsOffered', () => {
 
 describe('judgeAskReply', () => {
   it('reads a signed no_such_record as their signed statement that they have no record', async () => {
-    const outcome = await judgeAskReply({ kind: 'answer', answer: signedRefusal('no_such_record') }, null, ASKED_AT)
+    const outcome = await judgeAskReply(answer(signedRefusal('no_such_record')), null, ASKED_AT)
     expect(outcome).toEqual({ kind: 'no_record', at: '2026-09-28T21:00:05Z' })
     expect(stateAfterAsk(waitingRow(), outcome, null)).toEqual({ kind: 'open_absent', date: '2026-09-28T21:00:05Z' })
   })
 
   it('reads any other signed reason as a signed decline', async () => {
-    const outcome = await judgeAskReply({ kind: 'answer', answer: signedRefusal('policy_decline') }, null, ASKED_AT)
+    const outcome = await judgeAskReply(answer(signedRefusal('policy_decline')), null, ASKED_AT)
     expect(outcome).toEqual({ kind: 'refused', at: '2026-09-28T21:00:05Z', reason: 'policy_decline' })
     expect(stateAfterAsk(waitingRow(), outcome, null).kind).toBe('open_refused')
   })
 
   it('reads a signed coverage lag as not yet provable: the row stays asked and can ask again', async () => {
-    const outcome = await judgeAskReply(
-      { kind: 'answer', answer: signedRefusal('coverage_unsatisfiable') },
-      null,
-      ASKED_AT
-    )
+    const outcome = await judgeAskReply(answer(signedRefusal('coverage_unsatisfiable')), null, ASKED_AT)
     expect(outcome.kind).toBe('no_reply')
     expect(stateAfterAsk(waitingRow(), outcome, null)).toEqual({ kind: 'open_asked', date: ASKED_AT })
   })
 
   it('never takes a refusal whose signature does not verify', async () => {
     const forged = { ...signedRefusal('no_such_record'), reason: 'policy_decline' }
-    const outcome = await judgeAskReply({ kind: 'answer', answer: forged }, null, ASKED_AT)
+    const outcome = await judgeAskReply(answer(forged), null, ASKED_AT)
     expect(outcome.kind).toBe('no_reply')
     expect(stateAfterAsk(waitingRow(), outcome, null)).toEqual({ kind: 'open_asked', date: ASKED_AT })
+  })
+
+  // EM adversarial read: a refusal must be theirs, and about this ask.
+  it('never takes a refusal signed with a throwaway key instead of their announced one', async () => {
+    const throwaway = signedRefusal('no_such_record', { secret: ed25519.utils.randomSecretKey() })
+    const outcome = await judgeAskReply(answer(throwaway), null, ASKED_AT)
+    expect(outcome).toMatchObject({ kind: 'no_reply', detail: 'their reply is not signed with the key they announced' })
+    expect(stateAfterAsk(waitingRow(), outcome, null).kind).toBe('open_asked')
+  })
+
+  it('never takes a refusal replayed from a different request', async () => {
+    const replayed = signedRefusal('no_such_record', { requestDigest: 'e'.repeat(64) })
+    const outcome = await judgeAskReply(answer(replayed), null, ASKED_AT)
+    expect(outcome).toMatchObject({ kind: 'no_reply', detail: 'their reply answers a different request' })
+  })
+
+  it('takes nothing as their refusal when this node has no announced key for them', async () => {
+    const outcome = await judgeAskReply(answer(signedRefusal('no_such_record'), null), null, ASKED_AT)
+    expect(outcome.kind).toBe('no_reply')
   })
 
   it('keeps the row asked, no reply yet, when the other side could not be reached', async () => {
@@ -123,7 +175,7 @@ describe('judgeAskReply', () => {
   it('closes the row through the gate when their record verifies and cites our half', async () => {
     const theirs = { ...fixtureHalfBody({ capsuleId: 'theirs-1' }), signature: 'aa', key_id: 'bb' }
     const outcome = await judgeAskReply(
-      { kind: 'answer', answer: { v: 1, subject_kind: 'correlation', bundles: [{ receipt: theirs }] } },
+      answer({ v: 1, subject_kind: 'correlation', bundles: [{ receipt: theirs }] }),
       FIXTURE_REQUEST_DIGEST,
       ASKED_AT,
       trustingJudges
@@ -136,7 +188,7 @@ describe('judgeAskReply', () => {
   it('never closes the row on a record whose signature does not verify', async () => {
     const theirs = { ...fixtureHalfBody({ capsuleId: 'theirs-1' }), signature: 'aa', key_id: 'bb' }
     const outcome = await judgeAskReply(
-      { kind: 'answer', answer: { v: 1, subject_kind: 'correlation', bundles: [{ receipt: theirs }] } },
+      answer({ v: 1, subject_kind: 'correlation', bundles: [{ receipt: theirs }] }),
       FIXTURE_REQUEST_DIGEST,
       ASKED_AT,
       { ...trustingJudges, producerSignatureVerifies: () => false }
@@ -151,11 +203,49 @@ describe('judgeAskReply', () => {
       key_id: 'bb'
     }
     const outcome = await judgeAskReply(
-      { kind: 'answer', answer: { v: 1, subject_kind: 'correlation', bundles: [{ receipt: theirs }] } },
+      answer({ v: 1, subject_kind: 'correlation', bundles: [{ receipt: theirs }] }),
       FIXTURE_REQUEST_DIGEST,
       ASKED_AT,
       trustingJudges
     )
     expect(stateAfterAsk(waitingRow(), outcome, ourRequestedRecord() as never).kind).toBe('contradicted')
+  })
+})
+
+describe('judgeAskReply: their record under the announced key', () => {
+  const realSignature: AskJudges = { recomputeIdMatch: async () => true, producerSignatureVerifies }
+
+  it('counts a fetched record as signed only under the key they announced', async () => {
+    for (const [secret, expected] of [
+      [PEER_SECRET, true],
+      [ed25519.utils.randomSecretKey(), false]
+    ] as const) {
+      const outcome = await judgeAskReply(
+        answer({ v: 1, subject_kind: 'correlation', bundles: [{ receipt: signedRecord(secret) }] }),
+        null,
+        ASKED_AT,
+        realSignature
+      )
+      expect(outcome.kind === 'record' && outcome.evidence.status === 'found' && outcome.evidence.signatureOk).toBe(
+        expected
+      )
+    }
+  })
+})
+
+describe('producerSignatureVerifies', () => {
+  it('holds for a record signed with their announced key', () => {
+    expect(producerSignatureVerifies(signedRecord(PEER_SECRET), ANNOUNCED)).toBe(true)
+  })
+
+  it('fails for a record validly signed with any other key, or with no announced key', () => {
+    const throwaway = signedRecord(ed25519.utils.randomSecretKey())
+    expect(producerSignatureVerifies(throwaway, ANNOUNCED)).toBe(false)
+    expect(producerSignatureVerifies(signedRecord(PEER_SECRET), null)).toBe(false)
+  })
+
+  it('fails when the envelope does not sign the record’s own id', () => {
+    const record = signedRecord(PEER_SECRET)
+    expect(producerSignatureVerifies({ ...record, capsule_id: '08'.repeat(32) }, ANNOUNCED)).toBe(false)
   })
 })

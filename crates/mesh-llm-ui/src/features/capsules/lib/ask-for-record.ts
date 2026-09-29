@@ -4,15 +4,21 @@
 // judges what came back, the same way the row judges a record that was
 // pushed: nothing here is trusted because it arrived.
 //
-//   - a refusal counts only if its signature verifies under the key it names;
-//     `no_such_record` is their signed "I have no record of this", any other
+//   - a refusal counts only if it is signed with the key this node was told
+//     the peer signs with (`announcedKeyId`, never the key the refusal names
+//     itself) and it names OUR request (`request_digest` = the digest of the
+//     bytes we sent): a throwaway key or a refusal replayed from another
+//     request proves nothing. `no_such_record` is their signed "I have no
+//     record of this", any other
 //     reason is a signed decline, except `coverage_unsatisfiable`: they hold
 //     the record but can't prove it yet (no checkpoint covers it), so the row
 //     stays asked and can ask again;
 //   - a record goes through THE row gate (`deriveRightCellState`) as a fetched
 //     half: it closes the row only if its id recomputes, its signature
-//     verifies, it came from the node that served us and both digests equal
-//     ours;
+//     verifies under the announced key, it came from the node that served us
+//     and both digests equal ours;
+//   - with no announced key for the peer, nothing it sends can be checked:
+//     the row stays asked;
 //   - no answer, or an answer that proves nothing, leaves the row "asked, no
 //     reply yet".
 import { ed25519 } from '@noble/curves/ed25519'
@@ -106,34 +112,55 @@ export function refusalSigningBody(refusal: { request_digest: string; reason: st
   return new TextEncoder().encode(body)
 }
 
-function refusalVerifies(refusal: Record<string, unknown>): boolean {
-  const key = hexBytes(str(refusal.key_id) ?? '')
-  const sig = hexBytes(str(refusal.sig) ?? '')
+/** The announced key's bytes, when the item names that same key. */
+function announcedKeyBytes(namedKeyId: unknown, announcedKeyId: string | null): Uint8Array | null {
+  const named = str(namedKeyId)?.toLowerCase()
+  if (!announcedKeyId || named !== announcedKeyId.toLowerCase()) return null
+  const key = hexBytes(announcedKeyId)
+  return key && key.length === 32 ? key : null
+}
+
+/** Why a refusal proves nothing, or `null` when it holds: signed under the
+ *  announced key, over OUR request. */
+function refusalProblem(
+  refusal: Record<string, unknown>,
+  announcedKeyId: string | null,
+  sentRequestDigest: string
+): string | null {
+  if (!announcedKeyId) return 'this node has no announced key for them, so their reply cannot be checked'
+  const key = announcedKeyBytes(refusal.key_id, announcedKeyId)
+  if (!key) return 'their reply is not signed with the key they announced'
   const requestDigest = str(refusal.request_digest)
+  if (requestDigest?.toLowerCase() !== sentRequestDigest.toLowerCase()) {
+    return 'their reply answers a different request'
+  }
+  const sig = hexBytes(str(refusal.sig) ?? '')
   const reason = str(refusal.reason)
   const issuedAt = str(refusal.issued_at)
-  if (!key || key.length !== 32 || !sig || !requestDigest || !reason || !issuedAt) return false
+  if (!sig || !reason || !issuedAt) return 'their reply is not signed with the key they announced'
   try {
-    return ed25519.verify(sig, refusalSigningBody({ request_digest: requestDigest, reason, issued_at: issuedAt }), key)
+    const body = refusalSigningBody({ request_digest: requestDigest, reason, issued_at: issuedAt })
+    return ed25519.verify(sig, body, key) ? null : 'their reply is not signed with the key they announced'
   } catch {
-    return false
+    return 'their reply is not signed with the key they announced'
   }
 }
 
 /** A record's producer signature: a COSE_Sign1 over its own 32-byte
- *  `capsule_id`, under the key it names. */
-export function producerSignatureVerifies(record: Record<string, unknown>): boolean {
+ *  `capsule_id`, under the key this node was told the peer signs with. A
+ *  record naming any other key, or a peer with no announced key, fails. */
+export function producerSignatureVerifies(record: Record<string, unknown>, announcedKeyId: string | null): boolean {
   const envelope = hexBytes(str(record.signature) ?? '')
-  const key = hexBytes(str(record.key_id) ?? '')
+  const key = announcedKeyBytes(record.key_id, announcedKeyId)
   const id = hexBytes(str(record.capsule_id) ?? '')
-  if (!envelope || !key || key.length !== 32 || !id) return false
+  if (!envelope || !key || !id) return false
   const result = verifyCoseSign1(envelope, key)
   return result.verified && result.payload.length === id.length && result.payload.every((b, i) => b === id[i])
 }
 
 export type AskJudges = {
   recomputeIdMatch: (record: Record<string, unknown>, capsuleId: string | null) => Promise<boolean | null>
-  producerSignatureVerifies: (record: Record<string, unknown>) => boolean
+  producerSignatureVerifies: (record: Record<string, unknown>, announcedKeyId: string | null) => boolean
 }
 
 const REAL_JUDGES: AskJudges = { recomputeIdMatch, producerSignatureVerifies }
@@ -149,9 +176,8 @@ export async function judgeAskReply(
   if (reply.kind === 'no_answer') return { kind: 'no_reply', at: askedAt, detail: reply.message }
   const answer = obj(reply.answer)
   if (answer && typeof answer.reason === 'string') {
-    if (!refusalVerifies(answer)) {
-      return { kind: 'no_reply', at: askedAt, detail: 'their reply is signed with a key that does not verify it' }
-    }
+    const problem = refusalProblem(answer, reply.announcedKeyId, reply.sentRequestDigest)
+    if (problem) return { kind: 'no_reply', at: askedAt, detail: problem }
     const at = str(answer.issued_at) ?? askedAt
     if (answer.reason === COVERAGE_LAG) {
       return { kind: 'no_reply', at: askedAt, detail: 'they hold the record but cannot prove it yet; ask again later' }
@@ -171,7 +197,7 @@ export async function judgeAskReply(
     evidence: {
       status: 'found',
       idMatch,
-      signatureOk: judges.producerSignatureVerifies(receipt),
+      signatureOk: judges.producerSignatureVerifies(receipt, reply.announcedKeyId),
       peerRecord: receipt,
       fetch: () => {}
     }
