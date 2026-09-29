@@ -252,6 +252,24 @@ describe('createMeshConnectionAdapter', () => {
     expect(answerDeltas).toEqual(['Corroborated answer.'])
   })
 
+  it('sends x-mesh-target only when the chat page is pinned to a node', async () => {
+    const node = 'a'.repeat(64)
+    for (const [target, expected] of [
+      [node, node],
+      [null, undefined]
+    ] as const) {
+      const fetchMock = vi.fn().mockResolvedValue(new Response(createSSEStream(['data: [DONE]\n']), { status: 200 }))
+      vi.stubGlobal('fetch', fetchMock)
+      const adapter = createMeshConnectionAdapter('model-a', undefined, undefined, target)
+      for await (const chunk of adapter.connect(createMessages(), undefined, undefined)) {
+        void chunk
+      }
+      const headers = fetchMock.mock.calls[0]?.[1]?.headers as Record<string, string>
+      expect(headers['x-mesh-target']).toBe(expected)
+      expect(headers['Content-Type']).toBe('application/json')
+    }
+  })
+
   it('includes the latest system prompt in responses requests', async () => {
     let currentSystemPrompt = 'Be concise about mesh routing.'
     const fetchMock = vi.fn().mockResolvedValue(new Response(createSSEStream(['data: [DONE]\n']), { status: 200 }))

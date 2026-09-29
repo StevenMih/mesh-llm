@@ -15,11 +15,6 @@ pub(crate) fn requires_trusted_local_access(method: &str, path: &str) -> bool {
     if path == "/api/peer-blocks" || path.starts_with("/api/peer-blocks/") {
         return true;
     }
-    // Where this console's chats go: reading it shows, writing it changes
-    // routing.
-    if path == "/api/route-target" {
-        return true;
-    }
     if path == "/mcp"
         || path.starts_with("/api/plugins")
         || (method == "POST"
@@ -166,9 +161,6 @@ mod tests {
             ("GET", "/api/peer-blocks"),
             ("POST", "/api/peer-blocks"),
             ("POST", "/api/peer-blocks/unblock"),
-            ("GET", "/api/route-target"),
-            ("POST", "/api/route-target"),
-            ("DELETE", "/api/route-target"),
         ] {
             assert!(
                 requires_trusted_local_access(method, path),

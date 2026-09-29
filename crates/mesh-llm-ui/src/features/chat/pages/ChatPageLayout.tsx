@@ -1,4 +1,5 @@
 import type { RefObject } from 'react'
+import { chatTargetLabel } from '@/features/chat/api/chat-target'
 import { Cpu, HardDrive } from 'lucide-react'
 import { LiveDataUnavailableOverlay } from '@/components/ui/LiveDataUnavailableOverlay'
 import { DestructiveActionDialog } from '@/components/ui/DestructiveActionDialog'
@@ -33,6 +34,8 @@ type SidebarTab = 'conversations' | 'transparency'
 
 type ChatPageLayoutProps = {
   data: ChatHarnessData
+  /** The node `/chat?target=` pins this page's chats to; `null` is automatic. */
+  meshTarget?: string | null
   showLiveError: boolean
   showLiveLoading: boolean
   onRetryLiveData: () => void
@@ -117,6 +120,7 @@ function ChatMetricBadge({ metric }: { metric: ChatActionMetric }) {
 
 export function ChatPageLayout({
   data,
+  meshTarget = null,
   showLiveError,
   showLiveLoading,
   onRetryLiveData,
@@ -269,7 +273,11 @@ export function ChatPageLayout({
         hideSidebar={conversations.length === 0}
         stickToBottomKey={`${displayedConversationId}:${latestTurnToken}`}
         title={data.title}
-        subtitle={activeConversation?.title}
+        subtitle={
+          meshTarget
+            ? [activeConversation?.title, chatTargetLabel(meshTarget)].filter(Boolean).join(' · ')
+            : activeConversation?.title
+        }
         actions={actions}
         composer={
           <Composer

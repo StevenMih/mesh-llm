@@ -12,6 +12,8 @@ type UseMeshChatOptions = {
   systemPrompt?: string
   initialMessages: ThreadMessage[]
   onResponseMetadata?: (metadata: ChatResponseMetadata) => void
+  /** The node `?target=` pins this page's chats to; `null` is automatic. */
+  meshTarget?: string | null
 }
 
 function createMutableStringSource(initialValue: string) {
@@ -32,7 +34,8 @@ export function useMeshChat({
   model,
   systemPrompt = '',
   initialMessages,
-  onResponseMetadata
+  onResponseMetadata,
+  meshTarget = null
 }: UseMeshChatOptions): UseChatReturn {
   const previousConversationIdRef = useRef(conversationId)
   const [currentModel] = useState(() => createMutableStringSource(model))
@@ -44,8 +47,8 @@ export function useMeshChat({
   }, [currentModel, currentSystemPrompt, model, systemPrompt])
 
   const connection = useMemo(
-    () => createMeshConnectionAdapter(currentModel, onResponseMetadata, currentSystemPrompt),
-    [currentModel, currentSystemPrompt, onResponseMetadata]
+    () => createMeshConnectionAdapter(currentModel, onResponseMetadata, currentSystemPrompt, meshTarget),
+    [currentModel, currentSystemPrompt, meshTarget, onResponseMetadata]
   )
   const hydratedMessages = useMemo(() => threadMessagesToUIMessages(initialMessages), [initialMessages])
   const chat = useChat({ threadId: conversationId, connection, initialMessages: hydratedMessages })

@@ -17,6 +17,8 @@ export type ChatSessionContextValue = {
   isStreaming: boolean
   liveMessagesWithModels: ThreadMessage[]
   liveMode: boolean
+  /** The node `/chat?target=` pins this page's chats to; `null` is automatic. */
+  meshTarget: string | null
   messageCounts: Record<string, number>
   renameConversation: ReturnType<typeof useConversations>['renameConversation']
   selectConversation: ReturnType<typeof useConversations>['selectConversation']

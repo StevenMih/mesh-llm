@@ -13,7 +13,6 @@ mod objects;
 mod path_picker;
 mod peer_blocks;
 mod plugins;
-mod route_target;
 pub(crate) mod runtime;
 mod runtime_activity;
 pub(crate) mod runtime_control_state;
@@ -141,10 +140,6 @@ pub(super) const DISPATCH_REQUEST: DispatchRequestFn =
                 }
                 (_, route_path) if peer_blocks::is_route(route_path) => {
                     peer_blocks::handle(stream, state, method, route_path, body).await?;
-                    Ok(true)
-                }
-                (_, route_path) if route_target::is_route(route_path) => {
-                    route_target::handle(stream, state, method, body).await?;
                     Ok(true)
                 }
                 ("GET", "/api/model-targets") => {

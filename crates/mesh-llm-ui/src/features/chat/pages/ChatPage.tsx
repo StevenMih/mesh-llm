@@ -114,6 +114,7 @@ export function ChatPageContent({ data = CHAT_HARNESS }: ChatPageProps) {
     draftConversationId,
     isStreaming,
     liveMessagesWithModels,
+    meshTarget,
     messageCounts,
     renameConversation,
     selectConversation: persistConversationSelection,
@@ -690,6 +691,7 @@ export function ChatPageContent({ data = CHAT_HARNESS }: ChatPageProps) {
   return (
     <ChatPageLayout
       data={data}
+      meshTarget={meshTarget}
       showLiveError={showLiveError}
       showLiveLoading={showLiveLoading}
       onRetryLiveData={retryLiveData}

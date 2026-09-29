@@ -3,6 +3,7 @@ import { CHAT_HARNESS } from '@/features/app-tabs/data'
 import type { ChatHarnessData, ThreadMessage } from '@/features/app-tabs/types'
 import { useDataMode } from '@/lib/data-mode'
 import { useMeshChat } from '@/features/chat/api/use-chat'
+import { chatTargetFromSearch } from '@/features/chat/api/chat-target'
 import { usePersistentChatSystemPrompt } from '@/features/chat/api/system-prompt'
 import { useChatMessages } from '@/features/chat/api/use-chat-messages'
 import { useConversations } from '@/features/chat/api/use-conversations'
@@ -150,12 +151,14 @@ type UseChatLaneOptions = {
   sessionModel: string
   systemPrompt: string
   updateThread: ReturnType<typeof useConversations>['updateThread']
+  meshTarget: string | null
 }
 
 function useChatLane({
   conversationId,
   initialThread,
   liveMode,
+  meshTarget,
   messageModels,
   responseMetadataByConversation,
   setResponseMetadataByConversation,
@@ -188,7 +191,8 @@ function useChatLane({
     model: sessionModel,
     systemPrompt,
     initialMessages: initialThread,
-    onResponseMetadata: handleResponseMetadata
+    onResponseMetadata: handleResponseMetadata,
+    meshTarget
   })
   const liveMessages = useChatMessages(chat.messages)
   const liveMessagesWithModels = useMemo<ThreadMessage[]>(() => {
@@ -277,10 +281,15 @@ export function ChatSessionProvider({ children, data = CHAT_HARNESS }: ChatSessi
     [conversations.threads, laneConversationIds.secondary]
   )
   const updateThread = conversations.updateThread
+  // Read once, when the chat page opens: `/chat?target=<node>` pins it.
+  const [meshTarget] = useState(() =>
+    typeof window === 'undefined' ? null : chatTargetFromSearch(window.location.search)
+  )
   const primaryLane = useChatLane({
     conversationId: laneConversationIds.primary,
     initialThread: primaryInitialThread,
     liveMode,
+    meshTarget,
     messageModels,
     responseMetadataByConversation,
     setResponseMetadataByConversation,
@@ -292,6 +301,7 @@ export function ChatSessionProvider({ children, data = CHAT_HARNESS }: ChatSessi
     conversationId: laneConversationIds.secondary,
     initialThread: secondaryInitialThread,
     liveMode,
+    meshTarget,
     messageModels,
     responseMetadataByConversation,
     setResponseMetadataByConversation,
@@ -383,6 +393,7 @@ export function ChatSessionProvider({ children, data = CHAT_HARNESS }: ChatSessi
       isStreaming,
       liveMessagesWithModels,
       liveMode,
+      meshTarget,
       messageCounts,
       renameConversation: conversations.renameConversation,
       selectConversation: conversations.selectConversation,
@@ -406,6 +417,7 @@ export function ChatSessionProvider({ children, data = CHAT_HARNESS }: ChatSessi
       isStreaming,
       liveMessagesWithModels,
       liveMode,
+      meshTarget,
       messageCounts,
       setSystemPrompt,
       streamingConversationIds,

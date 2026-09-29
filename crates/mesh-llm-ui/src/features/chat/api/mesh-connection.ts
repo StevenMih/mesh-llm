@@ -234,7 +234,8 @@ async function* runConnect(
   messages: Array<UIMessage> | Array<ModelMessage>,
   abortSignal?: AbortSignal,
   onResponseMetadata?: (metadata: ChatResponseMetadata) => void,
-  systemPrompt = ''
+  systemPrompt = '',
+  meshTarget: string | null = null
 ): AsyncGenerator<StreamChunk> {
   const clientId = getClientId()
   const requestId = generateRequestId()
@@ -258,7 +259,10 @@ async function* runConnect(
     for (let attempt = 0; ; attempt += 1) {
       response = await fetch(`${env.managementApiUrl}/api/responses`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        // `?target=` on the chat page pins this chat to one node.
+        headers: meshTarget
+          ? { 'Content-Type': 'application/json', 'x-mesh-target': meshTarget }
+          : { 'Content-Type': 'application/json' },
         body: JSON.stringify(requestBody),
         signal: abortSignal
       })
@@ -387,10 +391,18 @@ async function* runConnect(
 export function createMeshConnectionAdapter(
   model: StringSource,
   onResponseMetadata?: (metadata: ChatResponseMetadata) => void,
-  systemPrompt?: StringSource
+  systemPrompt?: StringSource,
+  meshTarget: string | null = null
 ): ConnectConnectionAdapter {
   return {
     connect: (_messages, _data, abortSignal) =>
-      runConnect(resolveModel(model), _messages, abortSignal, onResponseMetadata, resolveSystemPrompt(systemPrompt))
+      runConnect(
+        resolveModel(model),
+        _messages,
+        abortSignal,
+        onResponseMetadata,
+        resolveSystemPrompt(systemPrompt),
+        meshTarget
+      )
   }
 }

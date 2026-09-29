@@ -241,9 +241,9 @@ impl ExchangeOutputDigests {
         let Some(response) = checked_canonical_digest_bytes(value, source_json) else {
             return Self::default();
         };
-        // The owner's opt-in to keep the text (`keep_text`): the served
-        // response, as digested here, for this exchange's text file.
-        crate::plugin::keep_text::offer_response(value);
+        // The operator's opt-in to hand plugins the bodies
+        // (`exchange_bodies`): the served response, as digested here.
+        crate::plugin::exchange_bodies::offer_response(value);
         let tool_calls = collect_response_tool_calls(value);
         let reasoning = collect_response_reasoning(value);
         let text = value
@@ -460,6 +460,23 @@ pub struct OpenAiExchangeEnvelope {
     /// not-yet-wired change.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub twin_bracket_id: Option<String>,
+    /// The exchange's request and response bodies, on a `Terminal` envelope
+    /// only, and only when the operator set `MESH_LLM_PLUGIN_EXCHANGE_BODIES=1`
+    /// ([`crate::plugin::exchange_bodies`]). Absent otherwise: by default a
+    /// plugin sees digests, never text.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exchange_bodies: Option<ExchangeBodies>,
+}
+
+/// See [`OpenAiExchangeEnvelope::exchange_bodies`]. Either side may be absent
+/// when the host did not see it (e.g. a request that failed before a
+/// response).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ExchangeBodies {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response: Option<serde_json::Value>,
 }
 
 impl OpenAiExchangeEnvelope {
@@ -486,6 +503,7 @@ impl OpenAiExchangeEnvelope {
             reasoning_digest: None,
             response_text_digest: None,
             twin_bracket_id: None,
+            exchange_bodies: None,
         }
     }
 
@@ -515,6 +533,7 @@ impl OpenAiExchangeEnvelope {
             reasoning_digest: None,
             response_text_digest: None,
             twin_bracket_id: None,
+            exchange_bodies: None,
         }
     }
 
@@ -626,6 +645,7 @@ impl OpenAiExchangeEnvelope {
             reasoning_digest: None,
             response_text_digest: None,
             twin_bracket_id: None,
+            exchange_bodies: None,
         }
     }
 
@@ -687,6 +707,7 @@ impl OpenAiExchangeEnvelope {
             reasoning_digest: None,
             response_text_digest: None,
             twin_bracket_id: None,
+            exchange_bodies: None,
         }
     }
 }
@@ -718,14 +739,8 @@ pub trait OpenAiExchangeChannel: Send + Sync + 'static {
 #[async_trait]
 impl OpenAiExchangeChannel for PluginManager {
     async fn publish(&self, event: &OpenAiExchangeEnvelope) {
-        if crate::plugin::keep_text::enabled()
-            && let Err(error) = crate::plugin::keep_text::write_terminal(
-                &crate::plugin::keep_text::ledger_dir(),
-                event,
-            )
-        {
-            tracing::warn!(%error, "could not keep this exchange's text");
-        }
+        let with_bodies = crate::plugin::exchange_bodies::attach(event);
+        let event = with_bodies.as_ref().unwrap_or(event);
         let body = match serde_json::to_vec(event) {
             Ok(body) => body,
             Err(error) => {

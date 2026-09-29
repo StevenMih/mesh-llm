@@ -1509,11 +1509,11 @@ fn spawn_ambient_twin_dispatch(args: AmbientTwinDispatchArgs) {
         required_tokens,
         bracket_id,
     } = args;
-    tokio::spawn(crate::plugin::keep_text::scope(async move {
-        if crate::plugin::keep_text::enabled() {
+    tokio::spawn(crate::plugin::exchange_bodies::scope(async move {
+        if crate::plugin::exchange_bodies::enabled() {
             request.ensure_body_json();
             if let Some(body) = request.body_json.as_ref() {
-                crate::plugin::keep_text::offer_request(body);
+                crate::plugin::exchange_bodies::offer_request(body);
             }
         }
         let exchange_id = uuid::Uuid::new_v4().to_string();
@@ -2723,13 +2723,13 @@ async fn handle_buffered_api_request(
 
     let outcome = {
         let route_observer = lifecycle.route_observer();
-        // The owner's opt-in to keep the text of this exchange
-        // (`plugin::keep_text`): a slot for its request and answer.
-        crate::plugin::keep_text::scope(async {
-            if crate::plugin::keep_text::enabled() {
+        // The operator's opt-in to hand plugins this exchange's bodies
+        // (`plugin::exchange_bodies`): a slot for its request and answer.
+        crate::plugin::exchange_bodies::scope(async {
+            if crate::plugin::exchange_bodies::enabled() {
                 request.ensure_body_json();
                 if let Some(body) = request.body_json.as_ref() {
-                    crate::plugin::keep_text::offer_request(body);
+                    crate::plugin::exchange_bodies::offer_request(body);
                 }
             }
             route_request(
