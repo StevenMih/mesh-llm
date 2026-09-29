@@ -25,7 +25,7 @@ import { HoverChip } from '@/features/capsules/components/HoverChip'
 import { PEER_PAYMENTS_TOOLTIP } from '@/features/capsules/lib/tooltip-copy'
 import type { PeerRoutingControls } from '@/features/capsules/api/usePeerBlocks'
 import { routableNodeId, routingState } from '@/features/capsules/lib/peer-routing-view'
-import { ROUTING_STOPPED_LABEL, ROUTING_STOPPED_TOOLTIP } from '@/features/capsules/lib/tooltip-copy'
+import { ROUTING_STOPPED_LABEL, CHAT_TARGET_COPY, ROUTING_STOPPED_TOOLTIP } from '@/features/capsules/lib/tooltip-copy'
 
 export type PeerTableRowProps = {
   view: PeerTableRowView
@@ -57,6 +57,9 @@ export function PeerTableRow({
   )
   const inspectable = view.row !== null
   const routingStopped = view.row !== null && routingState(routableNodeId(view.row), routing?.blocks).kind === 'stopped'
+  // u115: the row names the node this console's chats are pointed at.
+  const chatTargetHere =
+    view.row !== null && routing?.chat?.target != null && routableNodeId(view.row) === routing.chat.target
   const openInspector = () => setInspectorOpen(true)
 
   return (
@@ -100,6 +103,15 @@ export function PeerTableRow({
                 <span>
                   <StatusBadge size="caption" tone="muted">
                     {ROUTING_STOPPED_LABEL}
+                  </StatusBadge>
+                </span>
+              </HoverChip>
+            ) : null}
+            {chatTargetHere ? (
+              <HoverChip census="peer:chat_target" label={CHAT_TARGET_COPY.rowTooltip}>
+                <span data-peer-chat-target="true">
+                  <StatusBadge size="caption" tone="accent">
+                    {CHAT_TARGET_COPY.rowLabel}
                   </StatusBadge>
                 </span>
               </HoverChip>

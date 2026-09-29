@@ -33,17 +33,25 @@ pub(super) async fn handle(
         return Ok(());
     };
 
-    let port = state.inner.lock().await.api_port;
+    let (port, console_target) = {
+        let inner = state.inner.lock().await;
+        (inner.api_port, inner.console_chat_target.clone())
+    };
 
     let target = format!("127.0.0.1:{port}");
     match TcpStream::connect(&target).await {
         Ok(mut upstream) => {
             let rewritten = if is_openai_passthrough {
                 req.to_string()
-            } else if path_only.starts_with("/api/chat") {
-                req.replacen("/api/chat", upstream_path, 1)
             } else {
-                req.replacen("/api/responses", upstream_path, 1)
+                // The console's own chat: it goes where "Chat with this node"
+                // pointed it (`route_target.rs`), else automatic.
+                let req = super::route_target::with_mesh_target(req, console_target.as_deref());
+                if path_only.starts_with("/api/chat") {
+                    req.replacen("/api/chat", upstream_path, 1)
+                } else {
+                    req.replacen("/api/responses", upstream_path, 1)
+                }
             };
             upstream.write_all(rewritten.as_bytes()).await?;
             tokio::io::copy_bidirectional(stream, &mut upstream).await?;

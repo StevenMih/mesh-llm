@@ -27,6 +27,11 @@ pub(crate) fn requires_trusted_local_access(method: &str, path: &str) -> bool {
     if path == "/api/evidence-requests" {
         return true;
     }
+    // Where this console's chats go: reading it shows, writing it changes
+    // routing.
+    if path == "/api/route-target" {
+        return true;
+    }
     if path == "/mcp"
         || path.starts_with("/api/plugins")
         || (method == "POST"
@@ -174,6 +179,9 @@ mod tests {
             ("POST", "/api/peer-blocks"),
             ("POST", "/api/peer-blocks/unblock"),
             ("POST", "/api/evidence-requests"),
+            ("GET", "/api/route-target"),
+            ("POST", "/api/route-target"),
+            ("DELETE", "/api/route-target"),
             ("GET", "/api/capsules/panes/pane-a"),
             ("GET", "/api/capsules/panes/pane-b"),
             ("GET", "/api/capsules/panes/pane-c"),

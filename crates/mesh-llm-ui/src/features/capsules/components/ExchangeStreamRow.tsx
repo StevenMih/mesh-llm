@@ -13,7 +13,9 @@ import { Button } from '@/components/ui/button'
 import { StatusBadge, type StatusBadgeTone } from '@/components/ui/StatusBadge'
 import { cn } from '@/lib/cn'
 import type { CapsuleRecord } from '@/features/capsules/api/types'
+import { ChatWithNodeButton } from '@/features/capsules/components/ChatWithNodeButton'
 import { SeeInLogsLink } from '@/features/capsules/components/ExchangeIdCell'
+import type { RouteTargetControls } from '@/features/capsules/api/useRouteTarget'
 import { ExchangeRowChips } from '@/features/capsules/components/ExchangeRowChips'
 import { SecurityChecksView } from '@/features/capsules/components/SecurityChecksView'
 import { SettlementEntries, SettlementStrip } from '@/features/capsules/components/SettlementRow'
@@ -187,6 +189,8 @@ export type ExchangeStreamRowProps = {
   askOutcome?: AskOutcome | null
   /** Sends the ask. Absent where the page can't ask (the row offers none). */
   onAskForRecord?: (row: ExchangeLedgerRow, target: AskTarget) => void
+  /** u115: point this console's chats at the other node of this exchange. */
+  chatTarget?: RouteTargetControls
 }
 
 /** A row closed from the record this page asked for, not from one this node
@@ -208,7 +212,8 @@ export function ExchangeStreamRow({
   onToggleChecks,
   onAction,
   askOutcome = null,
-  onAskForRecord
+  onAskForRecord,
+  chatTarget
 }: ExchangeStreamRowProps) {
   // Lifted here (not `SecurityChecksView`, which only mounts once `▸
   // checks` is expanded) so a fetch this hook's `.fetch()` triggers can
@@ -542,6 +547,7 @@ export function ExchangeStreamRow({
               : null}
             <CopyableId label="exch" value={row.exchangeKey} />
             <SeeInLogsLink exchangeKey={row.exchangeKey} />
+            {chatTarget && askFor ? <ChatWithNodeButton controls={chatTarget} nodeId={askFor.peerId} /> : null}
             <span className="text-fg-faint">·</span>
             {(row.raw.mine.capsule_id ?? row.raw.mine.text) ? (
               <CopyableId label="rec" value={(row.raw.mine.capsule_id ?? row.raw.mine.text) as string} />

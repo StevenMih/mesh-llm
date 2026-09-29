@@ -5,6 +5,12 @@ import { formatExchangeTimestamp } from '@/features/capsules/lib/local-time'
 import { cleanup, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+
+// Links on the row navigate; these tests render without a router.
+vi.mock('@tanstack/react-router', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@tanstack/react-router')>()),
+  useNavigate: () => vi.fn()
+}))
 import { ExchangeStreamRow, FETCHED_CLOSE_TEXT } from '@/features/capsules/components/ExchangeStreamRow'
 import { exchangeRowDomId } from '@/features/capsules/lib/exchange-pages'
 import type { ExchangeLedgerRow } from '@/features/capsules/lib/exchange-ledger'
@@ -18,7 +24,7 @@ import {
   useRecomputedIdentity,
   type PeerRecomputeState
 } from '@/features/capsules/lib/recompute-identity'
-import { fixtureHalfBody } from '@/features/capsules/lib/pushed-half-fixtures'
+import { FIXTURE_PROVIDER_NODE, fixtureHalfBody } from '@/features/capsules/lib/pushed-half-fixtures'
 
 const REQUEST_DIGEST = 'a'.repeat(64)
 const RESPONSE_DIGEST = 'b'.repeat(64)
@@ -289,6 +295,8 @@ describe('ExchangeStreamRow — the states render distinct text/status/action', 
     expect(firstCell).toHaveAttribute('data-closed-property-cell', 'their_id')
     // u109: the expansion points back to Logs for this exchange.
     expect(within(head).getByRole('button', { name: /see in Logs/ })).toBeInTheDocument()
+    // u115: no chat target controls given, no Chat with this node.
+    expect(within(head).queryByRole('button', { name: 'Chat with this node' })).not.toBeInTheDocument()
   })
 
   it('UX §8: each CLOSED property cell carries its own one-sentence (i)', () => {
@@ -613,6 +621,26 @@ describe('[ledger-T4-inline-inspector] ExchangeStreamRow — the two row toggles
     await user.click(screen.getByRole('button', { name: 'Ask them for their record' }))
     expect(onToggleContent).not.toHaveBeenCalled()
     expect(onToggleChecks).not.toHaveBeenCalled()
+  })
+})
+
+describe('ExchangeStreamRow — u115 Chat with this node', () => {
+  it('offers it for the other node of the exchange, and points the chats there', async () => {
+    const chatTarget = { target: null, chatWith: vi.fn(async () => {}), clear: vi.fn() }
+    render(
+      <ExchangeStreamRow
+        checksExpanded
+        chatTarget={chatTarget}
+        onAction={vi.fn()}
+        {...toggleProps()}
+        rail={NO_RAIL}
+        row={makeRow('closed')}
+      />
+    )
+    const head = document.querySelector('[data-expansion-head="true"]') as HTMLElement
+    await userEvent.setup().click(within(head).getByRole('button', { name: 'Chat with this node' }))
+    // Our record says this node served us.
+    expect(chatTarget.chatWith).toHaveBeenCalledWith(FIXTURE_PROVIDER_NODE)
   })
 })
 

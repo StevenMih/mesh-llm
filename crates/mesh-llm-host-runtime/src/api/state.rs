@@ -229,4 +229,7 @@ pub(super) struct ApiInner {
     pub(super) sse_clients: Vec<tokio::sync::mpsc::UnboundedSender<String>>,
     pub(super) model_interests: HashMap<String, LocalModelInterest>,
     pub(super) wakeable_inventory: crate::runtime::wakeable::WakeableInventory,
+    /// Where this console's chats go (`routes/route_target.rs`); `None` is
+    /// automatic.
+    pub(super) console_chat_target: Option<String>,
 }

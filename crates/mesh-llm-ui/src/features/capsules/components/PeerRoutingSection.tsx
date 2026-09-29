@@ -5,6 +5,7 @@ import { useState } from 'react'
 import { Button } from '@/components/ui/button'
 import type { PaneBRow } from '@/features/capsules/api/sidecarTypes'
 import type { PeerRoutingControls } from '@/features/capsules/api/usePeerBlocks'
+import { ChatWithNodeButton } from '@/features/capsules/components/ChatWithNodeButton'
 import { StopRoutingDialog } from '@/features/capsules/components/StopRoutingDialog'
 import { recordText, routableNodeId, routingState, routingStateText } from '@/features/capsules/lib/peer-routing-view'
 import { ROUTING_BLOCK_COPY, SAMPLE_DATA_UNAVAILABLE } from '@/features/capsules/lib/tooltip-copy'
@@ -37,6 +38,11 @@ export function PeerRoutingSection({
       {record ? <p className="text-xs text-fg-faint">{record}</p> : null}
       {nodeId !== null && routing.failedFor === nodeId ? (
         <p className="text-xs text-fg-faint">{ROUTING_BLOCK_COPY.failed}</p>
+      ) : null}
+      {nodeId !== null && state.kind === 'routing' && routing.chat && !sampleData ? (
+        <div>
+          <ChatWithNodeButton controls={routing.chat} nodeId={nodeId} />
+        </div>
       ) : null}
       {nodeId !== null && state.kind === 'routing' ? (
         <div>

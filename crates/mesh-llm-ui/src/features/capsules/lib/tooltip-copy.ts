@@ -309,6 +309,17 @@ export const ROUTING_BLOCK_COPY = {
   failed: 'That didn’t go through. The line above shows what is in force now.'
 } as const
 
+/** u115: point this console's chats at one node, host-side; Chat is unchanged. */
+export const CHAT_TARGET_COPY = {
+  action: 'Chat with this node',
+  active:
+    'Chats from this console go to this node. If it doesn’t serve the model you pick, the chat is refused, not sent elsewhere.',
+  clear: 'Back to automatic',
+  failed: 'That didn’t go through. Where your chats go is unchanged.',
+  rowLabel: 'Your chats go here',
+  rowTooltip: 'Chats from this console go to this node until you set them back to automatic in its drill.'
+} as const
+
 /** §7.2/§7.5: the drill section about what happened between you and this peer. */
 export const YOUR_DEALINGS_TITLE = 'Your dealings with them'
 

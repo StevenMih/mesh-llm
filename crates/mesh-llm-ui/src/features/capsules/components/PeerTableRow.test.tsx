@@ -5,7 +5,7 @@
 // online badge / latency / Route-to-chat button anywhere in the row (moved
 // to the Network tab) -- `meshStatus` is threaded through to the modal
 // only.
-import { render, screen, within } from '@testing-library/react'
+import { cleanup, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 import { PeerTableRow } from '@/features/capsules/components/PeerTableRow'
@@ -18,7 +18,7 @@ import {
 } from '@/features/capsules/lib/peer-fixtures'
 import { deriveMeshStatus } from '@/features/capsules/lib/peer-mesh-status'
 import { advertisedOnlyRowView, dealtWithRowView, SELF_REPORTED_NOTE } from '@/features/capsules/lib/peer-row-view'
-import { ROUTING_STOPPED_LABEL, ROUTING_STOPPED_TOOLTIP } from '@/features/capsules/lib/tooltip-copy'
+import { CHAT_TARGET_COPY, ROUTING_STOPPED_LABEL, ROUTING_STOPPED_TOOLTIP } from '@/features/capsules/lib/tooltip-copy'
 
 const [CLEAN_ROW, ALARMED_ROW] = HARNESS_PANE_B_PAYLOAD.rows
 
@@ -176,6 +176,20 @@ describe('PeerTableRow -- a peer this node stopped routing to (§7.5)', () => {
     const chip = screen.getByText(ROUTING_STOPPED_LABEL).closest('[aria-describedby]') as HTMLElement
     const describedBy = chip.getAttribute('aria-describedby') as string
     expect(document.getElementById(describedBy)?.textContent).toBe(ROUTING_STOPPED_TOOLTIP)
+  })
+
+  // u115: the row names the node this console's chats go to.
+  it('names the node this console’s chats are pointed at, and only that one', () => {
+    const pointed = (target: string | null) => ({
+      ...routing(null),
+      blocks: { blocks: {}, choices: [] },
+      chat: { target, chatWith: vi.fn(), clear: vi.fn() }
+    })
+    renderInTable(<PeerTableRow meshStatus={null} routing={pointed(NODE)} view={dealtWithRowView(row)} />)
+    expect(document.querySelector('[data-peer-chat-target]')?.textContent).toBe(CHAT_TARGET_COPY.rowLabel)
+    cleanup()
+    renderInTable(<PeerTableRow meshStatus={null} routing={pointed('b'.repeat(64))} view={dealtWithRowView(row)} />)
+    expect(document.querySelector('[data-peer-chat-target]')).toBeNull()
   })
 
   it('no chip for a peer the store does not list as blocked', () => {

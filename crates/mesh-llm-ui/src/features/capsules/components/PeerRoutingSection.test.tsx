@@ -9,7 +9,7 @@ import type { PeerRoutingControls } from '@/features/capsules/api/usePeerBlocks'
 import { PeerRoutingSection } from '@/features/capsules/components/PeerRoutingSection'
 import { HARNESS_PANE_B_PAYLOAD } from '@/features/capsules/lib/peer-fixtures'
 import type { PeerBlocksJson } from '@/features/capsules/lib/peer-routing-view'
-import { ROUTING_BLOCK_COPY, SAMPLE_DATA_UNAVAILABLE } from '@/features/capsules/lib/tooltip-copy'
+import { CHAT_TARGET_COPY, ROUTING_BLOCK_COPY, SAMPLE_DATA_UNAVAILABLE } from '@/features/capsules/lib/tooltip-copy'
 
 const NODE = 'a70d3967bea3b22fa48a28f77c5d2b3764fc8bd5204a82c09ff8430f3f2a0a00'
 const AT = Date.UTC(2026, 8, 27)
@@ -26,6 +26,21 @@ const STOPPED: PeerBlocksJson = {
 }
 
 describe('PeerRoutingSection', () => {
+  // u115: the drill offers "Chat with this node" for a peer it routes to.
+  it('offers Chat with this node for a routable peer, never for a stopped one or on sample data', () => {
+    const chat = { target: null, chatWith: vi.fn(), clear: vi.fn() }
+    const { unmount } = render(
+      <PeerRoutingSection routing={{ ...controls(NONE), chat }} row={ROW} sampleData={false} />
+    )
+    expect(screen.getByRole('button', { name: CHAT_TARGET_COPY.action })).toBeInTheDocument()
+    unmount()
+    const stopped = render(<PeerRoutingSection routing={{ ...controls(STOPPED), chat }} row={ROW} sampleData={false} />)
+    expect(screen.queryByRole('button', { name: CHAT_TARGET_COPY.action })).not.toBeInTheDocument()
+    stopped.unmount()
+    render(<PeerRoutingSection routing={{ ...controls(NONE), chat }} row={ROW} sampleData />)
+    expect(screen.queryByRole('button', { name: CHAT_TARGET_COPY.action })).not.toBeInTheDocument()
+  })
+
   it('opens a dialog that says exactly the three facts and offers exactly the two lengths', async () => {
     const user = userEvent.setup()
     const routing = controls(NONE)

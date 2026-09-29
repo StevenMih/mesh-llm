@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useDataMode } from '@/lib/data-mode'
 import { blockPeer, fetchPeerBlocks, unblockPeer, type BlockLength } from '@/features/capsules/api/peerBlocksClient'
 import type { PeerBlocksJson } from '@/features/capsules/lib/peer-routing-view'
+import type { RouteTargetControls } from '@/features/capsules/api/useRouteTarget'
 
 const NO_BLOCKS: PeerBlocksJson = { blocks: {}, choices: [] }
 
@@ -16,6 +17,8 @@ export type PeerRoutingControls = {
   unblock: (peer: string) => void
   /** The peer whose last block or unblock failed, until the next attempt. */
   failedFor: string | null
+  /** Where this console's chats go (u115 "Chat with this node"). */
+  chat?: RouteTargetControls
 }
 
 /** The host's local block store. Harness mode has no host, so no blocks. */

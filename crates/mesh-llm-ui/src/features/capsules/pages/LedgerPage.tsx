@@ -113,6 +113,7 @@ import {
 import { useStatusQuery } from '@/features/network/api/use-status-query'
 import { useDataMode } from '@/lib/data-mode'
 import { usePeerRoutingControls } from '@/features/capsules/api/usePeerBlocks'
+import { useRouteTarget } from '@/features/capsules/api/useRouteTarget'
 import { HoverChip } from '@/features/capsules/components/HoverChip'
 import { CleanUpRecordsDialog } from '@/features/capsules/components/CleanUpRecordsDialog'
 import { YourRecordsDialog } from '@/features/capsules/components/YourRecordsDialog'
@@ -209,7 +210,8 @@ function PeersSection({ recordsById }: { recordsById: Map<string, CapsuleRecord>
   const navigate = useNavigate()
   const { mode } = useDataMode()
   const harnessMode = mode === 'harness'
-  const routing = usePeerRoutingControls()
+  const chat = useRouteTarget()
+  const routing = { ...usePeerRoutingControls(), chat: harnessMode ? undefined : chat }
   const query = useQuery({
     queryKey: ['ledger', 'pane-b', mode],
     queryFn: () => (harnessMode ? Promise.resolve(HARNESS_PANE_B_PAYLOAD) : fetchPaneB()),
@@ -470,6 +472,7 @@ function ExchangesSection({
   // the mesh (`POST /api/evidence-requests`), judged in `ask-for-record.ts`.
   // The row shows "Asked …" at once, then whatever their reply proves.
   const [askOutcomes, setAskOutcomes] = useState<ReadonlyMap<string, AskOutcome>>(() => new Map())
+  const chatTarget = useRouteTarget()
   const handleAskForRecord = useCallback((row: ExchangeLedgerRow, target: AskTarget) => {
     const askedAt = new Date().toISOString()
     const record = row.raw.mine.record as { effect?: { request_digest?: unknown } } | undefined
@@ -1018,6 +1021,7 @@ function ExchangesSection({
                         onAction={handleAskForHalf}
                         askOutcome={askOutcomes.get(row.exchangeKey) ?? null}
                         onAskForRecord={handleAskForRecord}
+                        chatTarget={harnessMode ? undefined : chatTarget}
                         ownerLinked={nodeOwnerLinked}
                         onToggleChecks={handleToggleChecks}
                         onToggleContent={handleToggleContent}

@@ -268,6 +268,7 @@ impl MeshApi {
                 sse_clients: Vec::new(),
                 model_interests: std::collections::HashMap::new(),
                 wakeable_inventory: crate::runtime::wakeable::WakeableInventory::default(),
+                console_chat_target: None,
             })),
         }
     }
