@@ -69,12 +69,8 @@ function writeStoredDataMode(storageKey: string, mode: DataMode, persist: boolea
 //
 // Tests and the developer playground can pin a specific mode by passing
 // `initialMode="harness"` (or `"live"`) explicitly.
-//
-// Evidence fixture mode (`VITE_EVIDENCE_FIXTURES`, see src/lib/dev/evidence-fixtures-plugin.ts)
-// serves a captured run through the live API path, so it defaults to `'live'`.
 function defaultInitialMode(): DataMode {
-  const evidenceFixtures = import.meta.env.VITE_EVIDENCE_FIXTURES || import.meta.env.VITE_EVIDENCE_FIXTURES_RECORD
-  return env.isDevelopment && !evidenceFixtures ? 'harness' : 'live'
+  return env.isDevelopment ? 'harness' : 'live'
 }
 
 export function DataModeProvider({

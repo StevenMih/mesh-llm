@@ -1,12 +1,7 @@
-mod capsule_panes;
-mod capsule_panes_native;
-mod capsule_panes_settlement;
-pub(crate) mod capsules;
 mod chat;
 mod control_apply_diagnostics;
 mod diagnostics;
 mod discover;
-mod evidence_requests;
 mod health;
 pub(crate) mod kv_cache;
 pub(crate) mod logs;
@@ -56,15 +51,6 @@ pub(super) const DISPATCH_REQUEST: DispatchRequestFn =
                 }
                 (method, route_path) if logs::is_route(route_path) => {
                     logs::handle(stream, method, path, body, raw_request).await?;
-                    Ok(true)
-                }
-                ("GET", route_path) if capsule_panes::is_route(route_path) => {
-                    let payments = capsule_panes::payments_presence(state).await;
-                    capsule_panes::handle(stream, path, route_path, payments).await?;
-                    Ok(true)
-                }
-                ("GET", route_path) if capsules::is_route(route_path) => {
-                    capsules::handle(stream, route_path).await?;
                     Ok(true)
                 }
                 ("GET", "/api/discover") => {
@@ -159,10 +145,6 @@ pub(super) const DISPATCH_REQUEST: DispatchRequestFn =
                 }
                 (_, route_path) if route_target::is_route(route_path) => {
                     route_target::handle(stream, state, method, body).await?;
-                    Ok(true)
-                }
-                (_, route_path) if evidence_requests::is_route(route_path) => {
-                    evidence_requests::handle(stream, state, method, body).await?;
                     Ok(true)
                 }
                 ("GET", "/api/model-targets") => {

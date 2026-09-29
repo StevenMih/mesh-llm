@@ -11,7 +11,7 @@ export type Theme = 'auto' | ResolvedTheme
 export type Accent = 'blue' | 'cyan' | 'violet' | 'green' | 'amber' | 'pink'
 export type Density = 'compact' | 'normal' | 'sparse'
 export type PanelStyle = 'solid' | 'soft'
-export type AppTab = 'network' | 'reserves' | 'logs' | 'chat' | 'configuration' | 'capsules'
+export type AppTab = 'network' | 'reserves' | 'logs' | 'chat' | 'configuration'
 
 export type StatusBadgeTone = 'good' | 'warn' | 'bad' | 'muted' | 'accent'
 export type StatusMetric = {
@@ -178,7 +178,7 @@ export type ThreadMessage = {
   tokens?: string
   tokPerSec?: string
   ttft?: string
-  /** [mesh-chat-evidence-chip] finds this turn's sealed record. */
+  /** The client nonce the frontend echoed for this turn, when it sent one. */
   evidenceClientNonce?: string
   inspectMessage?: TransparencyMessage
   inspectLabel?: string

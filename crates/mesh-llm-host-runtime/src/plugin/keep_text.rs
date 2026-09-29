@@ -32,6 +32,23 @@ use crate::plugin::openai_exchange::{OpenAiExchangeEnvelope, OpenAiExchangePhase
 /// Set to `1` to keep prompt and answer text. Off by default.
 pub(crate) const KEEP_TEXT_ENV: &str = "MESH_LLM_CAPSULE_KEEP_TEXT";
 
+/// The capsule plugin's ledger directory, where kept text goes beside the
+/// records, resolved in order:
+/// 1. `MESH_LLM_CAPSULE_LEDGER_DIR` (explicit override)
+/// 2. `$ADMISSION_POLICY_DATA_DIR/ledger` (the plugin's own data-dir
+///    convention)
+/// 3. `./admission-policy-data/ledger` (the plugin's default when neither is
+///    set)
+pub(crate) fn ledger_dir() -> PathBuf {
+    if let Ok(path) = std::env::var("MESH_LLM_CAPSULE_LEDGER_DIR") {
+        return PathBuf::from(path);
+    }
+    if let Ok(data_dir) = std::env::var("ADMISSION_POLICY_DATA_DIR") {
+        return PathBuf::from(data_dir).join("ledger");
+    }
+    PathBuf::from("./admission-policy-data/ledger")
+}
+
 pub(crate) fn enabled() -> bool {
     std::env::var(KEEP_TEXT_ENV).is_ok_and(|value| value == "1")
 }

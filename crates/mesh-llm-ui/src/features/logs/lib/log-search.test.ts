@@ -1,5 +1,4 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { HARNESS_PANE_C_PAYLOAD } from '@/features/capsules/lib/exchange-fixtures'
 import { LogRequestId } from '@/features/logs/api/ids'
 import type { LogRequest } from '@/features/logs/api/schemas'
 import type { RequestLogEvent } from '@/features/logs/lib/log-event-ledger'
@@ -324,24 +323,16 @@ function requestRow(overrides: Partial<LogRequest> = {}): RequestLogEvent {
 }
 
 describe('resolveFocusExchangeRequestId', () => {
-  // The Ledger's own curated exchange_key, read from the fixture module
-  // (not retyped) so a drift there breaks this test rather than passing
-  // two independently-hardcoded literals against each other.
-  const LEDGER_EXCHANGE_KEY = HARNESS_PANE_C_PAYLOAD.rows[0].exchange_key
+  const EXCHANGE_ID = '6f1c2a4e-9b7d-4c3a-8e21-5d0f7a9b3c14'
 
-  // [ledger-T5-join-key] §3-G: the id on the Logs row equals the id on the
-  // Ledger row for a fixture call -- LEDGER_EXCHANGE_KEY is read straight
-  // off the Ledger's own curated row, so this proves the join key resolves
-  // a real Logs row against the Ledger's actual fixture data, not just the
-  // resolver's string-equality shape.
-  it('finds the request whose exchangeId matches the Ledger row exchange_key', () => {
-    const rows = [requestRow({ exchangeId: LEDGER_EXCHANGE_KEY })]
+  it('finds the request whose exchangeId matches the deep link', () => {
+    const rows = [requestRow({ exchangeId: EXCHANGE_ID })]
 
-    expect(resolveFocusExchangeRequestId(rows, LEDGER_EXCHANGE_KEY)).toBe(REQUEST_ID)
+    expect(resolveFocusExchangeRequestId(rows, EXCHANGE_ID)).toBe(REQUEST_ID)
   })
 
   it('never fabricates a match for an exchange id no loaded row carries', () => {
-    const rows = [requestRow({ exchangeId: LEDGER_EXCHANGE_KEY })]
+    const rows = [requestRow({ exchangeId: EXCHANGE_ID })]
 
     expect(resolveFocusExchangeRequestId(rows, 'exch-not-loaded-yet')).toBeUndefined()
   })
@@ -349,11 +340,11 @@ describe('resolveFocusExchangeRequestId', () => {
   it('never matches a request with no exchangeId at all', () => {
     const rows = [requestRow({ exchangeId: undefined })]
 
-    expect(resolveFocusExchangeRequestId(rows, LEDGER_EXCHANGE_KEY)).toBeUndefined()
+    expect(resolveFocusExchangeRequestId(rows, EXCHANGE_ID)).toBeUndefined()
   })
 
   it('returns undefined without a focusExchangeId to resolve', () => {
-    const rows = [requestRow({ exchangeId: LEDGER_EXCHANGE_KEY })]
+    const rows = [requestRow({ exchangeId: EXCHANGE_ID })]
 
     expect(resolveFocusExchangeRequestId(rows, undefined)).toBeUndefined()
   })

@@ -5,7 +5,6 @@ import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import type { PluginOption } from 'vite'
 import { defineConfig } from 'vitest/config'
-import { evidenceFixtures } from './src/lib/dev/evidence-fixtures-plugin'
 
 const dirname = path.dirname(fileURLToPath(import.meta.url))
 const apiTarget = process.env.MESH_UI_API_ORIGIN ?? 'http://127.0.0.1:3131'
@@ -82,7 +81,7 @@ function plugins(): PluginOption[] {
       })
     )
   }
-  vitePlugins.push(evidenceFixtures(), stripBundledOnnxWasm(), react(), tailwindcss())
+  vitePlugins.push(stripBundledOnnxWasm(), react(), tailwindcss())
   return vitePlugins
 }
 

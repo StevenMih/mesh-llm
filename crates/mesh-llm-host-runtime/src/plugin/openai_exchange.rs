@@ -720,7 +720,7 @@ impl OpenAiExchangeChannel for PluginManager {
     async fn publish(&self, event: &OpenAiExchangeEnvelope) {
         if crate::plugin::keep_text::enabled()
             && let Err(error) = crate::plugin::keep_text::write_terminal(
-                &crate::api::routes::capsules::ledger_dir(),
+                &crate::plugin::keep_text::ledger_dir(),
                 event,
             )
         {

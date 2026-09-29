@@ -18,10 +18,8 @@ import { useStatusQuery } from '@/features/network/api/use-status-query'
 import {
   adaptPluginSummariesToWebUiEntries,
   buildPluginWebUiNavItems,
-  usePluginSummariesQuery,
-  withoutBuiltInTabNames
+  usePluginSummariesQuery
 } from '@/features/plugins/api/plugin-web-ui'
-import { useI18n } from '@/lib/i18n'
 import { useUIPreferences } from '@/features/shell/hooks/useUiPreferences'
 import { SHELL_HARNESS } from '@/features/app-tabs/data'
 import { env, hrefWithBasePath, stripBasePath } from '@/lib/env'
@@ -34,17 +32,15 @@ function pathToTab(pathname: string): AppTab | null {
   if (pathname.startsWith('/reserves')) return 'reserves'
   if (pathname.startsWith('/logs')) return 'logs'
   if (pathname.startsWith('/configuration')) return 'configuration'
-  if (pathname.startsWith('/capsules')) return 'capsules'
   if (pathname.startsWith('/plugins/')) return null
   if (env.isDevelopment && pathname.startsWith('/__playground')) return null
   return 'network'
 }
 
-function tabToPath(tab: Exclude<AppTab, 'configuration'>): '/' | '/chat' | '/reserves' | '/logs' | '/capsules' {
+function tabToPath(tab: Exclude<AppTab, 'configuration'>): '/' | '/chat' | '/reserves' | '/logs' {
   if (tab === 'chat') return '/chat'
   if (tab === 'reserves') return '/reserves'
   if (tab === 'logs') return '/logs'
-  if (tab === 'capsules') return '/capsules'
   return '/'
 }
 
@@ -96,8 +92,7 @@ export function RootLayout({ data = SHELL_HARNESS }: RootLayoutProps = {}) {
   // host binary a console build ships against can (and does) drift from the
   // one actually running, so `env.appVersion` would silently lie about which
   // version is live. Until `/api/status` answers, that is stated honestly
-  // ('checking…', same idiom as `CapsuleCard.tsx`'s 'sealed — checking…'),
-  // never backfilled with a compiled-in guess.
+  // ('checking…'), never backfilled with a compiled-in guess.
   const displayVersion = liveMode ? (statusQuery.data?.version ?? 'checking…') : env.appVersion
   const apiTargetLiveness = resolveApiTargetLiveness(statusQuery, liveMode)
   const enabledConfigurationTabs = useMemo(
@@ -116,7 +111,6 @@ export function RootLayout({ data = SHELL_HARNESS }: RootLayoutProps = {}) {
       reserves: hrefWithBasePath('/reserves'),
       logs: hrefWithBasePath('/logs'),
       chat: hrefWithBasePath('/chat'),
-      capsules: hrefWithBasePath('/capsules'),
       configuration: hrefWithBasePath(
         `/configuration/${pathToConfigurationTab(pathname, enabledConfigurationTabs) ?? 'general'}`
       )
@@ -175,25 +169,16 @@ export function RootLayout({ data = SHELL_HARNESS }: RootLayoutProps = {}) {
     [newConfigurationPageEnabled, newReservesPageEnabled, logsPageEnabled, clientOnlyNode]
   )
 
-  const { t } = useI18n()
-  const builtInTabLabels = useMemo(
-    () =>
-      (['tabs.network', 'tabs.reserves', 'tabs.chat', 'tabs.logs', 'tabs.capsules', 'tabs.configuration'] as const).map(
-        (key) => t(key)
-      ),
-    [t]
-  )
   const pluginNavItems = useMemo<readonly TopNavPluginPageItem[]>(() => {
     if (!liveMode || !Array.isArray(pluginSummariesQuery.data)) return []
-    const items = buildPluginWebUiNavItems(adaptPluginSummariesToWebUiEntries(pluginSummariesQuery.data))
-    return withoutBuiltInTabNames(items, builtInTabLabels).map((item) => ({
+    return buildPluginWebUiNavItems(adaptPluginSummariesToWebUiEntries(pluginSummariesQuery.data)).map((item) => ({
       pluginName: item.pluginName,
       pageId: item.pageId,
       label: item.label,
       href: hrefWithBasePath(`/plugins/${encodeURIComponent(item.pluginName)}/${encodeURIComponent(item.pageId)}`),
       active: pathname === `/plugins/${item.pluginName}/${item.pageId}`
     }))
-  }, [builtInTabLabels, liveMode, pathname, pluginSummariesQuery.data])
+  }, [liveMode, pathname, pluginSummariesQuery.data])
 
   const onPluginPageChange = useCallback(
     (item: TopNavPluginPageItem) => {

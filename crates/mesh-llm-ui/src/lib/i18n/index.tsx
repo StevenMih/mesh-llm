@@ -1,8 +1,7 @@
 /* eslint-disable react-refresh/only-export-components */
 import { createContext, useContext, type ReactNode } from 'react'
 
-type DictionaryKey =
-  'app.name' | 'tabs.network' | 'tabs.reserves' | 'tabs.logs' | 'tabs.chat' | 'tabs.configuration' | 'tabs.capsules'
+type DictionaryKey = 'app.name' | 'tabs.network' | 'tabs.reserves' | 'tabs.logs' | 'tabs.chat' | 'tabs.configuration'
 
 type I18nContextValue = {
   locale: string
@@ -15,8 +14,7 @@ const messages: Record<DictionaryKey, string> = {
   'tabs.reserves': 'Reserves',
   'tabs.logs': 'Logs',
   'tabs.chat': 'Chat',
-  'tabs.configuration': 'Configuration',
-  'tabs.capsules': 'Evidence'
+  'tabs.configuration': 'Configuration'
 }
 
 const I18nContext = createContext<I18nContextValue>({

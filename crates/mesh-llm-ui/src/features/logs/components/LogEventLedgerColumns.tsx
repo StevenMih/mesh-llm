@@ -6,7 +6,6 @@ import { StatusBadge, type StatusBadgeTone } from '@/components/ui/StatusBadge'
 import type { LogAuditEntry, LogAuditSeverity, LogOutcome } from '@/features/logs/api/schemas'
 import { LogEventCategoryBadge } from '@/features/logs/components/LogEventCategoryBadge'
 import { LogEventLedgerOrigin } from '@/features/logs/components/LogEventLedgerOrigin'
-import { LogsEvidenceLink } from '@/features/logs/components/LogsEvidenceLink'
 import { formatLogEventTimestamp, type LogEventLedgerRow } from '@/features/logs/lib/log-event-ledger'
 import { logEventOriginLabel } from '@/features/logs/lib/log-event-origin'
 
@@ -68,9 +67,8 @@ function eventCell(row: LogEventLedgerRow): ReactNode {
   switch (row.type) {
     case 'request':
       return (
-        <div className="min-w-0 space-y-1">
-          <div className="break-all font-mono font-medium text-foreground">{row.request.requestId.toString()}</div>
-          {row.request.exchangeId ? <LogsEvidenceLink exchangeId={row.request.exchangeId} /> : null}
+        <div className="min-w-0 break-all font-mono font-medium text-foreground">
+          {row.request.requestId.toString()}
         </div>
       )
     case 'audit':

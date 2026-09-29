@@ -123,8 +123,6 @@ fn is_index_route(path: &str) -> bool {
             | "/chat/"
             | "/configuration"
             | "/configuration/"
-            | "/capsules"
-            | "/capsules/"
             | "/__playground"
             | "/__meshviz-perf"
     ) || path.starts_with("/chat/")

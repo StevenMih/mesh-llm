@@ -1,7 +1,6 @@
 import type { ReactNode } from 'react'
 import { MessageSquareMore } from 'lucide-react'
 import { EmptyState } from '@/components/ui/EmptyState'
-import { ChatEvidenceChip } from '@/features/chat/components/ChatEvidenceChip'
 import { MessageRow } from '@/features/chat/components/MessageRow'
 import { ChatLayout } from '@/features/chat/layouts/ChatLayout'
 import type { Conversation, ThreadMessage, TransparencyMessage } from '@/features/app-tabs/types'
@@ -131,11 +130,6 @@ export function ChatConversationPanel({
             }
             inspectLabel={message.inspectLabel}
             inspected={transparencyMessage != null && inspectedMessage?.id === transparencyMessage.id}
-            footer={
-              message.messageRole === 'assistant' && !messageIsStreamingResponse && message.evidenceClientNonce ? (
-                <ChatEvidenceChip clientNonce={message.evidenceClientNonce} timestamp={message.timestamp} />
-              ) : null
-            }
             onStopStreaming={onStopStreaming}
             attachments={messageAttachments.map((attachment) => ({
               id: attachment.id,
