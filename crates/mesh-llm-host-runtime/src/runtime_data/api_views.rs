@@ -79,6 +79,7 @@ pub(crate) fn status_payload(snapshot: StatusViewSnapshot) -> StatusPayload {
         mesh_requirements: None,
         recent_mesh_rejections: vec![],
         logging: None,
+        twin_policy: None,
     }
 }
 
@@ -241,6 +242,7 @@ mod tests {
             mesh_requirements: None,
             recent_mesh_rejections: vec![],
             logging: None,
+            twin_policy: None,
         };
 
         assert_eq!(

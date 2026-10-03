@@ -162,6 +162,14 @@ export interface LoggingStatus {
   artifact_capture_degradation?: string
 }
 
+export interface TwinPolicy {
+  /** True on a public mesh with no trust-policy opt-in: a twin's second
+   *  peer could be a stranger, so twinning is off. */
+  public_mesh_twin_disabled: boolean
+  /** The configured rate as "1 in N"; null when it is not a whole N. */
+  twin_sample_rate_denominator: number | null
+}
+
 export interface StatusPayload {
   node_id: string
   node_state: 'client' | 'standby' | 'loading' | 'serving'
@@ -190,6 +198,9 @@ export interface StatusPayload {
   release_attestation?: ReleaseAttestationSummary
   nostr_discovery?: boolean
   publication_state?: MeshPublicationState
+  /** The live ambient-twin policy (host `api::status::TwinPolicyPayload`).
+   *  Absent from hosts that predate it. */
+  twin_policy?: TwinPolicy
   first_joined_mesh_ts?: number
   wakeable_nodes?: WakeableNode[]
   logging?: LoggingStatus

@@ -1,4 +1,3 @@
-use crate::crypto::TrustPolicy;
 use crate::inference::{election, pipeline};
 use crate::logging::{CallerPathType, OpenAiLifecycleAttachment, OpenAiRouteObserver};
 use crate::mesh;
@@ -925,10 +924,8 @@ async fn trusted_twin_candidates(
     if !ctx.node.public_mesh {
         return candidates.iter().cloned().collect();
     }
-    let has_trust_policy_opt_in = matches!(
-        ctx.node.trust_policy,
-        TrustPolicy::RequireOwned | TrustPolicy::Allowlist
-    );
+    let has_trust_policy_opt_in =
+        crate::runtime::twin_sample::trust_policy_opts_into_twins(ctx.node.trust_policy);
     let Some(no_opt_in_reason) = crate::runtime::twin_sample::public_mesh_twin_disabled_reason(
         ctx.node.public_mesh,
         has_trust_policy_opt_in,

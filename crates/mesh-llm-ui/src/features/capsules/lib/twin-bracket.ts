@@ -11,6 +11,7 @@
 //     halves themselves recorded (parameters, raw response text for a real
 //     diff), never an equality/inconclusive judgment call.
 import type { ExchangeLedgerRow } from '@/features/capsules/lib/exchange-ledger'
+import type { TwinPolicy } from '@/lib/api/types'
 
 /**
  * "This comparison ran automatically — 1 in N exchanges is sent to a second
@@ -26,6 +27,24 @@ export function twinDisclosureSentence(oneInN: number | null): string {
     return 'This comparison ran automatically — sent to a second peer.'
   }
   return `This comparison ran automatically — 1 in ${oneInN} exchanges is sent to a second peer.`
+}
+
+export const PUBLIC_MESH_TWIN_OFF_SENTENCE =
+  'Twinning is off on the public mesh: a twin sends your request content to a second peer, and here that peer could be a stranger.'
+
+/**
+ * The disclosure sentence as the LIVE twin policy (`/api/status`
+ * `twin_policy`) dictates: on a public mesh with no trust-policy opt-in,
+ * the "off" sentence; otherwise the rate sentence with the policy's N.
+ * With no policy from the host (an older host), falls back to
+ * `fallbackOneInN`, the sidecar-reported rate.
+ */
+export function twinPolicyDisclosureSentence(
+  policy: TwinPolicy | null | undefined,
+  fallbackOneInN: number | null
+): string {
+  if (policy?.public_mesh_twin_disabled) return PUBLIC_MESH_TWIN_OFF_SENTENCE
+  return twinDisclosureSentence(policy ? policy.twin_sample_rate_denominator : fallbackOneInN)
 }
 
 /**

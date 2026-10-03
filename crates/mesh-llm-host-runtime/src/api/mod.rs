@@ -1026,6 +1026,11 @@ impl MeshApi {
         payload.recent_mesh_rejections = node.recent_mesh_requirement_rejections().await;
         payload.logging =
             crate::logging_runtime_state().map(|state| LoggingStatusPayload::from(state.status()));
+        payload.twin_policy = Some(status::build_twin_policy_payload(
+            node.public_mesh,
+            node.trust_policy,
+            crate::runtime::twin_sample::configured_twin_sample_rate(),
+        ));
         payload
     }
 

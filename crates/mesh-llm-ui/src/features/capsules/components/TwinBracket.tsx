@@ -17,7 +17,8 @@ import { Button } from '@/components/ui/button'
 import { StatusBadge } from '@/components/ui/StatusBadge'
 import type { ExchangeLedgerRow } from '@/features/capsules/lib/exchange-ledger'
 import { saveTextFile } from '@/features/capsules/lib/exchange-export'
-import { twinComparisonParametersLine, twinDisclosureSentence, twinResponseTexts } from '@/features/capsules/lib/twin-bracket'
+import { twinComparisonParametersLine, twinPolicyDisclosureSentence, twinResponseTexts } from '@/features/capsules/lib/twin-bracket'
+import type { TwinPolicy } from '@/lib/api/types'
 
 const diffViewerStyles = {
   diffContainer: {
@@ -43,13 +44,16 @@ export type TwinBracketProps = {
    *  `twinDisclosureSentence`'s own doc for why this must never default to
    *  a hardcoded constant inside this component either. */
   twinSampleRateDenominator: number | null
+  /** The host's live twin policy from `/api/status`; when present it decides
+   *  the sentence (see `twinPolicyDisclosureSentence`). */
+  twinPolicy?: TwinPolicy | null
   children: React.ReactNode
 }
 
-export function TwinBracket({ bracketId, rows, twinSampleRateDenominator, children }: TwinBracketProps) {
+export function TwinBracket({ bracketId, rows, twinSampleRateDenominator, twinPolicy, children }: TwinBracketProps) {
   const [compareOpen, setCompareOpen] = useState(false)
   const parametersLine = twinComparisonParametersLine(rows)
-  const disclosure = twinDisclosureSentence(twinSampleRateDenominator)
+  const disclosure = twinPolicyDisclosureSentence(twinPolicy, twinSampleRateDenominator)
   const [textA, textB] = twinResponseTexts(rows)
   const canCompare = textA !== null && textB !== null
 
