@@ -489,6 +489,7 @@ pub(crate) mod tests {
             mesh_requirements: None,
             recent_mesh_rejections: vec![],
             logging: None,
+            twin_policy: None,
         };
 
         assert_eq!(

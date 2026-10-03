@@ -23,11 +23,12 @@
 //! `spawn_ambient_twin_dispatch` there) — this module still performs no I/O
 //! itself, it only decides and selects.
 //!
-//! [`twin_rate_denominator`] remains unwired: the UI-facing "1 in N"
-//! disclosure sentence readout is a separate, not-yet-built surface, so it
-//! is exercised only by its own unit tests today (see its own
-//! `#[allow(dead_code)]` below).
+//! [`twin_rate_denominator`] and [`public_mesh_twin_disabled_reason`] reach
+//! the UI through `/api/status`'s `twin_policy` (see
+//! `api::status::build_twin_policy_payload`), which the Ledger tab's twin
+//! disclosure sentence reads.
 
+use crate::crypto::TrustPolicy;
 use rand::{Rng, RngExt};
 
 /// Overrides the configured rate for this process. Mirrors the
@@ -141,10 +142,6 @@ pub fn select_twin_target<T: Clone + PartialEq>(
 /// N" (zero, or a rate so this function never invents a misleading integer;
 /// a `None` return means the caller must render no ambient-twin disclosure
 /// at all rather than a fabricated N).
-#[allow(
-    dead_code,
-    reason = "UI disclosure sentence readout not yet wired; see module doc"
-)]
 pub fn twin_rate_denominator(rate: f64) -> Option<u32> {
     if !valid_probability(rate) || rate <= 0.0 {
         return None;
@@ -176,6 +173,14 @@ pub fn public_mesh_twin_disabled_reason(
     has_trust_policy_opt_in: bool,
 ) -> Option<&'static str> {
     (is_public_mesh && !has_trust_policy_opt_in).then_some("twinning is off on the public mesh")
+}
+
+/// Whether `policy` is the explicit operator opt-in that lets ambient
+/// twinning resume on a public mesh (restricted to verified-owner peers).
+/// The one definition both the ingress candidate filter and the
+/// `/api/status` disclosure readout use, so the two cannot drift.
+pub fn trust_policy_opts_into_twins(policy: TrustPolicy) -> bool {
+    matches!(policy, TrustPolicy::RequireOwned | TrustPolicy::Allowlist)
 }
 
 #[cfg(test)]

@@ -9,6 +9,7 @@ use async_trait::async_trait;
 use mesh_llm_events::logging::{events::LifecycleEvent, identifiers::RequestId};
 
 use super::*;
+use crate::crypto::TrustPolicy;
 
 /// Recording double for `OpenAiExchangeChannel` — accumulates every published
 /// envelope so tests can assert on count, dispatch path, exchange id, and nonce.

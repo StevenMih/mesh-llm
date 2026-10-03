@@ -428,6 +428,39 @@ pub(crate) struct StatusPayload {
     /// state has been initialized so older consumers retain their prior shape.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) logging: Option<LoggingStatusPayload>,
+    /// The live ambient-twin policy for the Ledger tab's disclosure sentence.
+    /// Omitted from payloads built outside `status()` (tests, mesh views).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) twin_policy: Option<TwinPolicyPayload>,
+}
+
+/// What a person needs to read the twin disclosure sentence truthfully.
+/// `public_mesh_twin_disabled` is true when this node is on a public mesh
+/// with no trust-policy opt-in: a twin could go to a stranger, so the
+/// effective rate is 0 whatever the configured rate says, and the UI shows
+/// the "off" sentence instead of a "1 in N" one. `twin_sample_rate_denominator`
+/// is the configured rate as "1 in N" (`None` when it is not a whole N,
+/// including rate 0).
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub(crate) struct TwinPolicyPayload {
+    pub(crate) public_mesh_twin_disabled: bool,
+    pub(crate) twin_sample_rate_denominator: Option<u32>,
+}
+
+pub(crate) fn build_twin_policy_payload(
+    public_mesh: bool,
+    trust_policy: crate::crypto::TrustPolicy,
+    twin_sample_rate: f64,
+) -> TwinPolicyPayload {
+    use crate::runtime::twin_sample;
+    TwinPolicyPayload {
+        public_mesh_twin_disabled: twin_sample::public_mesh_twin_disabled_reason(
+            public_mesh,
+            twin_sample::trust_policy_opts_into_twins(trust_policy),
+        )
+        .is_some(),
+        twin_sample_rate_denominator: twin_sample::twin_rate_denominator(twin_sample_rate),
+    }
 }
 
 /// Path-free local logging health. This is deliberately absent from mesh
@@ -1057,6 +1090,42 @@ pub(super) fn decode_runtime_model_path(path: &str, prefix: &str) -> Option<Stri
 mod tests {
     use super::*;
     use crate::ReleaseAttestationSummary;
+    use crate::crypto::TrustPolicy;
+
+    #[test]
+    fn twin_policy_follows_the_live_trust_policy_not_a_constant() {
+        let rate = 1.0 / 50.0;
+        // Public mesh, no opt-in: off, whatever the configured rate.
+        let off = build_twin_policy_payload(true, TrustPolicy::Off, rate);
+        assert!(off.public_mesh_twin_disabled);
+        // Public mesh with either opt-in: on, with the configured N.
+        for policy in [TrustPolicy::Allowlist, TrustPolicy::RequireOwned] {
+            let on = build_twin_policy_payload(true, policy, rate);
+            assert!(!on.public_mesh_twin_disabled, "{policy:?}");
+            assert_eq!(on.twin_sample_rate_denominator, Some(50));
+        }
+        // Private mesh: membership is the trust boundary, never disabled.
+        assert!(
+            !build_twin_policy_payload(false, TrustPolicy::Off, rate).public_mesh_twin_disabled
+        );
+        // N is read from the rate passed in, and rate 0 has no N.
+        assert_eq!(
+            build_twin_policy_payload(false, TrustPolicy::Off, 0.1).twin_sample_rate_denominator,
+            Some(10)
+        );
+        assert_eq!(
+            build_twin_policy_payload(false, TrustPolicy::Off, 0.0).twin_sample_rate_denominator,
+            None
+        );
+        // The wire names the UI reads.
+        assert_eq!(
+            serde_json::to_value(&off).unwrap(),
+            serde_json::json!({
+                "public_mesh_twin_disabled": true,
+                "twin_sample_rate_denominator": 50
+            })
+        );
+    }
 
     fn test_owner_payload() -> OwnershipPayload {
         OwnershipPayload {
@@ -1223,6 +1292,7 @@ mod tests {
             mesh_requirements: None,
             recent_mesh_rejections: vec![],
             logging: None,
+            twin_policy: None,
         };
 
         let json = serde_json::to_string(&status).expect("serialization failed");
@@ -1295,6 +1365,7 @@ mod tests {
             mesh_requirements: None,
             recent_mesh_rejections: vec![],
             logging: None,
+            twin_policy: None,
         };
 
         let json = serde_json::to_string(&status).expect("serialization failed");
@@ -1367,6 +1438,7 @@ mod tests {
             mesh_requirements: None,
             recent_mesh_rejections: vec![],
             logging: None,
+            twin_policy: None,
         };
 
         let json = serde_json::to_value(&status).expect("serialization failed");
@@ -1434,6 +1506,7 @@ mod tests {
             mesh_requirements: None,
             recent_mesh_rejections: vec![],
             logging: None,
+            twin_policy: None,
         };
 
         let json = serde_json::to_value(&status).expect("serialization failed");

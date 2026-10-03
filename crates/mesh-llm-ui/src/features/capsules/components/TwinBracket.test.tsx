@@ -81,6 +81,39 @@ describe('TwinBracket — v3 §5, OBSERVE-ONLY', () => {
     expect(screen.getByText('This comparison ran automatically — 1 in 2 exchanges is sent to a second peer.')).toBeInTheDocument()
   })
 
+  it('the disclosure sentence follows the live twin policy, not a constant', () => {
+    const rows = [twinRow('a'), twinRow('b')]
+    const { rerender } = render(
+      <TwinBracket
+        bracketId="twin-xyz"
+        rows={rows}
+        twinPolicy={{ public_mesh_twin_disabled: true, twin_sample_rate_denominator: 50 }}
+        twinSampleRateDenominator={null}
+      >
+        <p>row a</p>
+      </TwinBracket>
+    )
+    expect(
+      screen.getByText(
+        'Twinning is off on the public mesh: a twin sends your request content to a second peer, and here that peer could be a stranger.'
+      )
+    ).toBeInTheDocument()
+    expect(screen.queryByText(/1 in \d+ exchanges/)).not.toBeInTheDocument()
+
+    rerender(
+      <TwinBracket
+        bracketId="twin-xyz"
+        rows={rows}
+        twinPolicy={{ public_mesh_twin_disabled: false, twin_sample_rate_denominator: 7 }}
+        twinSampleRateDenominator={null}
+      >
+        <p>row a</p>
+      </TwinBracket>
+    )
+    expect(screen.getByText('This comparison ran automatically — 1 in 7 exchanges is sent to a second peer.')).toBeInTheDocument()
+    expect(screen.queryByText(/Twinning is off/)).not.toBeInTheDocument()
+  })
+
   it('Compare is disabled when neither side has response text, and never renders as clickable-but-empty', () => {
     const rows = [twinRow('a'), twinRow('b')]
     render(

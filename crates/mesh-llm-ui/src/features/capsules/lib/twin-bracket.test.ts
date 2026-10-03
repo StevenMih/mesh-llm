@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { twinComparisonParametersLine, twinDisclosureSentence, twinResponseTexts } from '@/features/capsules/lib/twin-bracket'
+import {
+  PUBLIC_MESH_TWIN_OFF_SENTENCE,
+  twinComparisonParametersLine,
+  twinDisclosureSentence,
+  twinPolicyDisclosureSentence,
+  twinResponseTexts
+} from '@/features/capsules/lib/twin-bracket'
 import type { ExchangeLedgerRow } from '@/features/capsules/lib/exchange-ledger'
 import type { PaneCRow } from '@/features/capsules/api/sidecarTypes'
 
@@ -45,6 +51,33 @@ describe('twinDisclosureSentence — v3 §5 "Ambient twins are unannounced, and 
 
   it('degrades honestly (never fabricates an N) when the live rate is unavailable', () => {
     expect(twinDisclosureSentence(null)).toBe('This comparison ran automatically — sent to a second peer.')
+  })
+})
+
+describe('twinPolicyDisclosureSentence — the sentence follows the live twin policy', () => {
+  it('public mesh with no trust-policy opt-in: the off sentence, even with a configured N', () => {
+    expect(twinPolicyDisclosureSentence({ public_mesh_twin_disabled: true, twin_sample_rate_denominator: 50 }, 50)).toBe(
+      PUBLIC_MESH_TWIN_OFF_SENTENCE
+    )
+    expect(PUBLIC_MESH_TWIN_OFF_SENTENCE).toBe(
+      'Twinning is off on the public mesh: a twin sends your request content to a second peer, and here that peer could be a stranger.'
+    )
+  })
+
+  it('with a policy: the rate sentence with the policy N, not the fallback and not a constant', () => {
+    expect(twinPolicyDisclosureSentence({ public_mesh_twin_disabled: false, twin_sample_rate_denominator: 7 }, 50)).toBe(
+      'This comparison ran automatically — 1 in 7 exchanges is sent to a second peer.'
+    )
+    expect(twinPolicyDisclosureSentence({ public_mesh_twin_disabled: false, twin_sample_rate_denominator: null }, 50)).toBe(
+      'This comparison ran automatically — sent to a second peer.'
+    )
+  })
+
+  it('no policy from the host: falls back to the sidecar-reported rate', () => {
+    expect(twinPolicyDisclosureSentence(null, 12)).toBe(
+      'This comparison ran automatically — 1 in 12 exchanges is sent to a second peer.'
+    )
+    expect(twinPolicyDisclosureSentence(undefined, null)).toBe('This comparison ran automatically — sent to a second peer.')
   })
 })
 

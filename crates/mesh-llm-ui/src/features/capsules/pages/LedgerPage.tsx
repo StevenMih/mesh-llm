@@ -66,6 +66,7 @@ import {
   unattributedExchangesLine
 } from '@/features/capsules/lib/peer-row-view'
 import { useDataMode } from '@/lib/data-mode'
+import { useStatusQuery } from '@/features/network/api/use-status-query'
 
 // ---------------------------------------------------------------------------
 // Error helper — honest fetch-failure messages, never "set the URL"
@@ -363,6 +364,10 @@ function ExchangesSection({
   // bracket's disclosure sentence; `null` (never a hardcoded 50) until a
   // sidecar actually emits it.
   const twinSampleRateDenominator = query.data?.twin_sample_rate_denominator ?? null
+  // The host's live twin policy decides the sentence: "off" on a public
+  // mesh with no trust-policy opt-in, else the rate sentence with its N.
+  const statusQuery = useStatusQuery({ enabled: !harnessMode })
+  const twinPolicy = harnessMode ? null : (statusQuery.data?.twin_policy ?? null)
   const { start: pageStart, end: pageEnd } = useMemo(() => pageRowRange(pages, safePageIndex), [pages, safePageIndex])
   const continuity = useMemo(
     () => pageBoundaryContinuity(railSegments, pageStart, pageEnd),
@@ -762,7 +767,7 @@ function ExchangesSection({
                   // these rows together in the first place.
                   const bracketId = group.rows[0].twinBracketId as string
                   return (
-                    <TwinBracket bracketId={bracketId} key={group.groupKey} rows={group.rows} twinSampleRateDenominator={twinSampleRateDenominator}>
+                    <TwinBracket bracketId={bracketId} key={group.groupKey} rows={group.rows} twinPolicy={twinPolicy} twinSampleRateDenominator={twinSampleRateDenominator}>
                       {rowElements}
                     </TwinBracket>
                   )
