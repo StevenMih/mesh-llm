@@ -365,7 +365,7 @@ jobs:
       - name: Fetch the pinned plugins and verify them
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python3 scripts/bundled-plugins.py fetch --out bundled-plugins
+        run: cargo run -q -p xtask -- release bundled-plugins fetch --out bundled-plugins
       - name: Upload the verified plugin archives
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
@@ -1896,7 +1896,7 @@ jobs:
         run: rm -f release-artifacts/mesh-llm
 
       - name: Verify the bundled plugins in every release archive
-        run: python3 scripts/bundled-plugins.py verify release-artifacts
+        run: cargo run -q -p xtask -- release bundled-plugins verify release-artifacts
 
       - name: Verify standalone Skippy CLI release assets
         env:

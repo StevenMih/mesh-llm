@@ -328,7 +328,7 @@ class BundledPluginsTests(unittest.TestCase):
         jobs = workflow["jobs"]
         fetch = jobs["bundled_plugins"]
         self.assertEqual(fetch["permissions"], {"contents": "read", "attestations": "read"})
-        self.assertIn("scripts/bundled-plugins.py fetch --out bundled-plugins", "\n".join(s.get("run", "") for s in fetch["steps"]))
+        self.assertIn("xtask -- release bundled-plugins fetch --out bundled-plugins", "\n".join(s.get("run", "") for s in fetch["steps"]))
         unix = ["compose_cpu_products", "compose_linux_arm64_cpu", "compose_linux_aarch64_cuda", "compose_linux_cuda", "compose_linux_rocm", "compose_linux_vulkan"]
         for name in unix:
             with self.subTest(name):
@@ -340,7 +340,7 @@ class BundledPluginsTests(unittest.TestCase):
         for name in ("compose_windows_cpu", "compose_windows_gpu"):
             self.assertNotIn("bundled_plugins", jobs[name].get("needs", []), "Windows is listed as absent")
         publish_runs = [s.get("run", "") for s in jobs["publish"]["steps"]]
-        verify_at = next(i for i, r in enumerate(publish_runs) if "scripts/bundled-plugins.py verify release-artifacts" in r)
+        verify_at = next(i for i, r in enumerate(publish_runs) if "xtask -- release bundled-plugins verify release-artifacts" in r)
         publish_at = next(i for i, s in enumerate(jobs["publish"]["steps"]) if s.get("name") == "Publish GitHub release")
         self.assertLess(verify_at, publish_at)
 

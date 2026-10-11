@@ -3,6 +3,7 @@ mod command;
 mod installer_fixtures;
 mod no_console_print;
 mod publish_consistency;
+mod release;
 mod release_targets;
 mod repo_consistency;
 mod split_payloads;
@@ -59,8 +60,11 @@ fn run() -> DynResult<()> {
         {
             attestation::inspect_release_attestation(rest)
         }
+        [command, scope, rest @ ..] if command == "release" && scope == "bundled-plugins" => {
+            release::bundled_plugins::run(rest)
+        }
         _ => Err(
-            "usage:\n  cargo run -p xtask -- repo-consistency release-targets\n  cargo run -p xtask -- repo-consistency ci-crate-lists\n  cargo run -p xtask -- repo-consistency publish-crates\n  cargo run -p xtask -- repo-consistency test-all-rust-crate-coverage\n  cargo run -p xtask -- repo-consistency no-console-print\n  cargo run -p xtask -- release-attestation generate-keypair --private-key-out <path> --public-key-out <path>\n  cargo run -p xtask -- release-attestation stamp --binary <path> --signing-key-file <path> [--node-version <semver>] [--build-id <id>] [--commit <sha>] [--target-triple <triple>] [--protocol-min <n>] [--protocol-max <n>]\n  cargo run -p xtask -- release-attestation inspect --binary <path> [--public-key-file <path>] [--json]"
+            "usage:\n  cargo run -p xtask -- repo-consistency release-targets\n  cargo run -p xtask -- repo-consistency ci-crate-lists\n  cargo run -p xtask -- repo-consistency publish-crates\n  cargo run -p xtask -- repo-consistency test-all-rust-crate-coverage\n  cargo run -p xtask -- repo-consistency no-console-print\n  cargo run -p xtask -- release-attestation generate-keypair --private-key-out <path> --public-key-out <path>\n  cargo run -p xtask -- release-attestation stamp --binary <path> --signing-key-file <path> [--node-version <semver>] [--build-id <id>] [--commit <sha>] [--target-triple <triple>] [--protocol-min <n>] [--protocol-max <n>]\n  cargo run -p xtask -- release-attestation inspect --binary <path> [--public-key-file <path>] [--json]\n  cargo run -p xtask -- release bundled-plugins fetch|place|verify ..."
                 .to_string()
                 .into(),
         ),

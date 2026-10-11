@@ -14,7 +14,7 @@ ATTESTATION_SIGNING_KEY_FILE="${MESH_RELEASE_ATTESTATION_SIGNING_KEY_FILE:-}"
 ATTESTATION_PUBLIC_KEY_FILE="${MESH_RELEASE_ATTESTATION_PUBLIC_KEY_FILE:-}"
 PRECOMPOSED_PRODUCT_DIR="${MESH_LLM_PRECOMPOSED_PRODUCT_DIR:-}"
 ATTESTATION_PREVERIFIED="${MESH_RELEASE_ATTESTATION_PREVERIFIED:-0}"
-# The verified plugin archives (bundled-plugins.py fetch) to put in plugins/.
+# The verified plugin archives (xtask release bundled-plugins fetch) to put in plugins/.
 # A release sets it; a local build without it bundles no plugin.
 BUNDLED_PLUGINS_DIR="${MESH_LLM_BUNDLED_PLUGINS_DIR:-}"
 BUNDLED_PLUGINS_PINS="${MESH_LLM_BUNDLED_PLUGINS_PINS:-$REPO_ROOT/ci/bundled-plugins.json}"
@@ -551,7 +551,11 @@ bundle_plugins() {
     if [[ -z "$BUNDLED_PLUGINS_DIR" ]]; then
         return 0
     fi
-    "$(python_bin)" "$SCRIPT_DIR/bundled-plugins.py" --pins "$BUNDLED_PLUGINS_PINS" place \
+    # --manifest-path, not cd: a relative MESH_LLM_BUNDLED_PLUGINS_DIR stays
+    # relative to the caller's directory.
+    cargo run -q --manifest-path "$REPO_ROOT/Cargo.toml" -p xtask -- \
+        release bundled-plugins place \
+        --pins "$BUNDLED_PLUGINS_PINS" \
         --from "$BUNDLED_PLUGINS_DIR" \
         --target "$BASE_TARGET_TRIPLE" \
         --bundle "$bundle_dir"

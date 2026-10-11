@@ -232,8 +232,8 @@ tag, signer workflow, and the SHA-256 of its archive for every target.
 - **Place:** each Unix product archive (every flavour of a target) carries the
   plugin archive unchanged, under `mesh-bundle/plugins/`, beside
   `plugins/manifest.json`.
-- **Verify:** before the GitHub release is created, `scripts/bundled-plugins.py
-  verify` checks every product archive. A missing or changed plugin archive
+- **Verify:** before the GitHub release is created, `cargo run -p xtask --
+  release bundled-plugins verify` checks every product archive. A missing or changed plugin archive
   fails the release.
 - **Absent targets:** a target with no plugin build is listed under `absent`
   with the reason; today that is Windows. Its archives carry no `plugins/`.
@@ -242,7 +242,7 @@ To bump a plugin, update its `tag`, `version` and digests in
 `ci/bundled-plugins.json` from that release's `SHA256SUMS`. A local
 `scripts/package-release.sh` run bundles plugins only when
 `MESH_LLM_BUNDLED_PLUGINS_DIR` names a directory that
-`scripts/bundled-plugins.py fetch --out DIR` filled.
+`cargo run -p xtask -- release bundled-plugins fetch --out DIR` filled.
 
 ## Smoke Test
 
