@@ -163,15 +163,21 @@ fn manifest_lists(
         }))
 }
 
-/// The regular files under any `plugins/` directory of a product archive, by
-/// member name.
+/// The files under any `plugins/` directory of a product archive, by member
+/// name. Stricter than the Python it ports: a link, sparse file or any other
+/// non-regular member under `plugins/` fails rather than going unread, since
+/// extraction could hand a node something other than the bytes checked here.
 pub(crate) fn archive_members(
     path: &Path,
     kind: ArchiveKind,
 ) -> DynResult<BTreeMap<String, Vec<u8>>> {
     let file =
         File::open(path).map_err(|error| format!("cannot read {}: {error}", path.display()))?;
+    let shown = path.file_name().unwrap_or_default().to_string_lossy();
     let in_plugins = |name: &str| format!("/{name}").contains("/plugins/");
+    let refuse = |name: &str, kind: &str| -> DynResult<()> {
+        Err(format!("{shown}: {name} under plugins/ is a {kind}, not a regular file").into())
+    };
     let mut members = BTreeMap::new();
     match kind {
         ArchiveKind::TarGz => {
@@ -179,23 +185,39 @@ pub(crate) fn archive_members(
             for entry in archive.entries()? {
                 let mut entry = entry?;
                 let name = String::from_utf8_lossy(&entry.path_bytes()).into_owned();
-                if entry.header().entry_type().is_file() && in_plugins(&name) {
-                    let mut data = Vec::new();
-                    entry.read_to_end(&mut data)?;
-                    members.insert(name, data);
+                if !in_plugins(&name) {
+                    continue;
+                }
+                match entry.header().entry_type() {
+                    tar::EntryType::Regular | tar::EntryType::Continuous => {
+                        let mut data = Vec::new();
+                        entry.read_to_end(&mut data)?;
+                        members.insert(name, data);
+                    }
+                    tar::EntryType::Directory => {}
+                    other => refuse(&name, &format!("{other:?} member"))?,
                 }
             }
         }
         ArchiveKind::Zip => {
             let mut archive = zip::ZipArchive::new(file)?;
             for index in 0..archive.len() {
+                // Select by name before reading, so an entry outside plugins/
+                // is never decompressed.
+                let selected = archive
+                    .name_for_index(index)
+                    .is_some_and(|name| in_plugins(name) && !name.ends_with('/'));
+                if !selected {
+                    continue;
+                }
                 let mut entry = archive.by_index(index)?;
                 let name = entry.name().to_string();
-                if in_plugins(&name) && !name.ends_with('/') {
-                    let mut data = Vec::new();
-                    entry.read_to_end(&mut data)?;
-                    members.insert(name, data);
+                if entry.is_symlink() {
+                    refuse(&name, "symlink")?;
                 }
+                let mut data = Vec::new();
+                entry.read_to_end(&mut data)?;
+                members.insert(name, data);
             }
         }
     }

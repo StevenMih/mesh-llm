@@ -1,5 +1,6 @@
 //! `release bundled-plugins`: plugins bundled into each Mesh release archive,
-//! pinned in `ci/bundled-plugins.json`. Replaces `scripts/bundled-plugins.py`.
+//! pinned in `ci/bundled-plugins.json`. A port of `scripts/bundled-plugins.py`,
+//! which stays in the tree (unused by the release) until the Python tooling goes.
 //!
 //! A default-enabled plugin ships inside the release; a node never downloads it.
 //!

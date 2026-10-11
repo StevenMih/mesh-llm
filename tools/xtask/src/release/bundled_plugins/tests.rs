@@ -33,8 +33,10 @@ fn archive_bytes(target: &str) -> DynResult<Vec<u8>> {
     Ok(builder.into_inner()?.finish()?)
 }
 
-/// Serves a fixture plugin release the way `gh release download` would, and
-/// passes every attestation except the one named in `refuse_attestation`.
+/// Copies the requested assets that exist in a fixture release into `-D`
+/// (unlike real `gh`, a missing one is not an error, so `fetch`'s own check is
+/// what a test sees), and passes every attestation except the one named in
+/// `refuse_attestation`.
 struct FakeGh {
     release: PathBuf,
     refuse_attestation: Option<String>,
@@ -301,6 +303,32 @@ fn the_pin_file_refuses_an_incomplete_or_inconsistent_entry() -> DynResult<()> {
         "both pinned and absent",
         "pinned and absent",
     )?;
+    let mut digests = fx.pinned_digests();
+    digests.insert("riscv64gc-unknown-linux-gnu".to_string(), "0".repeat(64));
+    fx.write_pins(&digests)?;
+    expect_error(
+        load_pins(&fx.pins).map(drop),
+        "pins \"riscv64gc-unknown-linux-gnu\"",
+        "unknown target",
+    )?;
+    fx.write_pins(&fx.pinned_digests())?;
+    let pins = fs::read_to_string(&fx.pins)?;
+    for (label, edited, words) in [
+        (
+            "tag",
+            pins.replace("\"v1.2.3\"", "\"v1.2.4\""),
+            "tag v1.2.4 is not v1.2.3",
+        ),
+        (
+            "empty field",
+            pins.replace("\"Example/example\"", "\"\""),
+            "has no repository",
+        ),
+        ("pinned twice", twice(&pins)?, "example is pinned twice"),
+    ] {
+        fs::write(&fx.pins, edited)?;
+        expect_error(load_pins(&fx.pins).map(drop), words, label)?;
+    }
     fs::write(&fx.pins, br#"{"schema_version": 2, "plugins": []}"#)?;
     expect_error(
         load_pins(&fx.pins).map(drop),
@@ -317,6 +345,30 @@ fn fetch_verifies_sums_pin_and_attestation() -> DynResult<()> {
     fetch(&fx.pins, &out, &mut gh)?;
     for (target, data) in &fx.archives {
         assert_eq!(&fs::read(out.join("example").join(asset(target)))?, data);
+    }
+    // Each attestation is checked on the downloaded file, not the copy in --out,
+    // with every flag that binds it to the pinned repository, workflow and tag.
+    let verifies = gh
+        .calls
+        .iter()
+        .filter(|call| call.starts_with("attestation verify "))
+        .collect::<Vec<_>>();
+    for (call, target) in verifies.iter().zip(fx.archives.keys()) {
+        let path = call
+            .split(' ')
+            .nth(2)
+            .ok_or("no path in attestation call")?;
+        assert!(path.ends_with(&format!("/{}", asset(target))), "{call}");
+        assert!(
+            !path.starts_with(&out.to_string_lossy().into_owned()),
+            "{call}"
+        );
+        assert_eq!(
+            call.split_once(&format!("{path} ")).map(|(_, flags)| flags),
+            Some(
+                "--repo Example/example --signer-workflow Example/example/.github/workflows/release.yml --source-ref refs/tags/v1.2.3 --deny-self-hosted-runners"
+            ),
+        );
     }
     let calls = gh.calls.join("\n");
     assert!(
@@ -336,6 +388,20 @@ fn fetch_verifies_sums_pin_and_attestation() -> DynResult<()> {
         "{calls}"
     );
     Ok(())
+}
+
+#[test]
+fn fetch_refuses_an_archive_sha256sums_does_not_list() -> DynResult<()> {
+    let fx = Fixture::new()?;
+    let sums = fs::read_to_string(fx.release.join("SHA256SUMS"))?;
+    let kept = sums
+        .lines()
+        .filter(|line| !line.ends_with(LINUX_X86_ASSET))
+        .collect::<Vec<_>>()
+        .join("\n");
+    fs::write(fx.release.join("SHA256SUMS"), kept)?;
+    let result = fetch(&fx.pins, &fx.root.join("fetched"), &mut fx.gh(None));
+    expect_error(result, "SHA256SUMS says nothing", "unlisted")
 }
 
 #[test]
@@ -537,7 +603,7 @@ fn verify_fails_a_release_missing_a_plugin() -> DynResult<()> {
             "changed-plugin",
             "mesh-llm-aarch64-apple-darwin.tar.gz",
             changed,
-            "pinned",
+            "plugins/example-1.2.3-aarch64-apple-darwin.tar.gz is ",
         ),
         (
             "windows-plugins",
@@ -743,4 +809,96 @@ fn release_workflow_bundles_into_every_unix_product_and_verifies_before_publishi
         .ok_or("no Publish GitHub release step")?;
     assert!(verify_at < publish_at);
     Ok(())
+}
+
+/// The pin file with its first plugin entry listed twice.
+fn twice(pins: &str) -> DynResult<String> {
+    let mut value: serde_json::Value = serde_json::from_str(pins)?;
+    let plugins = value["plugins"].as_array_mut().ok_or("no plugins")?;
+    plugins.push(plugins[0].clone());
+    Ok(serde_json::to_string(&value)?)
+}
+
+/// A tar.gz whose members carry explicit entry types.
+fn typed_tar(
+    artifacts: &Path,
+    name: &str,
+    members: &[(&str, &[u8], tar::EntryType)],
+) -> DynResult<()> {
+    let file = fs::File::create(artifacts.join(name))?;
+    let mut builder = tar::Builder::new(flate2::write::GzEncoder::new(
+        file,
+        flate2::Compression::default(),
+    ));
+    for (member, data, kind) in members {
+        let mut header = tar::Header::new_gnu();
+        header.set_entry_type(*kind);
+        header.set_mode(0o644);
+        if kind.is_symlink() || kind.is_hard_link() {
+            header.set_size(0);
+            header.set_link_name("../../etc/passwd")?;
+            builder.append_data(&mut header, member, &[][..])?;
+        } else {
+            header.set_size(data.len() as u64);
+            builder.append_data(&mut header, member, *data)?;
+        }
+    }
+    builder.into_inner()?.finish()?;
+    Ok(())
+}
+
+#[test]
+fn verify_refuses_a_link_or_other_non_regular_member_under_plugins() -> DynResult<()> {
+    let fx = Fixture::new()?;
+    let name = "mesh-llm-x86_64-unknown-linux-gnu.tar.gz";
+    let placed = fx.placed_members(LINUX_X86)?;
+    let plugin = format!("mesh-bundle/plugins/{LINUX_X86_ASSET}");
+    for kind in [
+        tar::EntryType::Symlink,
+        tar::EntryType::Link,
+        tar::EntryType::Fifo,
+    ] {
+        let artifacts = fx.full_release(&format!("{kind:?}"))?;
+        let mut members = placed
+            .iter()
+            .map(|(member, data)| (member.as_str(), data.as_slice(), tar::EntryType::Regular))
+            .collect::<Vec<_>>();
+        members.push((plugin.as_str(), b"".as_slice(), kind));
+        typed_tar(&artifacts, name, &members)?;
+        expect_error(
+            verify(&fx.pins, &artifacts),
+            "under plugins/ is a",
+            &format!("{kind:?}"),
+        )?;
+    }
+    Ok(())
+}
+
+/// A contiguous-file member is a regular file to tar extractors, so a second
+/// copy of the plugin under that type replaces the pinned bytes and must be read.
+#[test]
+fn verify_reads_a_contiguous_member_that_replaces_the_plugin() -> DynResult<()> {
+    let fx = Fixture::new()?;
+    let artifacts = fx.full_release("contiguous")?;
+    let placed = fx.placed_members(LINUX_X86)?;
+    let plugin = format!("mesh-bundle/plugins/{LINUX_X86_ASSET}");
+    let mut members = placed
+        .iter()
+        .map(|(member, data)| (member.as_str(), data.as_slice(), tar::EntryType::Regular))
+        .collect::<Vec<_>>();
+    members.push((
+        plugin.as_str(),
+        b"other bytes".as_slice(),
+        tar::EntryType::Continuous,
+    ));
+    typed_tar(
+        &artifacts,
+        "mesh-llm-x86_64-unknown-linux-gnu.tar.gz",
+        &members,
+    )?;
+    expect_error(
+        verify(&fx.pins, &artifacts),
+        &format!("plugins/{LINUX_X86_ASSET} is "),
+        "contiguous",
+    )
 }

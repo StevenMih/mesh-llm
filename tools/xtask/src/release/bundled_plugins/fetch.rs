@@ -9,9 +9,23 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// A download directory removed when the plugin is done, like Python's
-/// `tempfile.TemporaryDirectory`.
+/// A download directory this run created, removed when the plugin is done.
 struct DownloadDir(PathBuf);
+
+impl DownloadDir {
+    /// Creates a fresh directory, owner-only on Unix; an existing path at the
+    /// chosen name is an error, never reused or removed.
+    fn create() -> DynResult<Self> {
+        let path = unique_temp_dir("bundled-plugins");
+        let mut builder = fs::DirBuilder::new();
+        #[cfg(unix)]
+        std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+        builder
+            .create(&path)
+            .map_err(|error| format!("cannot create {}: {error}", path.display()))?;
+        Ok(Self(path))
+    }
+}
 
 impl Drop for DownloadDir {
     fn drop(&mut self) {
@@ -22,8 +36,7 @@ impl Drop for DownloadDir {
 pub(crate) fn fetch(pins: &Path, out: &Path, gh: &mut dyn GhHost) -> DynResult<()> {
     fs::create_dir_all(out)?;
     for plugin in load_pins(pins)? {
-        let download = DownloadDir(unique_temp_dir("bundled-plugins"));
-        fs::create_dir_all(&download.0)?;
+        let download = DownloadDir::create()?;
         fetch_plugin(&plugin, &download.0, out, gh)?;
     }
     Ok(())
