@@ -273,6 +273,14 @@ fn shared(name: &str, covers: &str, history_segments: &str, request: Value) -> V
     c
 }
 
+/// `case` on a node that answers exchange corroboration for any requester
+/// (`share_exchange_corroboration` on).
+fn corroborating(name: &str, covers: &str, request: Value) -> Value {
+    let mut c = case(name, covers, "counterparties", request);
+    c["share_exchange_corroboration"] = json!("on");
+    c
+}
+
 fn corpus_cases(ledger: &[Value], cps: &[CheckpointRecord]) -> Vec<Value> {
     let id = |i: usize| ledger[i]["capsule_id"].as_str().unwrap().to_string();
     let latest = json!({"expected_pin": cps[1].digest()});
@@ -283,6 +291,8 @@ fn corpus_cases(ledger: &[Value], cps: &[CheckpointRecord]) -> Vec<Value> {
         r
     };
     let req = |subject: Value, coverage: &Value| json!({"subject": subject, "coverage": coverage});
+    let nonce_digest = |nonce: &str| hex::encode(Sha256::digest(nonce.as_bytes()));
+    let corroboration = |key: String| crate::exchange_corroboration::request_for(&key);
     let mut cases = vec![
         // Records, and who may have them.
         case_by(
@@ -562,6 +572,25 @@ fn corpus_cases(ledger: &[Value], cps: &[CheckpointRecord]) -> Vec<Value> {
             "no record carries this identifier",
             "peers",
             req(json!({"correlation": "n-9"}), &latest),
+        ),
+        // Exchange corroboration (exchange_corroboration/1): the subject is the
+        // SHA-256 of a client nonce. No corpus record binds a client nonce.
+        case_by(
+            "corroboration_to_a_stranger",
+            "off by default: a node no record names gets policy_declined, whatever this node holds",
+            "counterparties",
+            "node-z",
+            corroboration(nonce_digest("n-1")),
+        ),
+        corroborating(
+            "corroboration_unknown",
+            "on: no record binds this client nonce, so no_such_subject, never an empty artifact",
+            corroboration(nonce_digest("n-9")),
+        ),
+        corroborating(
+            "corroboration_by_a_request_nonce",
+            "on: a request nonce is not a client nonce, even where the correlation index holds it",
+            corroboration(nonce_digest("n-1")),
         ),
         case(
             "exchange_citing_the_half",
