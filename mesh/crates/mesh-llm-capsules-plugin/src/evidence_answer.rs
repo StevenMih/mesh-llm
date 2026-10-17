@@ -134,6 +134,8 @@ pub struct Responder<'a> {
     pub history_segments: &'a str,
     /// `share_policy::shares_standard_history()`.
     pub share_standard_history: bool,
+    /// `share_policy::shares_exchange_corroboration()`.
+    pub share_exchange_corroboration: bool,
     /// The keys a requester's signature is bound through
     /// (`requester_auth::bound_node`).
     pub keys: requester_auth::Keys<'a>,
@@ -317,6 +319,14 @@ fn carries_records(req: &Request) -> bool {
 /// the operator serves them to any peer (`peers`); Standard History, unless
 /// the operator shares it.
 fn needs_requester(req: &Request, responder: &Responder<'_>) -> bool {
+    // `exchange_corroboration/1` has a setting of its own: Standard History
+    // being shared never releases it.
+    if crate::exchange_corroboration::is_derivation(req.derivation.as_ref()) {
+        if cfg!(feature = "mutant-corroboration-uses-standard-history-gate") {
+            return !responder.share_standard_history;
+        }
+        return !responder.share_exchange_corroboration;
+    }
     if carries_records(req) {
         responder.history_segments != "peers"
     } else {
@@ -451,6 +461,9 @@ fn answer_from(
             Reason::PolicyDeclined
         });
     }
+    if crate::exchange_corroboration::is_derivation(req.derivation.as_ref()) {
+        return corroboration_answer(req, digest, principal, responder, view);
+    }
     // 7. Resolve.
     let anchor = match resolve::resolve(req, view) {
         Resolution::Artifact(anchor) => anchor,
@@ -531,6 +544,56 @@ fn answer_from(
         build_error_reason(&e)
     })?;
     wire(built.artifact, built.material, built.envelope)
+}
+
+/// Steps 7 to 10 for `exchange_corroboration/1`: resolved against the bound
+/// client nonces only, answered whole or refused whole. Under the default
+/// (the setting off), only to a node every matching half names as the other
+/// side of its exchange; never a half that never leaves this node.
+fn corroboration_answer(
+    req: &Request,
+    digest: &str,
+    principal: Option<&str>,
+    responder: &Responder<'_>,
+    view: &LogView<'_>,
+) -> Result<Value, Reason> {
+    use crate::exchange_corroboration as corroboration;
+    let index = view.index;
+    let anchor = match resolve::resolve(req, &corroboration::NonceView(view)) {
+        Resolution::Artifact(ResolvedAnchor::Anchor(anchor)) => anchor,
+        Resolution::Artifact(ResolvedAnchor::ExchangeHalf(_)) => return Err(Reason::NoSuchSubject),
+        Resolution::Refuse(reason) => return Err(reason),
+    };
+    let checkpoint = index
+        .chain
+        .iter()
+        .find(|cp| cp.digest() == anchor.digest)
+        .ok_or(Reason::CoverageUnsatisfiable)?;
+    #[allow(unused_mut)]
+    let mut records = corroboration::matching_records(req, checkpoint, view);
+    if records.len() as u64 > MAX_ANSWER_RECORDS {
+        return Err(Reason::PolicyDeclined);
+    }
+    let never_leaves = |i: &u64| index.leaves.get(*i as usize).is_none_or(|l| l.never_leaves);
+    if policy_gate_applies() && records.iter().any(never_leaves) {
+        return Err(Reason::NotAuthorized);
+    }
+    if needs_requester(req, responder) && policy_gate_applies() {
+        if cfg!(feature = "mutant-corroboration-filters-per-asker") {
+            let asker = principal.map(str::trim);
+            records.retain(|&i| {
+                index
+                    .leaves
+                    .get(i as usize)
+                    .is_some_and(|l| l.counterparty.as_deref() == asker)
+            });
+        } else if !may_serve_all(index, &records, principal, "counterparties") {
+            return Err(Reason::NotAuthorized);
+        }
+    }
+    let (artifact, material) = corroboration::build(req, checkpoint, &records, view)?;
+    let envelope = sign_envelope(digest, &checkpoint.digest(), artifact.as_bytes(), responder)?;
+    wire(artifact.into_bytes(), material.into_bytes(), envelope)
 }
 
 /// The refusal for a build that did not complete.
@@ -788,6 +851,17 @@ pub fn verify_response(
     let Ok(req) = request::parse_json(sent) else {
         return not_evidence("the request sent is not a -00 request".into());
     };
+    if crate::exchange_corroboration::is_derivation(req.derivation.as_ref()) {
+        return match crate::exchange_corroboration::verify(sent, response, key) {
+            crate::exchange_corroboration::Verified::Halves { anchor, halves } => {
+                json!({"state": "artifact", "anchor": anchor, "halves": halves.len()})
+            }
+            crate::exchange_corroboration::Verified::Refusal(reason) => {
+                json!({"state": "refusal", "reason": reason.token()})
+            }
+            crate::exchange_corroboration::Verified::Failed(why) => not_evidence(why),
+        };
+    }
     let Some((envelope, artifact, material)) = split_wire(response) else {
         return not_evidence("neither a refusal nor an artifact answer".into());
     };
@@ -889,11 +963,11 @@ fn configured_witness_key(
 /// derivation it does not know: the envelope is `key`'s and names this
 /// request, the artifact is the one it signed, and the anchor checkpoint is
 /// `key`'s, is the one named, and is the pinned one. Returns the anchor.
-fn verify_served_summary(
+/// Check an envelope signed the way [`sign_envelope`] signs one: by `key`,
+/// for the request `digest`, over `artifact`. Returns the anchor it names.
+pub(crate) fn verify_envelope(
     envelope: &Value,
     artifact: &[u8],
-    material: &[u8],
-    req: &Request,
     digest: &str,
     key: &ed25519_dalek::VerifyingKey,
 ) -> Result<String, &'static str> {
@@ -929,6 +1003,39 @@ fn verify_served_summary(
     if hex::encode(Sha256::digest(artifact)) != env_artifact {
         return Err("the artifact does not match the envelope's artifact digest");
     }
+    Ok(env_anchor.to_string())
+}
+
+/// The material's `anchor_checkpoint`, when it is `anchor`, signed by `key`.
+pub(crate) fn verify_anchor_checkpoint(
+    material: &[u8],
+    anchor: &str,
+    key: &ed25519_dalek::VerifyingKey,
+) -> Result<cll::checkpoint::CheckpointRecord, &'static str> {
+    let mat: Value = serde_json::from_slice(material).map_err(|_| "the material is malformed")?;
+    let cp: cll::checkpoint::CheckpointRecord = mat
+        .get("anchor_checkpoint")
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .ok_or("the anchor checkpoint is malformed")?;
+    if cp.digest() != anchor
+        || cp.key_id != hex::encode(key.to_bytes())
+        || !cp.verify_signature_offline()
+    {
+        return Err("the anchor checkpoint is not the responder's, or not the one named");
+    }
+    Ok(cp)
+}
+
+fn verify_served_summary(
+    envelope: &Value,
+    artifact: &[u8],
+    material: &[u8],
+    req: &Request,
+    digest: &str,
+    key: &ed25519_dalek::VerifyingKey,
+) -> Result<String, &'static str> {
+    let env_anchor = verify_envelope(envelope, artifact, digest, key)?;
+    let env_anchor = env_anchor.as_str();
     let art: Value = serde_json::from_slice(artifact).map_err(|_| "the artifact is malformed")?;
     if art.get("anchor").and_then(Value::as_str) != Some(env_anchor)
         || art.get("subject") != Some(&answer::subject_json(&req.subject))
@@ -937,17 +1044,7 @@ fn verify_served_summary(
     {
         return Err("the artifact is not for the requested subject or derivation");
     }
-    let mat: Value = serde_json::from_slice(material).map_err(|_| "the material is malformed")?;
-    let cp: cll::checkpoint::CheckpointRecord = mat
-        .get("anchor_checkpoint")
-        .and_then(|v| serde_json::from_value(v.clone()).ok())
-        .ok_or("the anchor checkpoint is malformed")?;
-    if cp.digest() != env_anchor
-        || cp.key_id != hex::encode(key.to_bytes())
-        || !cp.verify_signature_offline()
-    {
-        return Err("the anchor checkpoint is not the responder's, or not the one named");
-    }
+    verify_anchor_checkpoint(material, env_anchor, key)?;
     match &req.coverage {
         Coverage::ExpectedPin(pin) if pin == env_anchor => Ok(env_anchor.to_string()),
         _ => Err("the anchor does not satisfy the requested coverage"),
@@ -1027,6 +1124,7 @@ mod tests {
                 now: NOW,
                 history_segments: segments,
                 share_standard_history,
+                share_exchange_corroboration: false,
                 keys: Keys {
                     announced: &announced,
                     configured: None,
@@ -1239,6 +1337,7 @@ mod tests {
             now: NOW,
             history_segments: "peers",
             share_standard_history: true,
+            share_exchange_corroboration: false,
             keys: Keys {
                 announced: &announced,
                 configured: None,
@@ -1265,6 +1364,7 @@ mod tests {
             now: "yesterday",
             history_segments: "peers",
             share_standard_history: true,
+            share_exchange_corroboration: false,
             keys: Keys {
                 announced: &announced,
                 configured: None,
@@ -1870,6 +1970,7 @@ mod tests {
             now: NOW,
             history_segments: "peers",
             share_standard_history: false,
+            share_exchange_corroboration: false,
             keys: Keys {
                 announced: &announced,
                 configured: None,
@@ -1911,6 +2012,7 @@ mod tests {
                 now: NOW,
                 history_segments: segments,
                 share_standard_history: false,
+                share_exchange_corroboration: false,
                 keys: Keys {
                     announced: &announced,
                     configured: None,
@@ -2076,6 +2178,7 @@ mod tests {
             now: NOW,
             history_segments: "peers",
             share_standard_history: true,
+            share_exchange_corroboration: false,
             keys: Keys {
                 announced: &announced,
                 configured: None,
@@ -2198,6 +2301,7 @@ mod tests {
                     now: NOW,
                     history_segments: segments,
                     share_standard_history: false,
+                    share_exchange_corroboration: false,
                     keys: Keys {
                         announced: &announced,
                         configured: None,
@@ -2479,6 +2583,7 @@ mod tests {
             now: NOW,
             history_segments: "counterparties",
             share_standard_history: false,
+            share_exchange_corroboration: false,
             keys: Keys {
                 announced: &announced,
                 configured: None,

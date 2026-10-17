@@ -937,6 +937,7 @@ fn run(corpus: &Value) -> BTreeMap<String, Value> {
                 case["history_segments"].as_str(),
             ),
             share_standard_history: case["share_standard_history"] == json!("on"),
+            share_exchange_corroboration: case["share_exchange_corroboration"] == json!("on"),
             keys: crate::requester_auth::Keys {
                 announced: &announced,
                 configured: None,
