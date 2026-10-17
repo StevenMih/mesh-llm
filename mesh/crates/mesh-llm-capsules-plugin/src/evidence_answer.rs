@@ -92,7 +92,7 @@ use capsule_emit_evidence_request::answer::{self, BuildError, MAX_RECORDS};
 use capsule_emit_evidence_request::digest::request_digest;
 use capsule_emit_evidence_request::jcs;
 use capsule_emit_evidence_request::refusal;
-use capsule_emit_evidence_request::registry::Reason;
+use capsule_emit_evidence_request::registry::{Reason, DERIVATION_HISTORY_CARD};
 use capsule_emit_evidence_request::request::{self, Coverage, Derivation, Request, Subject};
 use capsule_emit_evidence_request::resolve::{self, Resolution, ResolvedAnchor};
 use capsule_emit_evidence_request::time::parse_utc;
@@ -469,9 +469,11 @@ fn answer_from(
         Resolution::Artifact(anchor) => anchor,
         Resolution::Refuse(reason) => return Err(reason),
     };
-    if matches!(&req.derivation, Some(Derivation::Token(t)) if t == SERVED_SUMMARY_DERIVATION_TOKEN)
-    {
+    if served_summary::is_derivation(req.derivation.as_ref()) {
         return served_summary_answer(req, digest, &anchor, responder, index);
+    }
+    if crate::service_history::is_derivation(req.derivation.as_ref()) {
+        return service_history_answer(req, digest, &anchor, responder, view);
     }
 
     // 8. Size, from the index.
@@ -664,6 +666,23 @@ fn served_summary_answer(
     responder: &Responder<'_>,
     index: &LedgerIndex,
 ) -> Result<Value, Reason> {
+    let (artifact, latest) = served_summary_artifact(req, anchor, index)?;
+    let material = json!({ "anchor_checkpoint": serde_json::to_value(latest).map_err(|_| Reason::PolicyDeclined)? });
+    let artifact = jcs::to_string(&artifact).map_err(|_| Reason::PolicyDeclined)?;
+    let material = jcs::to_string(&material).map_err(|_| Reason::PolicyDeclined)?;
+    let envelope = sign_envelope(digest, &latest.digest(), artifact.as_bytes(), responder)?;
+    wire(artifact.into_bytes(), material.into_bytes(), envelope)
+}
+
+/// The served-summary artifact for `req` under `anchor`, and the checkpoint
+/// it is bounded by, or the refusal: `policy_declined` for `min_freshness`,
+/// `coverage_unsatisfiable` for any anchor but the latest. Its `derivation`
+/// names the definition digest however the request named it.
+fn served_summary_artifact<'i>(
+    req: &Request,
+    anchor: &ResolvedAnchor,
+    index: &'i LedgerIndex,
+) -> Result<(Value, &'i cll::checkpoint::CheckpointRecord), Reason> {
     if !matches!(req.coverage, Coverage::ExpectedPin(_)) {
         return Err(Reason::PolicyDeclined);
     }
@@ -679,18 +698,63 @@ fn served_summary_answer(
             checkpoint: latest,
             covered,
         },
-        &|id| index.leaf_index_of(id).is_some(),
+        &|id| index.leaf_index_of(id),
     );
-    let anchor_digest = latest.digest();
     let artifact = json!({
-        "anchor": anchor_digest,
+        "anchor": latest.digest(),
         "evidence_stream": latest.log_id,
         "subject": answer::subject_json(&req.subject),
-        "derivation": SERVED_SUMMARY_DERIVATION_TOKEN,
+        "derivation": served_summary::SERVED_SUMMARY_DEFINITION_DIGEST,
         "served_summary": summary,
     });
-    let material = json!({ "anchor_checkpoint": serde_json::to_value(latest).map_err(|_| Reason::PolicyDeclined)? });
-    let artifact = jcs::to_string(&artifact).map_err(|_| Reason::PolicyDeclined)?;
+    Ok((artifact, latest))
+}
+
+/// The `service_history/1` projection: the `history_card/1` artifact this
+/// node serves for the same subject and anchor, embedded unchanged, and the
+/// served summary. Answered under the served summary's coverage rule (the
+/// latest checkpoint, by `expected_pin`), and refused whole when either
+/// member cannot be built: never served with a member dropped.
+///
+/// The card is built by `answer::build` for the request with its
+/// `derivation` set to `history_card/1`; only its artifact bytes are used.
+/// That build's envelope is dropped, never sent: the one envelope answers
+/// the request as received, and its `artifact_digest` covers the card.
+fn service_history_answer(
+    req: &Request,
+    digest: &str,
+    anchor: &ResolvedAnchor,
+    responder: &Responder<'_>,
+    view: &LogView<'_>,
+) -> Result<Value, Reason> {
+    let summary = match served_summary_artifact(req, anchor, view.index) {
+        Ok((summary, _)) => Some(summary),
+        // Deliberately broken in one CI build: the card alone, the served
+        // summary dropped instead of the whole projection refused.
+        Err(_) if cfg!(feature = "mutant-service-history-drops-member") => None,
+        Err(reason) => return Err(reason),
+    };
+    let anchor_cp = anchor_position(view.index, anchor)
+        .map(|i| &view.index.chain[i])
+        .ok_or(Reason::CoverageUnsatisfiable)?;
+    let card_request = Request {
+        derivation: Some(Derivation::Token(DERIVATION_HISTORY_CARD.into())),
+        ..req.clone()
+    };
+    let card = answer::build(
+        &card_request,
+        digest,
+        anchor,
+        view,
+        MAX_ANSWER_CHECKPOINTS,
+        responder.signing_key,
+        responder.now,
+    )
+    .map_err(|e| build_error_reason(&e))?;
+    let anchor_digest = anchor_cp.digest();
+    let artifact =
+        crate::service_history::artifact(&card.artifact, summary, &req.subject, &anchor_digest)?;
+    let material = json!({ "anchor_checkpoint": serde_json::to_value(anchor_cp).map_err(|_| Reason::PolicyDeclined)? });
     let material = jcs::to_string(&material).map_err(|_| Reason::PolicyDeclined)?;
     let envelope = sign_envelope(digest, &anchor_digest, artifact.as_bytes(), responder)?;
     wire(artifact.into_bytes(), material.into_bytes(), envelope)
@@ -865,8 +929,27 @@ pub fn verify_response(
     let Some((envelope, artifact, material)) = split_wire(response) else {
         return not_evidence("neither a refusal nor an artifact answer".into());
     };
-    if matches!(&req.derivation, Some(Derivation::Token(t)) if t == SERVED_SUMMARY_DERIVATION_TOKEN)
-    {
+    let witness_key = |ts_url: &str| {
+        if cfg!(feature = "mutant-answer-ignores-witness-keys") {
+            return None;
+        }
+        configured_witness_key(witness_keys, ts_url)
+    };
+    if crate::service_history::is_derivation(req.derivation.as_ref()) {
+        return match crate::service_history::verify(
+            envelope,
+            artifact,
+            material,
+            &req,
+            &digest,
+            key,
+            &witness_key,
+        ) {
+            Ok(verified) => verified.to_json(),
+            Err(why) => not_evidence(why),
+        };
+    }
+    if served_summary::is_derivation(req.derivation.as_ref()) {
         return match verify_served_summary(envelope, artifact, material, &req, &digest, key) {
             Ok(anchor) => {
                 json!({"state": "artifact", "anchor": anchor, "records": 0, "checkpoints": 0})
@@ -874,12 +957,6 @@ pub fn verify_response(
             Err(why) => not_evidence(why.into()),
         };
     }
-    let witness_key = |ts_url: &str| {
-        if cfg!(feature = "mutant-answer-ignores-witness-keys") {
-            return None;
-        }
-        configured_witness_key(witness_keys, ts_url)
-    };
     match answer::verify(
         envelope,
         artifact,
@@ -1026,6 +1103,22 @@ pub(crate) fn verify_anchor_checkpoint(
     Ok(cp)
 }
 
+/// Whether `art` is a served-summary artifact for `subject` under `anchor`.
+/// Its `derivation` is the definition digest, or the legacy token a
+/// responder before M2 wrote, accepted until the token's sunset.
+pub(crate) fn served_summary_artifact_matches(
+    art: &Value,
+    subject: &Subject,
+    anchor: &str,
+) -> bool {
+    let derivation = art.get("derivation").and_then(Value::as_str);
+    art.get("anchor").and_then(Value::as_str) == Some(anchor)
+        && art.get("subject") == Some(&answer::subject_json(subject))
+        && (derivation == Some(served_summary::SERVED_SUMMARY_DEFINITION_DIGEST)
+            || derivation == Some(SERVED_SUMMARY_DERIVATION_TOKEN))
+        && art.get("served_summary").is_some_and(Value::is_object)
+}
+
 fn verify_served_summary(
     envelope: &Value,
     artifact: &[u8],
@@ -1037,11 +1130,7 @@ fn verify_served_summary(
     let env_anchor = verify_envelope(envelope, artifact, digest, key)?;
     let env_anchor = env_anchor.as_str();
     let art: Value = serde_json::from_slice(artifact).map_err(|_| "the artifact is malformed")?;
-    if art.get("anchor").and_then(Value::as_str) != Some(env_anchor)
-        || art.get("subject") != Some(&answer::subject_json(&req.subject))
-        || art.get("derivation").and_then(Value::as_str) != Some(SERVED_SUMMARY_DERIVATION_TOKEN)
-        || !art.get("served_summary").is_some_and(Value::is_object)
-    {
+    if !served_summary_artifact_matches(&art, &req.subject, env_anchor) {
         return Err("the artifact is not for the requested subject or derivation");
     }
     verify_anchor_checkpoint(material, env_anchor, key)?;

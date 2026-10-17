@@ -46,7 +46,7 @@ use cll::mmr::{
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use crate::served_summary::{LeafFacts, SERVED_SUMMARY_DERIVATION_TOKEN};
+use crate::served_summary::LeafFacts;
 
 pub const CAPSULES_FILE: &str = "capsules.jsonl";
 pub const CHECKPOINTS_FILE: &str = "checkpoints.jsonl";
@@ -522,7 +522,9 @@ impl Responder for LogView<'_> {
             Derivation::Token(t) if t == DERIVATION_HISTORY_CARD => {
                 Some(vec![SubjectForm::FullHistory, SubjectForm::Checkpoints])
             }
-            Derivation::Token(t) if t == SERVED_SUMMARY_DERIVATION_TOKEN => {
+            d if crate::served_summary::is_derivation(Some(d))
+                || crate::service_history::is_derivation(Some(d)) =>
+            {
                 Some(vec![SubjectForm::FullHistory])
             }
             _ => None,
